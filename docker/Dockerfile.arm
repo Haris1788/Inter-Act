@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+WORKDIR /arm
+
+# Install only what the arm microservice needs
+RUN pip install --no-cache-dir flask requests
+
+# Copy arm scripts
+COPY scripts/ ./scripts/
+
+EXPOSE 8000
+
+CMD ["python", "scripts/arm_server.py"]
