@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+
+WORKDIR /demo-runner
+
+# Only needs flask (to serve endpoints) and requests (for HTTP calls to backend)
+RUN pip install --no-cache-dir flask requests pyyaml
+
+# Copy pipeline scripts and config
+COPY scripts/ ./scripts/
+COPY pipeline.yaml ./pipeline.yaml
+
+EXPOSE 6000
+
+CMD ["python", "scripts/demo_runner_server.py"]
