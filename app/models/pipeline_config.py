@@ -8,8 +8,8 @@ import os
 import yaml
 
 _CONFIG_PATH = os.environ.get(
-    'PIPELINE_CONFIG',
-    os.path.join(os.path.dirname(__file__), '..', '..', 'pipeline.yaml')
+    "PIPELINE_CONFIG",
+    os.path.join(os.path.dirname(__file__), "..", "..", "pipeline.yaml"),
 )
 
 _config = None
@@ -79,34 +79,39 @@ def generate_scene_config():
     arms_cfg = cfg["arms"]
     n = len(arms_cfg)
 
-    # Scale factor: with more arms, reduce arm length and zone sizes
-    # Base: 3 arms at 1000px. Scale down proportionally.
-    arm_spacing = max(120, 900 / max(n, 1))  # px between arms
-    canvas_w = int(arm_spacing * (n + 1))
-    arm_length = int(min(150, arm_spacing * 0.55))
-    canvas_h = max(400, arm_length * 3 + 100)
-    pivot_y = int(canvas_h * 0.48)
+    # Keep each arm's visual geometry stable regardless of arm count.
+    # Only grow the canvas width horizontally as more arms are added.
+    arm_spacing = 300
+    default_arm_length = 150
+    canvas_h = 600
+    pivot_y = 300
 
+    resolved_arms = []
     for i, arm in enumerate(arms_cfg):
-        if "pivot_x" not in arm:
-            arm["pivot_x"] = int(arm_spacing * (i + 1))
-        if "pivot_y" not in arm:
-            arm["pivot_y"] = pivot_y
-        if "length" not in arm:
-            arm["length"] = arm_length
+        resolved_arms.append(
+            {
+                "id": arm["id"],
+                "pivot_x": int(arm.get("pivot_x", arm_spacing * (i + 1))),
+                "pivot_y": int(arm.get("pivot_y", pivot_y)),
+                "length": int(arm.get("length", default_arm_length)),
+                "color": arm.get("color", "#888"),
+                "label": arm.get("label", f"Arm {arm['id']}"),
+            }
+        )
+
+    first_arm = resolved_arms[0]
+    last_arm = resolved_arms[-1]
+
+    # Keep zone dimensions fixed for consistent readability.
+    zone_w = 105
+    zone_h = 180
+
+    # Compute width from absolute right extent so output is never clipped.
+    scene_right = last_arm["pivot_x"] + last_arm["length"] + zone_w // 2
+    canvas_w = int(scene_right + 30)
 
     # Arms
-    arms = [
-        {
-            "id": arm["id"],
-            "pivot_x": arm["pivot_x"],
-            "pivot_y": arm["pivot_y"],
-            "length": arm["length"],
-            "color": arm.get("color", "#888"),
-            "label": arm.get("label", f"Arm {arm['id']}"),
-        }
-        for arm in arms_cfg
-    ]
+    arms = resolved_arms
 
     # Reach zones
     reach_zones = [
@@ -117,34 +122,31 @@ def generate_scene_config():
             "radius": arm["length"],
             "color": arm.get("color", "#888"),
         }
-        for arm in arms_cfg
+        for arm in resolved_arms
     ]
 
-    # Handoff zones — sized proportional to arm spacing
-    hz_width = max(30, int(arm_spacing * 0.3))
-    hz_height = max(80, arm_length + 40)
+    # Handoff zones
+    hz_width = 90
+    hz_height = 190
     hz_y = pivot_y - hz_height // 2
 
     handoff_zones = []
     for i in range(n - 1):
-        mid_x = (arms_cfg[i]["pivot_x"] + arms_cfg[i + 1]["pivot_x"]) / 2
-        handoff_zones.append({
-            "id": f"handoff_{i + 1}",
-            "label": f"Handoff {i + 1}",
-            "x": int(mid_x - hz_width // 2),
-            "y": hz_y,
-            "width": hz_width,
-            "height": hz_height,
-            "color": "#f39c12",
-        })
-
-    # Zone dimensions proportional to arm spacing
-    zone_w = max(40, int(arm_spacing * 0.35))
-    zone_h = max(80, arm_length + 30)
+        mid_x = (resolved_arms[i]["pivot_x"] + resolved_arms[i + 1]["pivot_x"]) / 2
+        handoff_zones.append(
+            {
+                "id": f"handoff_{i + 1}",
+                "label": f"Handoff {i + 1}",
+                "x": int(mid_x - hz_width // 2),
+                "y": hz_y,
+                "width": hz_width,
+                "height": hz_height,
+                "color": "#f39c12",
+            }
+        )
 
     # Intake zone — left of the first arm
-    first_arm = arms_cfg[0]
-    intake_x = max(5, first_arm["pivot_x"] - first_arm["length"] - zone_w // 2)
+    intake_x = first_arm["pivot_x"] - first_arm["length"] - zone_w // 2
     intake_y = pivot_y - zone_h // 2
     intake_zone = {
         "x": intake_x,
@@ -159,9 +161,8 @@ def generate_scene_config():
         "entry_y": intake_y + 15,
     }
 
-    # Output zone — right of the last arm
-    last_arm = arms_cfg[-1]
-    output_x = min(canvas_w - zone_w - 5, last_arm["pivot_x"] + last_arm["length"] + 5)
+    # Output zone — mirror intake behavior on the right side
+    output_x = last_arm["pivot_x"] + last_arm["length"] - zone_w // 2
     output_y = pivot_y - zone_h // 2
     output_zone = {
         "x": output_x,
@@ -210,7 +211,7 @@ def get_valid_handoff_states():
     """
     n = get_arm_count()
     handoffs = tuple(f"handoff_{i}" for i in range(1, n))
-    return ('intake', 'carried') + handoffs + ('output',)
+    return ("intake", "carried") + handoffs + ("output",)
 
 
 def get_handoff_name(index):

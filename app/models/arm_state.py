@@ -3,9 +3,14 @@
 import time
 import threading
 from app.models.pipeline_config import (
-    generate_arm_state, get_arm_count, get_arm_ids,
-    get_all_downstream, is_critical,
-    MIN_ANGLE, MAX_ANGLE, DEFAULT_ANGLE,
+    generate_arm_state,
+    get_arm_count,
+    get_arm_ids,
+    get_all_downstream,
+    is_critical,
+    MIN_ANGLE,
+    MAX_ANGLE,
+    DEFAULT_ANGLE,
 )
 
 _lock = threading.Lock()
@@ -25,12 +30,13 @@ def _init_health():
         for arm_id in _state
     }
 
+
 _init_health()
 
 
 def set_angle(arm_id, angle):
     if arm_id not in _state:
-        valid = ', '.join(str(i) for i in sorted(_state.keys()))
+        valid = ", ".join(str(i) for i in sorted(_state.keys()))
         raise ValueError(f"Invalid arm_id: {arm_id}. Must be one of: {valid}")
     if not isinstance(angle, (int, float)):
         raise ValueError(f"angle must be a number, got {type(angle).__name__}")
@@ -48,7 +54,7 @@ def set_angle(arm_id, angle):
 
 def get_state(arm_id):
     if arm_id not in _state:
-        valid = ', '.join(str(i) for i in sorted(_state.keys()))
+        valid = ", ".join(str(i) for i in sorted(_state.keys()))
         raise ValueError(f"Invalid arm_id: {arm_id}. Must be one of: {valid}")
     with _lock:
         return dict(_state[arm_id])
@@ -60,6 +66,7 @@ def get_all():
 
 
 # --- Health tracking ---
+
 
 def set_health(arm_id, health, error=None):
     """Update health status for an arm. Health: alive, unhealthy, dead, stopped, idle."""
@@ -85,38 +92,38 @@ def get_all_health():
 def mark_arm_stopped(arm_id, reason="manually stopped"):
     """Mark an arm and all its downstream dependents as stopped."""
     global _pipeline_stopped
+    # Compute graph traversal outside lock to avoid blocking set_angle
+    downstream = get_all_downstream(arm_id)
+    critical = is_critical(arm_id)
     with _lock:
         if arm_id in _health:
             _health[arm_id]["health"] = "stopped"
             _health[arm_id]["error"] = reason
-
-        # Propagate to all downstream arms
-        downstream = get_all_downstream(arm_id)
         for dep_id in downstream:
             if dep_id in _health:
                 _health[dep_id]["health"] = "stopped"
                 _health[dep_id]["error"] = f"upstream arm {arm_id} stopped"
-
-        # If the arm is critical, stop the whole pipeline
-        if is_critical(arm_id):
+        if critical:
             _pipeline_stopped = True
 
 
 def mark_arm_failed(arm_id, error_msg):
     """Mark arm as dead and propagate to dependents."""
     global _pipeline_stopped
+    downstream = get_all_downstream(arm_id)
+    critical = is_critical(arm_id)
     with _lock:
         if arm_id in _health:
             _health[arm_id]["health"] = "dead"
             _health[arm_id]["error"] = error_msg
-
-        downstream = get_all_downstream(arm_id)
         for dep_id in downstream:
-            if dep_id in _health and _health[dep_id]["health"] not in ("dead", "stopped"):
+            if dep_id in _health and _health[dep_id]["health"] not in (
+                "dead",
+                "stopped",
+            ):
                 _health[dep_id]["health"] = "stopped"
                 _health[dep_id]["error"] = f"upstream arm {arm_id} failed: {error_msg}"
-
-        if is_critical(arm_id):
+        if critical:
             _pipeline_stopped = True
 
 
