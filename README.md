@@ -13,6 +13,7 @@ docker compose up --build
 ```
 
 Ollama is now included in the Docker stack and starts automatically.
+The backend is configured to use `qwen2.5:0.5b` via `OLLAMA_MODEL`.
 Default endpoint:
 
 - Inside containers: `http://ollama:11434`
@@ -49,16 +50,22 @@ Check Ollama container health:
 docker compose ps ollama
 ```
 
-Pull a model into the Ollama container:
+Pull the configured Qwen model into the Ollama container:
 
 ```bash
-docker compose exec ollama ollama pull llama3.2
+docker compose exec ollama ollama pull qwen2.5:0.5b
 ```
 
 List models:
 
 ```bash
 docker compose exec ollama ollama list
+```
+
+Override the model (optional):
+
+```bash
+OLLAMA_MODEL=qwen2.5:1.5b docker compose up --build
 ```
 
 Full stack with Ollama:
