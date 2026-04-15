@@ -12,6 +12,12 @@ docker compose up --build
 # Click "Run Demo" to start the pipeline
 ```
 
+Ollama is now included in the Docker stack and starts automatically.
+Default endpoint:
+
+- Inside containers: `http://ollama:11434`
+- On your host machine: `http://localhost:11434`
+
 Custom port:
 
 ```bash
@@ -27,6 +33,38 @@ python run.py
 
 # Run the demo from a second terminal:
 python scripts/run_demo.py --speed normal --products 3
+```
+
+## Ollama setup (Docker)
+
+Start only Ollama:
+
+```bash
+docker compose up -d ollama
+```
+
+Check Ollama container health:
+
+```bash
+docker compose ps ollama
+```
+
+Pull a model into the Ollama container:
+
+```bash
+docker compose exec ollama ollama pull llama3.2
+```
+
+List models:
+
+```bash
+docker compose exec ollama ollama list
+```
+
+Full stack with Ollama:
+
+```bash
+docker compose up --build
 ```
 
 ## Architecture
@@ -57,7 +95,7 @@ Everything is driven by `pipeline.yaml`:
 
 ```yaml
 pipeline:
-  mode: dependency    # sequential | parallel | dependency
+  mode: dependency # sequential | parallel | dependency
   products: 3
   speed: normal
 
@@ -76,6 +114,7 @@ arms:
 ```
 
 Adding an arm:
+
 ```bash
 # 1. Edit pipeline.yaml (add arm entry)
 # 2. Regenerate Docker Compose:
@@ -100,6 +139,7 @@ When an arm container stops or fails:
 4. Demo-runner threads detect the health change within 2 seconds and stop
 
 Failure policies per arm (in `pipeline.yaml`):
+
 - `stop` — halt and propagate to downstream (default)
 - `skip` — skip the failed product, continue
 - `retry` — retry N times with delay
@@ -109,27 +149,28 @@ Test it: `docker stop interact-arm-6-1` while the demo is running.
 
 ## API endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Simulation page |
-| `/health` | GET | Health check |
-| `/set_angle` | POST | Move arm: `{"arm_id": 1, "angle": 45}` |
-| `/state` | GET | All arm states |
-| `/state/<id>` | GET | Single arm state |
-| `/config` | GET | Scene layout (dynamic, from pipeline.yaml) |
-| `/object_event` | POST | Track object: `{"object_id": "Obj1", "state": "carried", "carrier_arm": 1}` |
-| `/objects` | GET | All tracked objects |
-| `/objects/reset` | POST | Clear objects |
-| `/log` | POST | Send log to browser panel |
-| `/arms/health` | GET | All arm health states |
-| `/arms/<id>/health` | POST | Report arm health |
-| `/arms/<id>/stop` | POST | Stop arm + propagate to downstream |
-| `/arms/<id>/allowed` | GET | Check if arm can execute |
-| `/pipeline/status` | GET | Full pipeline status, DAG validity, health |
-| `/reload_config` | POST | Hot-reload pipeline.yaml without restart |
-| `/demo/start` | POST | Start pipeline demo (proxied to demo-runner) |
-| `/demo/status` | GET | Check if demo is running |
-| `/demo/stop` | POST | Stop running demo |
+| Endpoint             | Method | Description                                                                 |
+| -------------------- | ------ | --------------------------------------------------------------------------- |
+| `/`                  | GET    | Simulation page                                                             |
+| `/health`            | GET    | Health check                                                                |
+| `/health/ollama`     | GET    | Backend -> Ollama connectivity + configured model visibility                |
+| `/set_angle`         | POST   | Move arm: `{"arm_id": 1, "angle": 45}`                                      |
+| `/state`             | GET    | All arm states                                                              |
+| `/state/<id>`        | GET    | Single arm state                                                            |
+| `/config`            | GET    | Scene layout (dynamic, from pipeline.yaml)                                  |
+| `/object_event`      | POST   | Track object: `{"object_id": "Obj1", "state": "carried", "carrier_arm": 1}` |
+| `/objects`           | GET    | All tracked objects                                                         |
+| `/objects/reset`     | POST   | Clear objects                                                               |
+| `/log`               | POST   | Send log to browser panel                                                   |
+| `/arms/health`       | GET    | All arm health states                                                       |
+| `/arms/<id>/health`  | POST   | Report arm health                                                           |
+| `/arms/<id>/stop`    | POST   | Stop arm + propagate to downstream                                          |
+| `/arms/<id>/allowed` | GET    | Check if arm can execute                                                    |
+| `/pipeline/status`   | GET    | Full pipeline status, DAG validity, health                                  |
+| `/reload_config`     | POST   | Hot-reload pipeline.yaml without restart                                    |
+| `/demo/start`        | POST   | Start pipeline demo (proxied to demo-runner)                                |
+| `/demo/status`       | GET    | Check if demo is running                                                    |
+| `/demo/stop`         | POST   | Stop running demo                                                           |
 
 ## Individual arm control
 
@@ -161,6 +202,7 @@ pytest tests/ -v    # 28 tests
 ## Docker troubleshooting (Windows)
 
 **`docker` not recognized:** Add `C:\Program Files\Docker\Docker\resources\bin` to PATH, or run:
+
 ```powershell
 $env:Path = "C:\Program Files\Docker\Docker\resources\bin;" + $env:Path
 ```
