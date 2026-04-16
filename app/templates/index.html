@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INTER.act Simulation</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=13">
+</head>
+<body>
+    <h1>INTER.act</h1>
+
+    <div id="status-bar">
+        <div id="status-dot"></div>
+        <span id="status-text">Disconnected</span>
+        <button id="demo-btn" onclick="toggleDemo()">Run Demo</button>
+    </div>
+
+    <div id="canvas-wrapper">
+        <canvas id="sim-canvas"></canvas>
+    </div>
+
+    <div id="log-panel"></div>
+
+    <script>
+        window.BACKEND_URL = '';
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+    <script src="/static/js/simulation.js?v=13"></script>
+</body>
+</html>

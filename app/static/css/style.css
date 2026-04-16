@@ -1,0 +1,154 @@
+/* INTER.act Simulation Styles */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Hide scrollbars globally while preserving scroll */
+html,
+body {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+#canvas-wrapper::-webkit-scrollbar,
+#log-panel::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f6fa;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+h1 {
+    font-size: 22px;
+    color: #2c3e50;
+    margin-bottom: 6px;
+    letter-spacing: 1px;
+}
+
+/* Status indicator */
+#status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: #7f8c8d;
+}
+
+#status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #e74c3c;
+    transition: background 0.3s;
+}
+
+#status-dot.connected {
+    background: #27ae60;
+}
+
+/* Demo button */
+#demo-btn {
+    margin-left: 16px;
+    padding: 5px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    background: #3498db;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+#demo-btn:hover {
+    background: #2980b9;
+}
+
+#demo-btn.running {
+    background: #e67e22;
+    cursor: default;
+}
+
+#demo-btn.done {
+    background: #27ae60;
+}
+
+/* Canvas wrapper */
+#canvas-wrapper {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+/* Canvas keeps native size; wrapper handles horizontal scrolling */
+#sim-canvas {
+    display: block;
+    width: auto;
+    max-width: none;
+    height: auto;
+    margin: 0 auto;
+    border: 1px solid #dcdde1;
+    background: #fff;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* Log panel */
+#log-panel {
+    width: 100%;
+    max-height: 200px;
+    overflow-y: auto;
+    background: #2c3e50;
+    color: #ecf0f1;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 8px 12px;
+    margin-top: 8px;
+    border-radius: 4px;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.log-entry {
+    white-space: nowrap;
+}
+
+.log-time {
+    color: #7f8c8d;
+}
+
+.log-source {
+    font-weight: bold;
+}
+
+.log-source.arm_1 { color: #e74c3c; }
+.log-source.arm_2 { color: #2ecc71; }
+.log-source.arm_3 { color: #3498db; }
+.log-source.arm_4 { color: #9b59b6; }
+.log-source.arm_5 { color: #9b99b6; }
+.log-source.arm_6 { color: #f39c12; }
+.log-source.arm_7 { color: #1abc9c; }
+.log-source.arm_8 { color: #34495e; }
+.log-source.arm_9 { color: #d35400; }
+.log-source.arm_10 { color: #16a085; }
+.log-source.system { color: #f39c12; }
+.log-source.pipeline { color: #9b59b6; }
