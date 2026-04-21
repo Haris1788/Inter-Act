@@ -88,6 +88,42 @@ h1 {
     background: #27ae60;
 }
 
+/* Asset kill controls — visually consistent with demo button */
+#asset-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    padding: 8px 0 4px;
+    margin-top: 4px;
+}
+
+.asset-kill-btn {
+    padding: 5px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    background: #95a5a6;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.asset-kill-btn:hover:not(:disabled) {
+    background: #e74c3c;
+}
+
+.asset-kill-btn:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+.asset-kill-btn:disabled {
+    background: #bdc3c7;
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
 /* Canvas wrapper */
 #canvas-wrapper {
     width: 100%;

@@ -194,10 +194,24 @@ def generate_scene_config():
         "output": {"text": "OUTPUT", "x": output_zone["label_x"], "y": 200},
     }
 
+    extra_assets = get_extra_assets()
+
+    # Extend canvas rightward if any extra asset sits beyond the arm row.
+    for ea in extra_assets:
+        g = ea.get("geometry", {})
+        if ea["type"] == "vehicle":
+            for wp in g.get("waypoints", []):
+                canvas_w = max(canvas_w, int(wp.get("x", 0)) + 40)
+        elif ea["type"] == "conveyor":
+            for p in (g.get("from"), g.get("to")):
+                if p:
+                    canvas_w = max(canvas_w, int(p.get("x", 0)) + 40)
+
     return {
         "canvas_width": canvas_w,
         "canvas_height": canvas_h,
         "arms": arms,
+        "assets": extra_assets,
         "reach_zones": reach_zones,
         "handoff_zones": handoff_zones,
         "intake_zone": intake_zone,
@@ -207,6 +221,66 @@ def generate_scene_config():
         "max_angle": MAX_ANGLE,
         "default_angle": DEFAULT_ANGLE,
     }
+
+
+def get_extra_assets():
+    """Return pass-through `assets:` entries for non-arm types (vehicle, conveyor).
+
+    Arms remain defined under `arms:` and are consumed by the backend. This
+    helper only surfaces additional asset types for the frontend scene config.
+    Entries are returned with geometry normalized (conveyor slot_positions
+    precomputed); no runtime state is attached.
+    """
+    cfg = get_config()
+    raw = cfg.get("assets") or []
+    out = []
+    for entry in raw:
+        t = entry.get("type")
+        if t == "arm":
+            continue  # Arms are defined under `arms:` — skip duplicates.
+        if t == "vehicle":
+            g = {
+                "waypoints": entry.get("waypoints", []),
+                "loop": bool(entry.get("loop", False)),
+                "speed": float(entry.get("speed", 100)),
+            }
+        elif t == "conveyor":
+            frm = entry.get("from") or {"x": 0, "y": 0}
+            to = entry.get("to") or {"x": 0, "y": 0}
+            n = int(entry.get("slot_count", 3))
+            slot_positions = _compute_slot_positions(frm, to, n)
+            g = {
+                "from": frm,
+                "to": to,
+                "slot_count": n,
+                "slot_positions": slot_positions,
+                "shift_interval": float(entry.get("shift_interval", 1.2)),
+            }
+        else:
+            continue  # Unknown type — ignore.
+        out.append({
+            "id": entry["id"],
+            "type": t,
+            "label": entry.get("label", entry["id"]),
+            "color": entry.get("color", "#888"),
+            "upstream": entry.get("upstream", []),
+            "downstream": entry.get("downstream", []),
+            "geometry": g,
+        })
+    return out
+
+
+def _compute_slot_positions(frm, to, n):
+    if n <= 0:
+        return []
+    if n == 1:
+        return [{"x": (frm["x"] + to["x"]) / 2, "y": (frm["y"] + to["y"]) / 2}]
+    out = []
+    for i in range(n):
+        t = i / (n - 1)
+        out.append({"x": frm["x"] + (to["x"] - frm["x"]) * t,
+                    "y": frm["y"] + (to["y"] - frm["y"]) * t})
+    return out
 
 
 def generate_arm_state():
