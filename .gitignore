@@ -13,3 +13,4 @@ build/
 *.swo
 .claude/
 planning/
+.cursor/rules/humanized-docs.mdc
