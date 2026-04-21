@@ -10,15 +10,15 @@ Built for Review Party #1 — Ostfalia SoSe 2026, IN3 Group + AiSuNe Foundation.
 
 ## Tech stack
 
-| Layer | What | Why |
-|-------|------|-----|
-| Backend | Flask + Flask-SocketIO | Small API, WebSocket built in |
-| Frontend | Vanilla JS + HTML5 Canvas | Direct pixel control, no build step |
-| Real-time | SocketIO over WebSocket | Pushes arm and object state to browser |
+| Layer       | What                                   | Why                                                     |
+| ----------- | -------------------------------------- | ------------------------------------------------------- |
+| Backend     | Flask + Flask-SocketIO                 | Small API, WebSocket built in                           |
+| Frontend    | Vanilla JS + HTML5 Canvas              | Direct pixel control, no build step                     |
+| Real-time   | SocketIO over WebSocket                | Pushes arm and object state to browser                  |
 | Concurrency | Python threading + Condition variables | Arms in parallel, transfer points block without polling |
-| Config | pipeline.yaml + pyyaml | Single file controls arm count, mode, failure policies |
-| Containers | Docker Compose (6+ services) | Scales with arm count |
-| Tests | pytest (28 tests) | Routes, state model, concurrent access |
+| Config      | pipeline.yaml + pyyaml                 | Single file controls arm count, mode, failure policies  |
+| Containers  | Docker Compose (6+ services)           | Scales with arm count                                   |
+| Tests       | pytest (28 tests)                      | Routes, state model, concurrent access                  |
 
 Dependencies: Flask 3.0.3, Flask-SocketIO 5.3.7, simple-websocket 1.1.0, requests 2.32.3, pyyaml 6.0.2, nginx
 
@@ -30,12 +30,12 @@ Everything reads from `pipeline.yaml`. Adding an arm means adding 6 lines to thi
 
 ```yaml
 pipeline:
-  mode: dependency        # sequential | parallel | dependency
+  mode: dependency # sequential | parallel | dependency
   products: 3
   speed: normal
 
 failure_policy:
-  default: isolate        # stop | skip | retry | isolate
+  default: isolate # stop | skip | retry | isolate
   retry_max: 3
   retry_delay: 2.0
 
@@ -57,6 +57,7 @@ arms:
 ```
 
 The config loader (`app/models/pipeline_config.py`) reads this file and generates:
+
 - Scene layout (arm positions, handoff zones, intake/output zones) — all auto-computed from arm count
 - Arm state dict (one entry per arm, initialized to 90 degrees)
 - Valid handoff state names (`handoff_1`, `handoff_2`, ..., `handoff_{N-1}`)
@@ -68,6 +69,7 @@ Canvas dimensions, arm length, zone sizes, and font sizes all scale proportional
 ### Single Source of Truth (SSOT)
 
 `app/models/pipeline_config.py` is the **sole authority** for:
+
 - arm count, IDs, and labels
 - dependency graph / topology
 - handoff zone positions and names (`handoff_1` .. `handoff_{N-1}`)
@@ -77,14 +79,14 @@ Canvas dimensions, arm length, zone sizes, and font sizes all scale proportional
 
 All other modules are **consumers only** and must never recompute or hardcode these values:
 
-| Module | How it consumes |
-|---|---|
-| `app/models/scene_config.py` | Delegates to `generate_scene_config()` |
-| `app/models/arm_state.py` | Initializes from `generate_arm_state()` |
-| `app/routes/arm_routes.py` | Validates against `get_valid_handoff_states()` |
-| `scripts/run_demo.py` | Builds controllers from `get_arms()` / `get_topological_order()` |
+| Module                        | How it consumes                                                                                   |
+| ----------------------------- | ------------------------------------------------------------------------------------------------- |
+| `app/models/scene_config.py`  | Delegates to `generate_scene_config()`                                                            |
+| `app/models/arm_state.py`     | Initializes from `generate_arm_state()`                                                           |
+| `app/routes/arm_routes.py`    | Validates against `get_valid_handoff_states()`                                                    |
+| `scripts/run_demo.py`         | Builds controllers from `get_arms()` / `get_topological_order()`                                  |
 | `scripts/generate_compose.py` | Reads `pipeline.yaml arms:` directly (disposable output: never edit `docker-compose.yml` by hand) |
-| `app/static/js/simulation.js` | Fetches `/config` which is populated from here |
+| `app/static/js/simulation.js` | Fetches `/config` which is populated from here                                                    |
 
 Changing `pipeline.yaml` + calling `/reload_config` is the only supported way to change these values at runtime. Adding a hardcoded arm count or handoff name anywhere else is a contract violation.
 
@@ -111,12 +113,12 @@ Four policies are parsed from YAML and dispatched by the demo runner: `stop`, `s
       └─────┘     └─────┘     └─────┘
 ```
 
-| Container | Port | What it does |
-|-----------|------|-------------|
-| backend | 5000 | Flask API + SocketIO. Pure API — no pipeline execution. Health monitor for arm containers. |
-| frontend | 8080 | nginx serving static files, proxying API and WebSocket to backend |
-| demo-runner | 6000 | Executes the pipeline via HTTP calls to backend |
-| arm-1..N | 8001..800N | Independent microservices, one per arm |
+| Container   | Port       | What it does                                                                               |
+| ----------- | ---------- | ------------------------------------------------------------------------------------------ |
+| backend     | 5000       | Flask API + SocketIO. Pure API — no pipeline execution. Health monitor for arm containers. |
+| frontend    | 8080       | nginx serving static files, proxying API and WebSocket to backend                          |
+| demo-runner | 6000       | Executes the pipeline via HTTP calls to backend                                            |
+| arm-1..N    | 8001..800N | Independent microservices, one per arm                                                     |
 
 Containers find each other via Docker DNS (`http://backend:5000`, `http://arm-6:8000`).
 
@@ -151,6 +153,7 @@ curl -X POST http://localhost:8001/move -H "Content-Type: application/json" -d '
 ```
 
 Each arm microservice exposes:
+
 - `GET /health` — liveness check
 - `POST /move` — single angle command, forwarded to backend
 - `POST /sequence` — multi-step motion, runs in background
@@ -199,6 +202,7 @@ When an arm fails, downstream arms are NOT cascade-stopped immediately. Instead:
 4. Upstream arms can still place product into an **empty** handoff buffer (passive buffering), then stop
 
 State transitions:
+
 ```
 alive -> draining -> stopped     (downstream/upstream failure detected)
 dead                              (container crashed/stopped)
@@ -208,6 +212,7 @@ alive <- stopped/dead/draining   (recovery: container responds + upstream deps O
 ### Passive buffer model (TransferPoint)
 
 The TransferPoint acts as a **passive single-slot buffer**:
+
 - Upstream can place into an empty buffer regardless of downstream health
 - The product sits in the buffer until downstream picks it (or until recovery)
 - Placement is blocked only when the buffer is physically occupied
@@ -249,16 +254,19 @@ t=2s   Arm 1 finishes carrying Obj2 -> handoff_1 is empty -> places Obj2 (passiv
 Recovery distinguishes between **liveness** (container health) and **routability** (ready to participate in a pipeline).
 
 **What the health monitor does** (liveness):
+
 - Recovers arms from `dead` or `stopped` when: container responds + upstream deps OK
 - Does NOT recover `draining` arms — the demo runner owns that transition
 - This only means "container is available" (green dot), not "arm is producing"
 
 **What the health monitor does NOT do** (routability):
+
 - Does not restart the pipeline
 - Does not reconcile buffered products sitting in handoff zones
 - Does not decide execution order or which arms should re-enter flow
 
 **Recovery sequence for Arm 2 restart** (3-arm chain):
+
 1. Health monitor detects Arm 2 container alive → marks **alive** (green dot)
 2. Next cycle: Arm 3 was `stopped`, dep Arm 2 now alive → marks Arm 3 **alive**
 3. Arm 1 was already alive (container never went down)
@@ -276,23 +284,23 @@ DAG validation runs at startup. Catches cycles and missing dependency references
 
 ### Server side (demo-runner)
 
-| Constant | Value | What it does |
-|----------|-------|-------------|
-| MOVE_DURATION | 1.5s | Base time for a 180-degree sweep |
-| ACTION_DURATION | 0.4s | Pause for pick/place/hold |
-| fast | x0.8 | Sweep 1.2s, action 0.32s |
-| normal | x1.5 | Sweep 2.25s, action 0.6s |
-| slow | x3.0 | Sweep 4.5s, action 1.2s |
+| Constant        | Value | What it does                     |
+| --------------- | ----- | -------------------------------- |
+| MOVE_DURATION   | 1.5s  | Base time for a 180-degree sweep |
+| ACTION_DURATION | 0.4s  | Pause for pick/place/hold        |
+| fast            | x0.8  | Sweep 1.2s, action 0.32s         |
+| normal          | x1.5  | Sweep 2.25s, action 0.6s         |
+| slow            | x3.0  | Sweep 4.5s, action 1.2s          |
 
 The speed factor multiplies every `time.sleep()` in the pipeline.
 
 ### Browser side
 
-| Constant | Value | What it does |
-|----------|-------|-------------|
-| ANIM_DURATION | 600ms | Arm angle easing (easeOutCubic) |
+| Constant          | Value | What it does                         |
+| ----------------- | ----- | ------------------------------------ |
+| ANIM_DURATION     | 600ms | Arm angle easing (easeOutCubic)      |
 | OBJ_TRANSITION_MS | 400ms | Object position easing between zones |
-| Carried snap | 200ms | Fast snap to arm tip before sweep |
+| Carried snap      | 200ms | Fast snap to arm tip before sweep    |
 
 All drawing sizes (line width, pivot radius, font size, object box) scale proportionally with arm count via a scale factor `S = 3.5 / N`.
 
@@ -309,6 +317,7 @@ INTAKE -> [Arm 1] -> Handoff 1 -> [Arm 2] -> Handoff 2 -> ... -> [Arm N] -> OUTP
 Object states: `intake -> carried(arm1) -> handoff_1 -> carried(arm2) -> ... -> output`
 
 Transfer points use `threading.Condition` as passive single-slot buffers:
+
 - `place(obj_id)` — deposits product into buffer, wakes downstream arm
 - `wait_and_pick(cancel_check)` — blocks until product arrives; if buffer has product, returns it before cancel_check is consulted (drain-before-stop guarantee)
 - `wait_until_empty(cancel_check)` — blocks until buffer is cleared; returns True immediately if already empty (enables passive buffering regardless of downstream health)
@@ -335,9 +344,11 @@ Transfer points use `threading.Condition` as passive single-slot buffers:
 Two detection mechanisms work together:
 
 ### Instant detection (SIGTERM handler)
+
 Each arm container has a SIGTERM signal handler (`arm_server.py`). On `docker stop`, it immediately sends `POST /arms/{id}/health {"health": "dead"}` to the backend before exiting. Detection time: ~50ms.
 
 ### Polling fallback (health monitor)
+
 The backend runs a background thread (`app/services/health_monitor.py`) that pings each arm container's `/health` endpoint every `check_interval` seconds (default 2s). This catches ungraceful failures (SIGKILL, `docker kill`, `docker pause`).
 
 - 1 missed ping: arm marked as "unhealthy" (orange pulsing ring on canvas)
@@ -345,12 +356,15 @@ The backend runs a background thread (`app/services/health_monitor.py`) that pin
 - Dead arm triggers `mark_arm_failed()` which marks only that arm
 
 The health monitor also handles recovery:
+
 - Pings dead/stopped/draining arms on every cycle
 - If container responds + upstream dependencies alive -> recovered to "alive"
 - Recovery is container-health-based only (no downstream check)
 
 ### Frontend notifications
+
 Health changes are broadcast via SocketIO `arm_health` events. The browser shows:
+
 - Toast notifications (slide in from top-right, auto-dismiss after 8s)
 - Canvas visual indicators: colored dot next to arm label, status labels (FAILED/DRAINING/STOPPED)
 - Health state fetched on page load/reconnect via `GET /arms/health`
@@ -359,20 +373,20 @@ Health changes are broadcast via SocketIO `arm_health` events. The browser shows
 
 ## Problems we ran into and fixed
 
-| # | What happened | Why | Fix |
-|---|--------------|-----|-----|
-| 1 | Arms collided at handoff zones | Both arm tips converge at the same pixel at 0/180 degrees | Signal fires at 0 degrees, ACTION_DURATION pause gives clearance |
-| 2 | Arms vibrated at handoff zones | Exponential lerp never reaches target, rapid target changes caused oscillation | Time-based easeOutCubic, 600ms guaranteed completion |
-| 3 | Objects teleported on pickup | SocketIO event arrived before browser finished the arm animation | 200ms position easing bridges the network timing gap |
-| 4 | Objects followed arm during retract | Object still in "carried" state while arm retracted | Object detaches before arm starts retracting |
-| 5 | Transfer point lost signals | Event + Lock gap between signal receipt and lock acquisition | Single Condition variable, wait_for() is atomic |
-| 6 | CPU burned during polling | Busy-wait loop at 20Hz | Condition.wait_until_empty() blocks at OS level |
-| 7 | Object state corrupted on reconnect | No lock on object state dict | Added threading.Lock |
-| 8 | Arm threads crashed silently | Exceptions swallowed, pipeline hung | try/except wrapper, errors in pipeline summary |
-| 9 | Arms idle between handoffs | Signal fired after retract, adding 480ms dead time | Signal fires before retract, parallel operation |
-| 10 | Objects overflowed zone bounds | Fixed 24px spacing | Dynamic spacing compresses to fit |
-| 11 | Canvas frozen when demo ran in backend | HTTP self-calls starved Werkzeug thread pool | Moved pipeline to demo-runner container |
-| 12 | Downstream arms kept running after upstream stopped | No dependency awareness, 60s timeout before detection | Health monitor + cancel_check every 2s in TransferPoint |
+| #   | What happened                                       | Why                                                                            | Fix                                                              |
+| --- | --------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| 1   | Arms collided at handoff zones                      | Both arm tips converge at the same pixel at 0/180 degrees                      | Signal fires at 0 degrees, ACTION_DURATION pause gives clearance |
+| 2   | Arms vibrated at handoff zones                      | Exponential lerp never reaches target, rapid target changes caused oscillation | Time-based easeOutCubic, 600ms guaranteed completion             |
+| 3   | Objects teleported on pickup                        | SocketIO event arrived before browser finished the arm animation               | 200ms position easing bridges the network timing gap             |
+| 4   | Objects followed arm during retract                 | Object still in "carried" state while arm retracted                            | Object detaches before arm starts retracting                     |
+| 5   | Transfer point lost signals                         | Event + Lock gap between signal receipt and lock acquisition                   | Single Condition variable, wait_for() is atomic                  |
+| 6   | CPU burned during polling                           | Busy-wait loop at 20Hz                                                         | Condition.wait_until_empty() blocks at OS level                  |
+| 7   | Object state corrupted on reconnect                 | No lock on object state dict                                                   | Added threading.Lock                                             |
+| 8   | Arm threads crashed silently                        | Exceptions swallowed, pipeline hung                                            | try/except wrapper, errors in pipeline summary                   |
+| 9   | Arms idle between handoffs                          | Signal fired after retract, adding 480ms dead time                             | Signal fires before retract, parallel operation                  |
+| 10  | Objects overflowed zone bounds                      | Fixed 24px spacing                                                             | Dynamic spacing compresses to fit                                |
+| 11  | Canvas frozen when demo ran in backend              | HTTP self-calls starved Werkzeug thread pool                                   | Moved pipeline to demo-runner container                          |
+| 12  | Downstream arms kept running after upstream stopped | No dependency awareness, 60s timeout before detection                          | Health monitor + cancel_check every 2s in TransferPoint          |
 
 ### Remaining limitations
 
@@ -383,28 +397,28 @@ Health changes are broadcast via SocketIO `arm_health` events. The browser shows
 
 ## API reference
 
-| Endpoint | Method | Body | What it does |
-|----------|--------|------|-------------|
-| / | GET | — | Simulation page |
-| /health | GET | — | Health check |
-| /set_angle | POST | {"arm_id": 1, "angle": 45} | Move an arm |
-| /state | GET | — | All arm states |
-| /state/\<id\> | GET | — | One arm's state |
-| /config | GET | — | Scene layout (dynamic, from pipeline.yaml) |
-| /object_event | POST | {"object_id": "Obj1", "state": "carried", "carrier_arm": 1} | Track object position |
-| /objects | GET | — | All tracked objects |
-| /objects/reset | POST | — | Clear tracked objects |
-| /log | POST | {"source": "arm_1", "message": "..."} | Send log to browser panel |
-| /arms/health | GET | — | All arm health states |
-| /arms/\<id\>/health | POST | {"health": "alive"} | Report arm health |
-| /arms/\<id\>/stop | POST | {"reason": "..."} | Stop arm + cascade to downstream |
-| /arms/\<id\>/allowed | GET | — | Check if arm can execute |
-| /pipeline/status | GET | — | Full pipeline: health, DAG validity, topo order |
-| /reload_config | POST | — | Reload pipeline.yaml into memory. Does NOT reset runtime state. Returns arm count + DAG validity. |
-| /restart_pipeline | POST | — | Reinitialize arm state + clear tracked objects using currently-loaded config. Does NOT re-read YAML. |
-| /demo/start | POST | {"products": 3, "speed": "normal"} | Start demo (proxied to demo-runner) |
-| /demo/status | GET | — | Is demo running |
-| /demo/stop | POST | — | Stop demo |
+| Endpoint             | Method | Body                                                        | What it does                                                                                         |
+| -------------------- | ------ | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| /                    | GET    | —                                                           | Simulation page                                                                                      |
+| /health              | GET    | —                                                           | Health check                                                                                         |
+| /set_angle           | POST   | {"arm_id": 1, "angle": 45}                                  | Move an arm                                                                                          |
+| /state               | GET    | —                                                           | All arm states                                                                                       |
+| /state/\<id\>        | GET    | —                                                           | One arm's state                                                                                      |
+| /config              | GET    | —                                                           | Scene layout (dynamic, from pipeline.yaml)                                                           |
+| /object_event        | POST   | {"object_id": "Obj1", "state": "carried", "carrier_arm": 1} | Track object position                                                                                |
+| /objects             | GET    | —                                                           | All tracked objects                                                                                  |
+| /objects/reset       | POST   | —                                                           | Clear tracked objects                                                                                |
+| /log                 | POST   | {"source": "arm_1", "message": "..."}                       | Send log to browser panel                                                                            |
+| /arms/health         | GET    | —                                                           | All arm health states                                                                                |
+| /arms/\<id\>/health  | POST   | {"health": "alive"}                                         | Report arm health                                                                                    |
+| /arms/\<id\>/stop    | POST   | {"reason": "..."}                                           | Stop arm + cascade to downstream                                                                     |
+| /arms/\<id\>/allowed | GET    | —                                                           | Check if arm can execute                                                                             |
+| /pipeline/status     | GET    | —                                                           | Full pipeline: health, DAG validity, topo order                                                      |
+| /reload_config       | POST   | —                                                           | Reload pipeline.yaml into memory. Does NOT reset runtime state. Returns arm count + DAG validity.    |
+| /restart_pipeline    | POST   | —                                                           | Reinitialize arm state + clear tracked objects using currently-loaded config. Does NOT re-read YAML. |
+| /demo/start          | POST   | {"products": 3, "speed": "normal"}                          | Start demo (proxied to demo-runner)                                                                  |
+| /demo/status         | GET    | —                                                           | Is demo running                                                                                      |
+| /demo/stop           | POST   | —                                                           | Stop demo                                                                                            |
 
 Object states: `intake`, `carried`, `handoff_1`, `handoff_2`, ..., `handoff_{N-1}`, `output`
 
@@ -413,6 +427,7 @@ Object states: `intake`, `carried`, `handoff_1`, `handoff_2`, ..., `handoff_{N-1
 ## How to run
 
 **Docker:**
+
 ```bash
 docker compose up --build
 # http://localhost:5000
@@ -420,6 +435,7 @@ docker compose up --build
 ```
 
 **Local:**
+
 ```bash
 pip install -r requirements.txt
 python run.py
@@ -428,6 +444,7 @@ python scripts/run_demo.py --speed normal --products 3
 ```
 
 **Add an arm:**
+
 ```bash
 # 1. Edit pipeline.yaml
 # 2. Regenerate compose:
@@ -437,12 +454,14 @@ docker compose up --build
 ```
 
 **Stop an arm (test failure propagation):**
+
 ```bash
 docker stop interact-arm-6-1
 # Arms 7+ stop within ~6 seconds
 ```
 
 **Hot-reload config (two-step, intentionally separated):**
+
 ```bash
 # Step 1: reload YAML into memory — does NOT interrupt running simulation
 curl -X POST http://localhost:5000/reload_config
@@ -452,10 +471,12 @@ curl -X POST http://localhost:5000/reload_config
 curl -X POST http://localhost:5000/restart_pipeline
 # Response: {"status":"ok","arms":N}
 ```
+
 Config reload and runtime mutation are separate concerns. `/reload_config`
 never touches runtime state; `/restart_pipeline` never re-reads YAML.
 
 **Run tests:**
+
 ```bash
 pytest tests/ -v    # 28 tests
 ```
