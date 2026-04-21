@@ -122,7 +122,11 @@ def is_pipeline_stopped():
 
 
 def check_pipeline_recovery():
-    """Clear pipeline-stopped flag if all critical arms are healthy again."""
+    """Clear pipeline-stopped flag if all critical arms are healthy again.
+
+    A critical arm in 'draining' state still counts as not-recovered:
+    the pipeline is winding down, not ready for new work.
+    """
     global _pipeline_stopped
     if not _pipeline_stopped:
         return
@@ -130,8 +134,8 @@ def check_pipeline_recovery():
     critical_ids = [aid for aid in _state if is_critical(aid)]
     with _lock:
         for aid in critical_ids:
-            if _health.get(aid, {}).get("health") in ("dead", "stopped"):
-                return  # still have a failed critical arm
+            if _health.get(aid, {}).get("health") in ("dead", "stopped", "draining"):
+                return  # still have a degraded critical arm
         _pipeline_stopped = False
 
 

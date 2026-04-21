@@ -84,8 +84,16 @@ def _monitor_loop():
             h = arm_state.get_health(arm_id)
             current = h["health"]
 
-            # ── Recovery path: dead/stopped/draining arms might have come back ──
-            if current in ("dead", "stopped", "draining"):
+            # ── Recovery path: dead/stopped arms might have come back ──
+            # "draining" is NOT included — the demo runner owns that state.
+            # A draining arm is actively processing its last product; the
+            # health monitor must not override it to "alive" just because
+            # the container responds. The demo runner transitions
+            # draining -> stopped when the buffer empties, and THEN the
+            # health monitor can recover stopped -> alive.
+            # This separates liveness (container health) from routability
+            # (ready to participate in a new pipeline run).
+            if current in ("dead", "stopped"):
                 alive = _check_arm(arm_id, timeout)
                 if alive:
                     # Recovery = container health + upstream availability.
@@ -160,4 +168,4 @@ def stop():
     """Stop the health monitor."""
     global _running
     _running = False
-    print("[HealthMonitor] Stopped")    
+    print("[HealthMonitor] Stopped")

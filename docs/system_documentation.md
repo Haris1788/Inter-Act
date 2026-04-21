@@ -221,15 +221,32 @@ t=2s   Arm 1 finishes carrying Obj2 -> handoff_1 is empty -> places Obj2 (passiv
 - `retry` — retry up to `retry_max` times with `retry_delay` between attempts
 - `isolate` — stop this arm but don't propagate to downstream
 
-### Recovery
+### Recovery: liveness vs routability
 
-Recovery is **staged**, not automatic:
+Recovery distinguishes between **liveness** (container health) and **routability** (ready to participate in a pipeline).
 
-1. Container restart detected by health monitor (container alive + upstream deps OK)
-2. Arm health transitions from dead/stopped/draining -> **alive** (green dot)
-3. Pipeline does NOT auto-restart. User must click "Run Demo" for a new pipeline run.
+**What the health monitor does** (liveness):
 
-Recovery is based on **container health only**. An arm is "alive" if its container responds, regardless of downstream availability. Line availability is a separate concern from arm health.
+- Recovers arms from `dead` or `stopped` when: container responds + upstream deps OK
+- Does NOT recover `draining` arms — the demo runner owns that transition
+- This only means "container is available" (green dot), not "arm is producing"
+
+**What the health monitor does NOT do** (routability):
+
+- Does not restart the pipeline
+- Does not reconcile buffered products sitting in handoff zones
+- Does not decide execution order or which arms should re-enter flow
+
+**Recovery sequence for Arm 2 restart** (3-arm chain):
+
+1. Health monitor detects Arm 2 container alive → marks **alive** (green dot)
+2. Next cycle: Arm 3 was `stopped`, dep Arm 2 now alive → marks Arm 3 **alive**
+3. Arm 1 was already alive (container never went down)
+4. All dots green — arms are **available**, not **active**
+5. User clicks "Run Demo" → new pipeline starts fresh (objects reset)
+6. Buffered products from the previous run are cleared on reset
+
+The key principle: recovery means "available for the next pipeline run," not "resume the previous run." Liveness and routability are separate concerns.
 
 DAG validation runs at startup. Catches cycles and missing dependency references before anything starts.
 
