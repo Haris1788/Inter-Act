@@ -57,9 +57,18 @@ def load_pipeline_config():
 
 
 class TransferPoint:
-    """Condition-based handshake between two adjacent arms.
+    """Passive buffer between two adjacent arms (single-slot).
 
-    All reads/writes inside the Condition's lock — no race gap.
+    Models a physical handoff zone that can hold exactly one product.
+    Upstream places product → product sits until downstream picks it.
+    The buffer is passive: placement does not require downstream to be alive.
+
+    ATOMICITY: All reads/writes execute under the Condition's internal lock.
+    In wait_and_pick, the emptiness check (while _object_id is None) and
+    the cancel_check both run under the same lock acquisition. Since place()
+    also acquires this lock, no product can arrive between the emptiness
+    check and the cancel decision — this is a single synchronized state
+    transition, not two separate unsynchronized checks.
     """
 
     def __init__(self, name):
@@ -68,53 +77,120 @@ class TransferPoint:
         self._cond = threading.Condition()
 
     def place(self, object_id):
+        """Place a product into the buffer. Blocks if lock is held by wait_and_pick."""
         with self._cond:
             self._object_id = object_id
             self._cond.notify_all()
 
     def wait_and_pick(self, timeout=60.0, cancel_check=None):
-        """Wait for an object. If cancel_check returns False, abort immediately.
+        """Wait for a product, pick it atomically.
 
-        Polls cancel_check every 2 seconds so downstream arms react
-        quickly when upstream is stopped — not after a 60-second timeout.
+        Returns object_id on success, None on cancel or timeout.
+
+        DRAIN-BEFORE-STOP INVARIANT: a product present in the buffer at any
+        point during the wait is always returned, even if cancel_check also
+        reports upstream failure. This is essential for the passive-buffer
+        failure model — a product placed by upstream just before it died
+        must not be orphaned.
+
+        Implementation detail: cancel_check is called WITHOUT holding the
+        Condition lock, so a slow HTTP-based cancel_check does not block
+        upstream place() calls. After cancel_check returns False, the buffer
+        is re-checked under the lock to catch any product placed during the
+        cancel_check window; that product wins over the cancel decision.
         """
-        import time as _time
-        deadline = _time.time() + timeout
+        deadline = time.time() + timeout
         with self._cond:
-            while self._object_id is None:
-                # Check if this arm has been cancelled (upstream stopped)
-                if cancel_check and not cancel_check():
-                    return None
+            while True:
+                # Atomic emptiness-and-pick check. If a product is present,
+                # take it regardless of prior or pending cancel signals.
+                if self._object_id is not None:
+                    obj_id = self._object_id
+                    self._object_id = None
+                    self._cond.notify_all()
+                    return obj_id
 
-                remaining = deadline - _time.time()
+                remaining = deadline - time.time()
                 if remaining <= 0:
                     return None
 
-                # Wait in short intervals so cancel_check runs frequently
-                self._cond.wait(timeout=min(remaining, 2.0))
+                if cancel_check:
+                    # Release the lock during cancel_check so a slow HTTP
+                    # call does not block an upstream place() that may be
+                    # delivering the final product.
+                    self._cond.release()
+                    try:
+                        cancelled = not cancel_check()
+                    finally:
+                        self._cond.acquire()
 
-            obj_id = self._object_id
-            self._object_id = None
-            self._cond.notify_all()
-            return obj_id
+                    # Drain-before-stop: if a product arrived during the
+                    # cancel_check window, pick it and ignore the cancel.
+                    if self._object_id is not None:
+                        obj_id = self._object_id
+                        self._object_id = None
+                        self._cond.notify_all()
+                        return obj_id
+
+                    if cancelled:
+                        return None
+
+                # Wait for notification or short-interval wakeup to re-check.
+                self._cond.wait(timeout=min(remaining, 2.0))
 
     def wait_until_empty(self, timeout=30.0, cancel_check=None):
-        """Wait until cleared. Polls cancel_check every 2 seconds."""
-        import time as _time
-        deadline = _time.time() + timeout
+        """Wait until buffer is empty (downstream picked the product).
+
+        Returns True if empty, False on cancel or timeout.
+        If the buffer is already empty, returns True immediately — the
+        cancel_check never fires. This enables passive buffering: an upstream
+        arm can always place into an empty buffer regardless of downstream health.
+
+        Same cancel_check-outside-lock pattern as wait_and_pick: a slow HTTP
+        call does not block the downstream arm from picking during the window.
+        """
+        deadline = time.time() + timeout
         with self._cond:
-            while self._object_id is not None:
-                if cancel_check and not cancel_check():
-                    return False
-                remaining = deadline - _time.time()
+            while True:
+                if self._object_id is None:
+                    return True
+
+                remaining = deadline - time.time()
                 if remaining <= 0:
                     return False
+
+                if cancel_check:
+                    self._cond.release()
+                    try:
+                        cancelled = not cancel_check()
+                    finally:
+                        self._cond.acquire()
+
+                    # Buffer may have emptied during cancel_check (downstream
+                    # picked the product). Honor that before the cancel.
+                    if self._object_id is None:
+                        return True
+
+                    if cancelled:
+                        return False
+
                 self._cond.wait(timeout=min(remaining, 2.0))
-            return True
 
     def is_empty(self):
+        """Check if the buffer is empty (no product waiting)."""
         with self._cond:
             return self._object_id is None
+
+
+# ── Drain Stop Exception ─────────────────────────────────
+
+class _DrainComplete(Exception):
+    """Raised when an arm stops because upstream/downstream is dead and no products remain.
+
+    This is NOT a failure — it's a graceful stop after draining the handoff zone.
+    Caught separately from real errors to avoid triggering failure cascades.
+    """
+    pass
 
 
 # ── Arm Controller (runs in its own thread) ────────────────
@@ -127,7 +203,9 @@ class ArmController:
                  num_products, log_fn, handoff_place=None,
                  set_angle_fn=None, object_event_fn=None,
                  failure_policy=None,
-                 is_allowed_fn=None, on_started_fn=None, on_failed_fn=None):
+                 is_allowed_fn=None, on_started_fn=None, on_failed_fn=None,
+                 upstream_alive_fn=None, downstream_alive_fn=None,
+                 on_health_change_fn=None):
         self.arm_id = arm_id
         self.host = host
         self.speed = speed_factor
@@ -142,9 +220,14 @@ class ArmController:
         self._object_event = object_event_fn
         self.failure_policy = failure_policy or {"action": "stop"}
         # Dependency-aware callbacks
-        self._is_allowed = is_allowed_fn    # () -> bool: can this arm execute?
-        self._on_started = on_started_fn    # () -> None: mark arm as alive
-        self._on_failed = on_failed_fn      # (error) -> None: mark arm as dead, propagate
+        self._is_allowed = is_allowed_fn          # () -> bool: can this arm execute?
+        self._on_started = on_started_fn          # () -> None: mark arm as alive
+        self._on_failed = on_failed_fn            # (error) -> None: mark arm as dead, propagate
+        # Drain-aware callbacks and state
+        self._upstream_alive = upstream_alive_fn   # () -> bool: is upstream arm alive?
+        self._downstream_alive = downstream_alive_fn  # () -> bool: is downstream arm alive?
+        self._on_health_change = on_health_change_fn  # (status, error) -> None: report health
+        self._draining = False                     # True once upstream/downstream failure detected
 
     def move_to(self, angle):
         if self._set_angle:
@@ -158,6 +241,16 @@ class ArmController:
             self._object_event(obj_id, state, carrier_arm)
         else:
             send_object_event(self.host, obj_id, state, carrier_arm)
+
+    def _report_state_change(self, state, reason=None):
+        """Report a pipeline state change (draining, stopped) without cascade."""
+        if self._on_health_change:
+            self._on_health_change(state, reason)
+
+    def _report_drain_stop(self, reason):
+        """Report this arm as stopped after drain completion (no cascade)."""
+        self.error = reason
+        self._report_state_change("stopped", reason)
 
     def run(self):
         # Check if this arm is allowed to start (upstream dependencies alive)
@@ -178,18 +271,33 @@ class ArmController:
                 self._on_failed(str(e))
 
     def _process_one_product(self, obj_id):
-        """Process a single product through this arm's cycle."""
+        """Process a single product through this arm's cycle.
+
+        Raises _DrainComplete if upstream is dead and handoff is empty,
+        or if downstream is dead and product can't be placed.
+        """
         # Wait for object from upstream (or pick from intake)
         if self.input_tp is not None:
             self.log(self.arm_id, f"Waiting for {obj_id}...")
+
+            # Cancel if this arm is stopped OR upstream is dead (drain complete)
+            def input_cancel():
+                if self._is_allowed and not self._is_allowed():
+                    return False
+                if self._upstream_alive and not self._upstream_alive():
+                    return False
+                return True
+
             picked_id = self.input_tp.wait_and_pick(
                 timeout=60.0,
-                cancel_check=self._is_allowed,  # checks every 2s if upstream is still alive
+                cancel_check=input_cancel,
             )
             if not picked_id:
-                # Distinguish between timeout and cancellation
+                # Upstream dead + handoff empty → drain complete (graceful stop)
+                if self._upstream_alive and not self._upstream_alive():
+                    raise _DrainComplete("upstream arm failed, no more products")
                 if self._is_allowed and not self._is_allowed():
-                    raise RuntimeError("upstream arm stopped")
+                    raise RuntimeError("this arm was stopped")
                 raise TimeoutError(f"TIMEOUT waiting for {obj_id}")
             obj_id = picked_id
             self.log(self.arm_id, f"Picking {obj_id} from transfer point")
@@ -209,7 +317,23 @@ class ArmController:
 
         # Place: signal downstream, retract in parallel
         if self.output_tp is not None:
-            self.output_tp.wait_until_empty(timeout=30.0, cancel_check=self._is_allowed)
+            # Cancel if this arm stopped OR downstream is dead
+            def output_cancel():
+                if self._is_allowed and not self._is_allowed():
+                    return False
+                if self._downstream_alive and not self._downstream_alive():
+                    return False
+                return True
+
+            can_place = self.output_tp.wait_until_empty(
+                timeout=30.0, cancel_check=output_cancel,
+            )
+            if not can_place:
+                # Can't deliver — downstream dead or handoff full. Retract safely.
+                self.log(self.arm_id, f"Cannot place {obj_id}, retracting safely...")
+                self.move_to(REST_ANGLE)
+                raise _DrainComplete("downstream arm unavailable, cannot deliver product")
+
             self.log(self.arm_id, f"Placed {obj_id}, signaling...")
             self.emit_object(obj_id, self.handoff_place)
             self.output_tp.place(obj_id)
@@ -225,18 +349,51 @@ class ArmController:
 
     def _run_cycle(self):
         for product_num in range(1, self.num_products + 1):
-            # Check dependency health before each product
+            # Check this arm's own health
             if self._is_allowed and not self._is_allowed():
-                self.error = "stopped by upstream failure"
-                self.log(self.arm_id, "STOPPED: upstream dependency failed")
-                if self._on_failed:
-                    self._on_failed("upstream dependency failed")
+                self.error = "this arm was stopped"
+                self.log(self.arm_id, "STOPPED: this arm is not allowed to run")
                 return
+
+            # ── Upstream failure detection (middle/last arms) ──
+            # Enter DRAINING if upstream arm is dead. The actual drain
+            # happens in _process_one_product via wait_and_pick: if the
+            # TP has product it's picked first; if empty, _DrainComplete.
+            if self.input_tp is not None:
+                if not self._draining and self._upstream_alive and not self._upstream_alive():
+                    self._draining = True
+                    self._report_state_change("draining")
+                    self.log(self.arm_id, "Upstream failed — draining remaining products")
+
+            # ── Downstream failure detection (first arm, passive buffer) ──
+            # First arm can still place into an EMPTY buffer even if downstream
+            # is dead — the product sits there until recovery. But once the
+            # buffer is occupied (or already drained once), stop.
+            if self.input_tp is None and self._downstream_alive and not self._downstream_alive():
+                if self._draining:
+                    # Already filled buffer on previous iteration → stop
+                    self._report_drain_stop("buffer filled, awaiting downstream recovery")
+                    return
+                if self.output_tp and not self.output_tp.is_empty():
+                    # Buffer occupied, downstream dead → can't place, stop
+                    self._report_state_change("draining")
+                    self._report_drain_stop("downstream failed, buffer occupied")
+                    return
+                # Buffer empty → allow ONE more product to fill it (passive buffer)
+                self._draining = True
+                self._report_state_change("draining")
+                self.log(self.arm_id, "Downstream failed — filling buffer with final product")
+                # Fall through: pick from intake, carry, place into empty buffer
 
             obj_id = f"Obj{product_num}"
             try:
                 self._process_one_product(obj_id)
                 self.processed += 1
+            except _DrainComplete as e:
+                # Graceful drain stop — report as stopped, no cascade
+                self.log(self.arm_id, f"Drain complete: {e}")
+                self._report_drain_stop(str(e))
+                return
             except Exception as e:
                 action = self.failure_policy.get("action", "stop")
 
@@ -312,8 +469,11 @@ def _run_pipeline_core(speed_factor, num_products,
 
     Health callbacks:
         is_allowed_fn(arm_id) -> bool: check if arm can execute
-        on_health_fn(arm_id, status): report health change
+        on_health_fn(arm_id, status, error=None): report health change
         on_failed_fn(arm_id, error): report failure, propagates to dependents
+
+    Drain behavior: when an arm dies, downstream arms continue processing
+    any products already in handoff zones, then stop gracefully.
     """
     global _browser_log_fn
     _browser_log_fn = log_fn
@@ -347,7 +507,7 @@ def _run_pipeline_core(speed_factor, num_products,
 
     # Build health callback factories (closures capture arm_id)
     def make_is_allowed(aid):
-        if is_allowed_fn:
+        if is_allowed_fn and aid is not None:
             return lambda: is_allowed_fn(aid)
         return None
 
@@ -361,6 +521,11 @@ def _run_pipeline_core(speed_factor, num_products,
             return lambda err: on_failed_fn(aid, err)
         return None
 
+    def make_on_health_change(aid):
+        if on_health_fn:
+            return lambda status, error=None: on_health_fn(aid, status, error)
+        return None
+
     # Build arm controllers based on mode
     controllers = []
 
@@ -372,6 +537,8 @@ def _run_pipeline_core(speed_factor, num_products,
             input_tp = tps[i - 1] if i > 0 else None
             output_tp = tps[i] if i < n - 1 else None
             handoff = f"handoff_{i + 1}" if i < n - 1 else None
+            upstream_id = arm_ids[i - 1] if i > 0 else None
+            downstream_id = arm_ids[i + 1] if i < n - 1 else None
 
             ctrl = ArmController(
                 arm_id=arm_cfg["id"],
@@ -388,6 +555,9 @@ def _run_pipeline_core(speed_factor, num_products,
                 is_allowed_fn=make_is_allowed(arm_cfg["id"]),
                 on_started_fn=make_on_started(arm_cfg["id"]),
                 on_failed_fn=make_on_failed(arm_cfg["id"]),
+                upstream_alive_fn=make_is_allowed(upstream_id),
+                downstream_alive_fn=make_is_allowed(downstream_id),
+                on_health_change_fn=make_on_health_change(arm_cfg["id"]),
             )
             controllers.append(ctrl)
 
@@ -428,11 +598,13 @@ def _run_pipeline_core(speed_factor, num_products,
 
             # Input: transfer point from first dependency (linear chains have one)
             input_tp = tps.get((deps[0], arm_id)) if deps else None
+            upstream_id = deps[0] if deps else None
 
             # Output: transfer points to all arms that depend on this one
             output_keys = [(arm_id, child) for child in
                            [a["id"] for a in arms_cfg if arm_id in a.get("depends_on", [])]]
             output_tp = tps[output_keys[0]] if len(output_keys) == 1 else None
+            downstream_id = output_keys[0][1] if output_keys else None
 
             # Handoff name: based on the output transfer point index
             handoff = None
@@ -456,6 +628,9 @@ def _run_pipeline_core(speed_factor, num_products,
                 is_allowed_fn=make_is_allowed(arm_cfg["id"]),
                 on_started_fn=make_on_started(arm_cfg["id"]),
                 on_failed_fn=make_on_failed(arm_cfg["id"]),
+                upstream_alive_fn=make_is_allowed(upstream_id),
+                downstream_alive_fn=make_is_allowed(downstream_id),
+                on_health_change_fn=make_on_health_change(arm_cfg["id"]),
             )
             controllers.append(ctrl)
 
@@ -475,6 +650,7 @@ def _run_pipeline_core(speed_factor, num_products,
                 is_allowed_fn=make_is_allowed(arm_cfg["id"]),
                 on_started_fn=make_on_started(arm_cfg["id"]),
                 on_failed_fn=make_on_failed(arm_cfg["id"]),
+                on_health_change_fn=make_on_health_change(arm_cfg["id"]),
             )
             controllers.append(ctrl)
 
@@ -528,8 +704,8 @@ def run_pipeline(host, speed_factor, num_products):
     def http_is_allowed(arm_id):
         return is_arm_allowed_http(host, arm_id)
 
-    def http_on_health(arm_id, status):
-        send_health(host, arm_id, status)
+    def http_on_health(arm_id, status, error=None):
+        send_health(host, arm_id, status, error)
 
     def http_on_failed(arm_id, error):
         send_stop_arm(host, arm_id, error)

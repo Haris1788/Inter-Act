@@ -190,12 +190,30 @@ def get_arms_health():
 
 @arm_bp.route('/arms/<int:arm_id>/health', methods=['POST'])
 def set_arm_health(arm_id):
-    """Set health status for an arm (called by demo-runner)."""
+    """Set health status for an arm (called by arm containers and demo-runner).
+
+    When health is 'dead', marks only this arm — downstream arms are NOT
+    cascade-stopped. They drain remaining products from handoff zones, then
+    individually report as 'stopped' via this same endpoint.
+    """
     data = request.get_json(silent=True) or {}
     health = data.get('health', 'alive')
     error = data.get('error')
-    arm_state.set_health(arm_id, health, error)
-    socketio.emit('arm_health', {"arm_id": arm_id, "health": health, "error": error})
+
+    if health == 'dead':
+        arm_state.mark_arm_failed(arm_id, error or 'container stopped')
+        socketio.emit('arm_health', {"arm_id": arm_id, "health": "dead", "error": error})
+
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        socketio.emit('log_message', {
+            'timestamp': timestamp,
+            'source': 'pipeline',
+            'message': f'Arm {arm_id} FAILED: {error or "unknown"}',
+        })
+    else:
+        arm_state.set_health(arm_id, health, error)
+        socketio.emit('arm_health', {"arm_id": arm_id, "health": health, "error": error})
+
     return jsonify({"status": "ok"})
 
 

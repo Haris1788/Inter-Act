@@ -56,6 +56,9 @@ const OBJ_TRANSITION_MS = 400; // ms for object position easing between states
 let deviceScale = window.devicePixelRatio || 1;
 let viewScale = 1;
 
+/* ── Arm Health ───────────────────────────────────────── */
+let armHealthStates = {}; // {armId: {health: "alive"|"dead"|"stopped"|"unhealthy", error: string|null}}
+
 /* ── Backend URL (empty = same-origin, set by nginx in container mode) ── */
 const BACKEND_URL = window.BACKEND_URL || "";
 
@@ -84,6 +87,16 @@ socket.on("connect", () => {
         data.objects.forEach((obj) => {
           trackedObjects[obj.object_id] = obj;
         });
+      }
+    });
+  // Fetch current arm health so canvas shows correct state on reconnect
+  fetch(BACKEND_URL + "/arms/health")
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.arms) {
+        for (const [id, h] of Object.entries(data.arms)) {
+          armHealthStates[parseInt(id)] = { health: h.health, error: h.error };
+        }
       }
     });
 });
@@ -124,6 +137,10 @@ socket.on("objects_reset", () => {
   trackedObjects = {};
   objectPositions = {};
   objectTransitions = {};
+});
+
+socket.on("arm_health", (data) => {
+  handleHealthUpdate(data);
 });
 
 socket.on("log_message", (data) => {
@@ -329,25 +346,110 @@ function createBackgroundCanvas() {
 /* ── Drawing: Arms (per frame) ─────────────────────────── */
 
 function drawArm(arm, angleDeg) {
-  /** Draw a single arm at the given angle (degrees). Returns tip position. */
+  /** Draw a single arm at the given angle, with health-aware visual indicators. */
+  const health = armHealthStates[arm.id]?.health || "idle";
+  const isDead = health === "dead";
+  const isStopped = health === "stopped";
+  const isDraining = health === "draining";
+  const isUnhealthy = health === "unhealthy";
+  const isDegraded = isDead || isStopped;
+
   const angleRad = angleDeg * (Math.PI / 180);
   const tipX = arm.pivot_x + arm.length * Math.cos(angleRad);
   const tipY = arm.pivot_y - arm.length * Math.sin(angleRad);
 
+  // Dim the arm when dead or stopped
+  ctx.save();
+  if (isDegraded) ctx.globalAlpha = isDead ? 0.3 : 0.4;
+
+  // Arm line
   ctx.beginPath();
   ctx.moveTo(arm.pivot_x, arm.pivot_y);
   ctx.lineTo(tipX, tipY);
-  ctx.strokeStyle = arm.color;
+  ctx.strokeStyle = isDegraded ? "#999" : arm.color;
   ctx.lineWidth = ARM_LINE_WIDTH;
   ctx.lineCap = "round";
   ctx.stroke();
 
+  // Tip circle
   ctx.beginPath();
   ctx.arc(tipX, tipY, TIP_RADIUS, 0, Math.PI * 2);
-  ctx.fillStyle = arm.color;
+  ctx.fillStyle = isDegraded ? "#999" : arm.color;
   ctx.fill();
   ctx.strokeStyle = "#fff";
   ctx.lineWidth = Math.max(1, Math.round(1.5 * S));
+  ctx.stroke();
+
+  ctx.restore();
+
+  // ── Health status indicators (drawn at full opacity) ──
+  if (isDead) {
+    // Red X marker above pivot
+    const sz = 7;
+    const markerY = arm.pivot_y - PIVOT_RADIUS - 18;
+    ctx.strokeStyle = "#e74c3c";
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(arm.pivot_x - sz, markerY - sz);
+    ctx.lineTo(arm.pivot_x + sz, markerY + sz);
+    ctx.moveTo(arm.pivot_x + sz, markerY - sz);
+    ctx.lineTo(arm.pivot_x - sz, markerY + sz);
+    ctx.stroke();
+    // "FAILED" label
+    ctx.fillStyle = "#e74c3c";
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("FAILED", arm.pivot_x, markerY - sz - 5);
+  } else if (isStopped) {
+    // "STOPPED" label above pivot
+    const labelY = arm.pivot_y - PIVOT_RADIUS - 10;
+    ctx.fillStyle = "#95a5a6";
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("STOPPED", arm.pivot_x, labelY);
+  } else if (isDraining) {
+    // "DRAINING" label above pivot — arm is winding down
+    const labelY = arm.pivot_y - PIVOT_RADIUS - 10;
+    ctx.fillStyle = "#f39c12";
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("DRAINING", arm.pivot_x, labelY);
+  } else if (isUnhealthy) {
+    // Pulsing orange ring around pivot
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 300);
+    ctx.beginPath();
+    ctx.arc(arm.pivot_x, arm.pivot_y, PIVOT_RADIUS + 5, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(243, 156, 18, ${0.3 + pulse * 0.5})`;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+
+  // ── Health status dot to the left of the arm label: 🔴 Arm 1 ──
+  const dotRadius = 4;
+  const dotColor = isDead
+    ? "#e74c3c" // red
+    : isStopped
+      ? "#e74c3c" // red
+      : isDraining
+        ? "#f39c12" // orange (winding down)
+        : isUnhealthy
+          ? "#f39c12" // orange (health issue)
+          : "#27ae60"; // green
+  // Label is drawn on background canvas at this position (center-aligned)
+  const labelY = arm.pivot_y + arm.length + Math.round(18 * S);
+  ctx.font = ARM_LABEL_FONT;
+  ctx.textAlign = "center";
+  const labelWidth = ctx.measureText(arm.label).width;
+  // Place dot just left of the first letter, vertically centered with text
+  const dotX = arm.pivot_x - labelWidth / 2 - dotRadius - 4;
+  const dotCenterY = labelY - 4; // shift up from baseline to visual center
+  ctx.beginPath();
+  ctx.arc(dotX, dotCenterY, dotRadius, 0, Math.PI * 2);
+  ctx.fillStyle = dotColor;
+  ctx.fill();
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1.5;
   ctx.stroke();
 
   return { x: tipX, y: tipY };
@@ -538,7 +640,128 @@ function setupCanvasResolution() {
     0,
     0,
   );
+
+  // Match log panel width to canvas so they stay visually aligned
+  logPanel.style.width = `${displayWidth}px`;
 }
+
+/* ── Arm Health Notifications ─────────────────────────── */
+
+const NOTIF_DURATION = 8000; // auto-dismiss after 8 seconds
+const MAX_NOTIFICATIONS = 5;
+let notifications = [];
+let nextNotifId = 0;
+
+// Create notification container (fixed top-right)
+const notifContainer = document.createElement("div");
+notifContainer.id = "notif-container";
+document.body.appendChild(notifContainer);
+
+function handleHealthUpdate(data) {
+  /** Process an arm_health event: update state and show notification on change. */
+  if (!data || data.arm_id == null) return;
+
+  const armId = data.arm_id;
+  const prev = armHealthStates[armId]?.health || "idle";
+  const next = data.health;
+
+  armHealthStates[armId] = { health: next, error: data.error || null };
+
+  // Only notify on actual state changes
+  if (prev === next) return;
+
+  const label =
+    config?.arms?.find((a) => a.id === armId)?.label || `Arm ${armId}`;
+
+  switch (next) {
+    case "dead":
+      addNotification(
+        "error",
+        `${label} — Failed`,
+        data.error || "Container stopped responding",
+      );
+      break;
+    case "draining":
+      addNotification(
+        "info",
+        `${label} — Draining`,
+        data.error || "Processing remaining products",
+      );
+      break;
+    case "stopped":
+      addNotification(
+        "warning",
+        `${label} — Stopped`,
+        data.error || "Drain complete",
+      );
+      break;
+    case "unhealthy":
+      addNotification(
+        "warning",
+        `${label} — Unhealthy`,
+        data.error || "Health check failed",
+      );
+      break;
+    case "alive":
+      // Notify recovery from any degraded state
+      if (prev !== "idle") {
+        addNotification("success", `${label} — Recovered`, "Back online");
+      }
+      break;
+  }
+}
+
+function addNotification(type, title, message) {
+  /** Create and display a toast notification. */
+  const id = nextNotifId++;
+  const now = new Date();
+  const timeStr = now.toTimeString().slice(0, 8);
+
+  const el = document.createElement("div");
+  el.className = `notif notif-${type}`;
+  el.dataset.notifId = id;
+
+  const icons = { error: "✕", warning: "⚠", success: "✓", info: "ℹ" };
+
+  el.innerHTML = `
+        <span class="notif-icon">${icons[type] || "ℹ"}</span>
+        <div class="notif-body">
+            <div class="notif-title">${title}</div>
+            <div class="notif-msg">${message}</div>
+        </div>
+        <span class="notif-time">${timeStr}</span>
+        <button class="notif-close" onclick="dismissNotif(${id})">×</button>
+    `;
+
+  notifContainer.prepend(el);
+  // Trigger entrance animation on next frame
+  requestAnimationFrame(() => el.classList.add("notif-show"));
+
+  notifications.push({
+    id,
+    el,
+    timer: setTimeout(() => dismissNotif(id), NOTIF_DURATION),
+  });
+
+  // Cap visible notifications
+  while (notifications.length > MAX_NOTIFICATIONS) {
+    dismissNotif(notifications[0].id);
+  }
+}
+
+function dismissNotif(id) {
+  /** Remove a notification with exit animation. */
+  const idx = notifications.findIndex((n) => n.id === id);
+  if (idx === -1) return;
+  const { el, timer } = notifications[idx];
+  clearTimeout(timer);
+  notifications.splice(idx, 1);
+  el.classList.add("notif-exit");
+  el.addEventListener("animationend", () => el.remove());
+}
+
+// Expose globally for onclick handler in notification HTML
+window.dismissNotif = dismissNotif;
 
 /* ── Initialization ────────────────────────────────────── */
 
