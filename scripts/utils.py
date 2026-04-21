@@ -100,7 +100,8 @@ def send_object_event(host, object_id, state, carrier_arm=None):
     Args:
         host: Server URL.
         object_id: Object identifier (e.g. "Obj1").
-        state: One of "intake", "carried", "handoff_a", "handoff_b", "output".
+        state: "intake", "carried", "handoff_1"..."handoff_{N-1}", or "output".
+               Authoritative list: pipeline_config.get_valid_handoff_states().
         carrier_arm: Arm ID when state is "carried", None otherwise.
     """
     try:

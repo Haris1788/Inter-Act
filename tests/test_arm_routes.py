@@ -110,3 +110,51 @@ class TestGetConfig:
         resp = client.get('/config')
         data = resp.get_json()
         assert len(data["handoff_zones"]) == len(data["arms"]) - 1
+
+
+class TestReloadRestartSeparation:
+    """Verify reload_config and restart_pipeline are independent operations."""
+
+    def test_reload_does_not_mutate_state(self, client):
+        """POST /reload_config reloads YAML but must not reset arm angles."""
+        from app.models.pipeline_config import get_arm_ids
+        first_arm = get_arm_ids()[0]
+
+        # Move an arm to a non-default angle
+        client.post('/set_angle',
+                    data=json.dumps({"arm_id": first_arm, "angle": 42.0}),
+                    content_type='application/json')
+        assert client.get(f'/state/{first_arm}').get_json()["angle"] == 42.0
+
+        # Reload config
+        resp = client.post('/reload_config')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert "arms" in data
+        assert "graph_valid" in data
+
+        # Arm angle must be untouched — reload is NOT a state mutation
+        assert client.get(f'/state/{first_arm}').get_json()["angle"] == 42.0
+
+    def test_restart_pipeline_resets_state(self, client):
+        """POST /restart_pipeline returns arms to DEFAULT_ANGLE with idle status."""
+        from app.models.pipeline_config import get_arm_ids, DEFAULT_ANGLE
+        first_arm = get_arm_ids()[0]
+
+        # Move an arm off default
+        client.post('/set_angle',
+                    data=json.dumps({"arm_id": first_arm, "angle": 17.0}),
+                    content_type='application/json')
+        assert client.get(f'/state/{first_arm}').get_json()["angle"] == 17.0
+
+        # Restart pipeline
+        resp = client.post('/restart_pipeline')
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "ok"
+
+        # All arms back to defaults
+        state = client.get('/state').get_json()
+        for arm in state["arms"]:
+            assert arm["angle"] == DEFAULT_ANGLE
+            assert arm["status"] == "idle"

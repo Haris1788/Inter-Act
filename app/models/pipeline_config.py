@@ -1,15 +1,33 @@
-"""Loads pipeline.yaml and generates all derived config dynamically.
+"""Single Source of Truth for pipeline configuration.
 
-This is the single source of truth. scene_config.py, arm_state.py,
-and arm_routes.py all read from here instead of hardcoding arm counts.
+This module is the SOLE AUTHORITY for:
+    - arm count, IDs, and labels
+    - dependency graph / topology
+    - handoff zone positions and names
+    - valid object states (intake, carried, handoff_1..N-1, output)
+    - scene layout (canvas size, arm geometry, zone rects)
+    - failure policies and health check settings
+
+All other modules MUST consume from this module — never recompute
+or hardcode these values independently:
+    - app/models/scene_config.py         → delegates to generate_scene_config()
+    - app/models/arm_state.py            → initializes from generate_arm_state()
+    - app/routes/arm_routes.py           → validates against get_valid_handoff_states()
+    - scripts/run_demo.py                → builds controllers from get_arms()
+    - scripts/generate_compose.py        → reads arm list from pipeline.yaml
+    - app/static/js/simulation.js        → fetches /config (populated from here)
+
+Changing pipeline.yaml + calling reload() is the ONLY way to change
+the above values at runtime. Adding a hardcoded arm count or handoff
+name elsewhere is a violation of this contract.
 """
 
 import os
 import yaml
 
 _CONFIG_PATH = os.environ.get(
-    "PIPELINE_CONFIG",
-    os.path.join(os.path.dirname(__file__), "..", "..", "pipeline.yaml"),
+    'PIPELINE_CONFIG',
+    os.path.join(os.path.dirname(__file__), '..', '..', 'pipeline.yaml')
 )
 
 _config = None
@@ -88,16 +106,14 @@ def generate_scene_config():
 
     resolved_arms = []
     for i, arm in enumerate(arms_cfg):
-        resolved_arms.append(
-            {
-                "id": arm["id"],
-                "pivot_x": int(arm.get("pivot_x", arm_spacing * (i + 1))),
-                "pivot_y": int(arm.get("pivot_y", pivot_y)),
-                "length": int(arm.get("length", default_arm_length)),
-                "color": arm.get("color", "#888"),
-                "label": arm.get("label", f"Arm {arm['id']}"),
-            }
-        )
+        resolved_arms.append({
+            "id": arm["id"],
+            "pivot_x": int(arm.get("pivot_x", arm_spacing * (i + 1))),
+            "pivot_y": int(arm.get("pivot_y", pivot_y)),
+            "length": int(arm.get("length", default_arm_length)),
+            "color": arm.get("color", "#888"),
+            "label": arm.get("label", f"Arm {arm['id']}"),
+        })
 
     first_arm = resolved_arms[0]
     last_arm = resolved_arms[-1]
@@ -133,17 +149,15 @@ def generate_scene_config():
     handoff_zones = []
     for i in range(n - 1):
         mid_x = (resolved_arms[i]["pivot_x"] + resolved_arms[i + 1]["pivot_x"]) / 2
-        handoff_zones.append(
-            {
-                "id": f"handoff_{i + 1}",
-                "label": f"Handoff {i + 1}",
-                "x": int(mid_x - hz_width // 2),
-                "y": hz_y,
-                "width": hz_width,
-                "height": hz_height,
-                "color": "#f39c12",
-            }
-        )
+        handoff_zones.append({
+            "id": f"handoff_{i + 1}",
+            "label": f"Handoff {i + 1}",
+            "x": int(mid_x - hz_width // 2),
+            "y": hz_y,
+            "width": hz_width,
+            "height": hz_height,
+            "color": "#f39c12",
+        })
 
     # Intake zone — left of the first arm
     intake_x = first_arm["pivot_x"] - first_arm["length"] - zone_w // 2
@@ -211,7 +225,7 @@ def get_valid_handoff_states():
     """
     n = get_arm_count()
     handoffs = tuple(f"handoff_{i}" for i in range(1, n))
-    return ("intake", "carried") + handoffs + ("output",)
+    return ('intake', 'carried') + handoffs + ('output',)
 
 
 def get_handoff_name(index):

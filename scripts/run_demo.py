@@ -86,57 +86,29 @@ class TransferPoint:
         """Wait for a product, pick it atomically.
 
         Returns object_id on success, None on cancel or timeout.
+        The cancel_check only fires when the buffer IS empty — if a product
+        exists, it is returned before cancel_check is ever consulted. This
+        guarantees drain-before-stop: any buffered product is always picked
+        before a drain-stop decision is made.
 
-        DRAIN-BEFORE-STOP INVARIANT: a product present in the buffer at any
-        point during the wait is always returned, even if cancel_check also
-        reports upstream failure. This is essential for the passive-buffer
-        failure model — a product placed by upstream just before it died
-        must not be orphaned.
-
-        Implementation detail: cancel_check is called WITHOUT holding the
-        Condition lock, so a slow HTTP-based cancel_check does not block
-        upstream place() calls. After cancel_check returns False, the buffer
-        is re-checked under the lock to catch any product placed during the
-        cancel_check window; that product wins over the cancel decision.
+        Polls cancel_check every 2 seconds for responsive failure detection.
         """
         deadline = time.time() + timeout
         with self._cond:
-            while True:
-                # Atomic emptiness-and-pick check. If a product is present,
-                # take it regardless of prior or pending cancel signals.
-                if self._object_id is not None:
-                    obj_id = self._object_id
-                    self._object_id = None
-                    self._cond.notify_all()
-                    return obj_id
+            while self._object_id is None:
+                if cancel_check and not cancel_check():
+                    return None
 
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     return None
 
-                if cancel_check:
-                    # Release the lock during cancel_check so a slow HTTP
-                    # call does not block an upstream place() that may be
-                    # delivering the final product.
-                    self._cond.release()
-                    try:
-                        cancelled = not cancel_check()
-                    finally:
-                        self._cond.acquire()
-
-                    # Drain-before-stop: if a product arrived during the
-                    # cancel_check window, pick it and ignore the cancel.
-                    if self._object_id is not None:
-                        obj_id = self._object_id
-                        self._object_id = None
-                        self._cond.notify_all()
-                        return obj_id
-
-                    if cancelled:
-                        return None
-
-                # Wait for notification or short-interval wakeup to re-check.
                 self._cond.wait(timeout=min(remaining, 2.0))
+
+            obj_id = self._object_id
+            self._object_id = None
+            self._cond.notify_all()
+            return obj_id
 
     def wait_until_empty(self, timeout=30.0, cancel_check=None):
         """Wait until buffer is empty (downstream picked the product).
@@ -145,36 +117,17 @@ class TransferPoint:
         If the buffer is already empty, returns True immediately — the
         cancel_check never fires. This enables passive buffering: an upstream
         arm can always place into an empty buffer regardless of downstream health.
-
-        Same cancel_check-outside-lock pattern as wait_and_pick: a slow HTTP
-        call does not block the downstream arm from picking during the window.
         """
         deadline = time.time() + timeout
         with self._cond:
-            while True:
-                if self._object_id is None:
-                    return True
-
+            while self._object_id is not None:
+                if cancel_check and not cancel_check():
+                    return False
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     return False
-
-                if cancel_check:
-                    self._cond.release()
-                    try:
-                        cancelled = not cancel_check()
-                    finally:
-                        self._cond.acquire()
-
-                    # Buffer may have emptied during cancel_check (downstream
-                    # picked the product). Honor that before the cancel.
-                    if self._object_id is None:
-                        return True
-
-                    if cancelled:
-                        return False
-
                 self._cond.wait(timeout=min(remaining, 2.0))
+            return True
 
     def is_empty(self):
         """Check if the buffer is empty (no product waiting)."""

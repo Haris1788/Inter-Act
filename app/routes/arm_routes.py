@@ -107,7 +107,8 @@ def object_event():
 
     Request body (JSON):
         object_id (str): Object identifier (e.g. "Obj1")
-        state (str): One of "intake", "carried", "handoff_a", "handoff_b", "output"
+        state (str): "intake", "carried", "handoff_1"..."handoff_{N-1}", or "output".
+                     Valid names are generated dynamically from pipeline_config.get_valid_handoff_states().
         carrier_arm (int|null): Arm ID when state is "carried", null otherwise
 
     Returns:
@@ -171,11 +172,43 @@ def get_config():
 
 @arm_bp.route('/reload_config', methods=['POST'])
 def reload_config():
-    """Hot-reload pipeline.yaml and reinitialize arm state."""
+    """Reload pipeline.yaml into memory. Does NOT reset runtime state.
+
+    Safe to call during a running simulation — the in-memory config
+    is updated, but arm angles, health, and tracked objects are untouched.
+    Caller should invoke POST /restart_pipeline to apply the new config.
+
+    Returns:
+        200: {"status": "ok", "arms": N, "graph_valid": bool, "graph_errors": [...]}
+    """
     pipeline_config.reload()
-    arm_state.reinitialize()
     n = pipeline_config.get_arm_count()
+    valid, errors = pipeline_config.validate_dependency_graph()
+    return jsonify({
+        "status": "ok",
+        "arms": n,
+        "graph_valid": valid,
+        "graph_errors": errors,
+    })
+
+
+@arm_bp.route('/restart_pipeline', methods=['POST'])
+def restart_pipeline():
+    """Reinitialize arm state and objects using the currently-loaded config.
+
+    Does NOT re-read pipeline.yaml. Call POST /reload_config first if you
+    want to apply changes on disk. This separation lets config reload and
+    runtime mutation stay independent operations.
+
+    Returns:
+        200: {"status": "ok", "arms": N}
+    """
+    arm_state.reinitialize()
+    with _object_lock:
+        _object_states.clear()
     socketio.emit('state_update', arm_state.get_all())
+    socketio.emit('objects_reset', {})
+    n = pipeline_config.get_arm_count()
     return jsonify({"status": "ok", "arms": n})
 
 
