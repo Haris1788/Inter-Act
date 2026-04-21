@@ -5,6 +5,7 @@ import { polylineInterp } from './geometry.js';
 export const state = {
     config: null,
     assets: new Map(),          // id -> Asset
+    connections: [],            // [{from,to}] derived from asset graph
     trackedObjects: {},         // object_id -> {object_id, state, carrier_arm, carrier_asset?}
     objectPositions: {},        // object_id -> {x, y}
     objectTransitions: {},      // object_id -> {fromX, fromY, startTime}
@@ -22,6 +23,92 @@ export function setConfig(cfg) {
     for (const a of buildAssets(cfg)) {
         state.assets.set(a.id, a);
     }
+    state.connections = buildConnections(state.assets);
+}
+
+/* Build graph edges from actual asset links.
+ * Arm->arm baseline edges stay dynamic by arm order, and are suppressed only
+ * when a complete non-arm path connects the same arm pair. */
+export function buildConnections(assets) {
+    const connections = [];
+    const seen = new Set();
+
+    function add(from, to) {
+        if (!from || !to || from === to) return;
+        const key = `${from}->${to}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        connections.push({ from, to });
+    }
+
+    // 1) Explicit graph edges from config-provided downstream arrays.
+    for (const asset of assets.values()) {
+        for (const downstreamId of asset.downstream || []) {
+            if (assets.has(downstreamId)) add(asset.id, downstreamId);
+        }
+    }
+
+    // 2) Add baseline arm->arm chain for dynamic N-arm layout.
+    // Skip only when an explicit non-arm route already bridges the same pair.
+    const arms = Array.from(assets.values())
+        .filter(a => a.type === 'arm')
+        .sort((a, b) => (a.numericId ?? 0) - (b.numericId ?? 0));
+    for (let i = 0; i < arms.length - 1; i++) {
+        const src = arms[i].id;
+        const dst = arms[i + 1].id;
+        if (hasNonArmPathBetween(assets, src, dst)) continue;
+        add(src, dst);
+    }
+
+    return sortConnectionsByFlowOrder(connections, assets);
+}
+
+function sortConnectionsByFlowOrder(connections, assets) {
+    return connections.sort((a, b) => {
+        const fromA = assets.get(a.from);
+        const fromB = assets.get(b.from);
+        if (!fromA || !fromB) return 0;
+
+        const xA = getAssetFlowX(fromA);
+        const xB = getAssetFlowX(fromB);
+        return xA - xB;
+    });
+}
+
+function getAssetFlowX(asset) {
+    if (asset.type === 'arm') return asset.geometry.pivot.x;
+    if (asset.type === 'vehicle') {
+        const w = asset.geometry.waypoints || [];
+        return w[0] ? w[0].x : 0;
+    }
+    if (asset.type === 'conveyor') {
+        return asset.geometry.from.x;
+    }
+    return 0;
+}
+
+function hasNonArmPathBetween(assets, srcId, dstId) {
+    const queue = [{ id: srcId, usedNonArm: false }];
+    const seen = new Set([`${srcId}|0`]);
+
+    while (queue.length) {
+        const { id, usedNonArm } = queue.shift();
+        const cur = assets.get(id);
+        if (!cur) continue;
+
+        for (const nextId of cur.downstream || []) {
+            const next = assets.get(nextId);
+            if (!next) continue;
+            const nextUsedNonArm = usedNonArm || next.type !== 'arm';
+            if (nextId === dstId && nextUsedNonArm) return true;
+
+            const key = `${nextId}|${nextUsedNonArm ? 1 : 0}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            queue.push({ id: nextId, usedNonArm: nextUsedNonArm });
+        }
+    }
+    return false;
 }
 
 /* Build unified asset list from /config response.
@@ -52,7 +139,7 @@ function buildAssets(cfg) {
                 error: null,
                 currentTask: null,
                 carriedObject: null,
-                upstream: [],
+                upstream: (arm.depends_on || []).map(depId => `arm-${depId}`),
                 downstream: [],
                 draining: false,
                 geometry: {
@@ -70,6 +157,7 @@ function buildAssets(cfg) {
             });
         }
     }
+    wireAssetGraph(out);
     return out;
 }
 
@@ -153,6 +241,60 @@ function computeSlotPositions(from, to, n) {
         out.push({ x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t });
     }
     return out;
+}
+
+/* Ensure graph edges are consistent:
+ * - keep declared downstream links
+ * - add reverse links from upstream declarations
+ * This makes zone rendering truly graph-driven even when only upstream
+ * is present in config (common for arm dependencies). */
+function wireAssetGraph(assets) {
+    const byId = new Map(assets.map(a => [a.id, a]));
+    const armIds = assets
+        .filter(a => a.type === 'arm')
+        .map(a => a.numericId)
+        .filter(v => Number.isFinite(v))
+        .sort((a, b) => a - b);
+
+    for (const asset of assets) {
+        asset.downstream = Array.isArray(asset.downstream)
+            ? asset.downstream.filter(id => byId.has(id))
+            : [];
+    }
+
+    for (const asset of assets) {
+        const ups = Array.isArray(asset.upstream) ? asset.upstream : [];
+        for (const upId of ups) {
+            const up = byId.get(upId);
+            if (!up) continue;
+            if (!Array.isArray(up.downstream)) up.downstream = [];
+            if (!up.downstream.includes(asset.id)) up.downstream.push(asset.id);
+        }
+    }
+
+    // If a non-arm asset has arm upstreams but no valid downstream, connect it
+    // to the next arm in order so a partial asset chain still renders and hands off.
+    for (const asset of assets) {
+        if (asset.type === 'arm') continue;
+        if ((asset.downstream || []).length > 0) continue;
+
+        const upstreamArmNums = (asset.upstream || [])
+            .map(id => byId.get(id))
+            .filter(a => a && a.type === 'arm' && Number.isFinite(a.numericId))
+            .map(a => a.numericId);
+        if (upstreamArmNums.length === 0) continue;
+
+        const maxUp = Math.max(...upstreamArmNums);
+        const nextArmNum = armIds.find(n => n > maxUp);
+        if (!nextArmNum) continue;
+        const nextArmId = `arm-${nextArmNum}`;
+        if (!byId.has(nextArmId)) continue;
+
+        asset.downstream.push(nextArmId);
+        const nextArm = byId.get(nextArmId);
+        if (!Array.isArray(nextArm.upstream)) nextArm.upstream = [];
+        if (!nextArm.upstream.includes(asset.id)) nextArm.upstream.push(asset.id);
+    }
 }
 
 /* Apply backend state_update for arms. */

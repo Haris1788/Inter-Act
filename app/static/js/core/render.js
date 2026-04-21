@@ -1,6 +1,6 @@
 /* Render loop + background + object drawing. */
 
-import { state, getAssetAttachPoint, buildTransitRoute } from './state.js';
+import { state, getAssetAttachPoint } from './state.js';
 import { RENDERERS } from '../assets/index.js';
 import { drawRoundedRect, hexToRgba, easeOutCubic } from './geometry.js';
 
@@ -11,6 +11,8 @@ const OBJ_HEIGHT = 18;
 const ANIM_DURATION = 600;
 const OBJ_TRANSITION_MS = 400;
 const LABEL_COLOR = '#7f8c8d';
+const HZ_WIDTH = 80;
+const HZ_HEIGHT = 140;
 
 let canvas = null;
 let ctx = null;
@@ -71,24 +73,22 @@ export function createBackgroundCanvas() {
         bg.setLineDash([]);
     });
 
-    // Dynamic handoff zones for every upstream\u2192downstream edge in the
-    // asset graph. Direct arm\u2192arm edges keep their zone only when there
-    // is no vehicle/conveyor chain routing objects between them.
-    for (const zone of collectHandoffZones()) {
-        drawRoundedRect(bg, zone.x, zone.y, zone.w, zone.h, 6);
-        bg.fillStyle = 'rgba(243, 156, 18, 0.15)';
-        bg.fill();
-        bg.setLineDash([6, 4]);
-        bg.strokeStyle = '#f39c12';
-        bg.lineWidth = 1.5;
-        bg.stroke();
-        bg.setLineDash([]);
-
-        bg.fillStyle = LABEL_COLOR;
-        bg.font = '11px sans-serif';
-        bg.textAlign = 'center';
-        bg.fillText(zone.label, zone.x + zone.w / 2, zone.y - 4);
-    }
+    // Handoff zones - only draw for connections involving at least one arm
+    // Skip zones between non-arm assets (e.g., vehicle -> conveyor)
+    let handoffIndex = 1;
+    state.connections.forEach((conn) => {
+        const fromAsset = state.assets.get(conn.from);
+        const toAsset = state.assets.get(conn.to);
+        
+        // Skip if both ends are non-arm assets
+        if (fromAsset && toAsset && 
+            fromAsset.type !== 'arm' && toAsset.type !== 'arm') {
+            return;
+        }
+        
+        drawHandoffZone(bg, conn.from, conn.to, handoffIndex);
+        handoffIndex++;
+    });
 
     // Intake
     const intake = cfg.intake_zone;
@@ -153,72 +153,109 @@ export function createBackgroundCanvas() {
     }
 }
 
-/* Collect handoff zones from the current asset graph. One zone per
- * upstream\u2192downstream pair. Arm\u2192arm direct edges are suppressed when
- * a non-arm chain routes objects between those arms. */
-const HZ_W = 80;
-const HZ_H = 140;
+function drawHandoffZone(bg, fromId, toId, index) {
+    const from = state.assets.get(fromId);
+    const to = state.assets.get(toId);
+    if (!from || !to) return;
 
-function anchorOut(asset) {
-    const g = asset.geometry;
-    if (asset.type === 'arm') return { x: g.pivot.x + g.length, y: g.pivot.y };
-    if (asset.type === 'vehicle') return g.waypoints[g.waypoints.length - 1];
-    if (asset.type === 'conveyor') return g.to;
+    const pos = computeHandoffPosition(from, to);
+    if (!pos) return;
+
+    drawRoundedRect(
+        bg,
+        pos.x - HZ_WIDTH / 2,
+        pos.y - HZ_HEIGHT / 2,
+        HZ_WIDTH,
+        HZ_HEIGHT,
+        6
+    );
+    bg.fillStyle = 'rgba(243, 156, 18, 0.15)';
+    bg.fill();
+    bg.setLineDash([6, 4]);
+    bg.strokeStyle = '#f39c12';
+    bg.lineWidth = 1.5;
+    bg.stroke();
+    bg.setLineDash([]);
+
+    bg.fillStyle = LABEL_COLOR;
+    bg.font = '11px sans-serif';
+    bg.textAlign = 'center';
+    bg.fillText(`Handoff ${index}`, pos.x, pos.y - HZ_HEIGHT / 2 - 4);
+}
+
+function computeHandoffPosition(from, to) {
+    if (from.type === 'arm' && to.type === 'arm') {
+        const fromAnchor = armBoundaryToward(from, to.geometry.pivot);
+        const toAnchor = armBoundaryToward(to, from.geometry.pivot);
+        return midpoint(fromAnchor, toAnchor);
+    }
+    if (from.type === 'arm' && to.type === 'vehicle') {
+        const vStart = getVehicleStart(to);
+        return midpoint(armBoundaryToward(from, vStart), vStart);
+    }
+    if (from.type === 'vehicle' && to.type === 'conveyor') {
+        return midpoint(getVehicleEnd(from), to.geometry.from);
+    }
+    if (from.type === 'conveyor' && to.type === 'arm') {
+        const cOut = from.geometry.to;
+        return midpoint(cOut, armBoundaryToward(to, cOut));
+    }
+    if (from.type === 'vehicle' && to.type === 'arm') {
+        const vEnd = getVehicleEnd(from);
+        return midpoint(vEnd, armBoundaryToward(to, vEnd));
+    }
+    if (from.type === 'arm') {
+        const target = getAssetCenter(to);
+        return midpoint(armBoundaryToward(from, target), target);
+    }
+    if (to.type === 'arm') {
+        const src = getAssetCenter(from);
+        return midpoint(src, armBoundaryToward(to, src));
+    }
+    return midpoint(getAssetCenter(from), getAssetCenter(to));
+}
+
+function midpoint(a, b) {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+function getArmTip(asset) {
+    const { pivot, length } = asset.geometry;
+    return { x: pivot.x + length, y: pivot.y };
+}
+
+function armBoundaryToward(armAsset, target) {
+    const { pivot, length } = armAsset.geometry;
+    const dx = target.x - pivot.x;
+    const dy = target.y - pivot.y;
+    const mag = Math.hypot(dx, dy) || 1;
+    return {
+        x: pivot.x + (dx / mag) * length,
+        y: pivot.y + (dy / mag) * length,
+    };
+}
+
+function getVehicleStart(asset) {
+    const w = asset.geometry.waypoints || [];
+    return w[0] || getAssetCenter(asset);
+}
+
+function getVehicleEnd(asset) {
+    const w = asset.geometry.waypoints || [];
+    return w[w.length - 1] || getAssetCenter(asset);
+}
+
+function getAssetCenter(asset) {
+    if (asset.type === 'arm') return asset.geometry.pivot;
+    if (asset.type === 'vehicle') {
+        const start = getVehicleStart(asset);
+        const end = getVehicleEnd(asset);
+        return midpoint(start, end);
+    }
+    if (asset.type === 'conveyor') {
+        return midpoint(asset.geometry.from, asset.geometry.to);
+    }
     return { x: 0, y: 0 };
-}
-function anchorIn(asset) {
-    const g = asset.geometry;
-    if (asset.type === 'arm') return { x: g.pivot.x - g.length, y: g.pivot.y };
-    if (asset.type === 'vehicle') return g.waypoints[0];
-    if (asset.type === 'conveyor') return g.from;
-    return { x: 0, y: 0 };
-}
-function zoneBox(centerX, centerY, label) {
-    return { x: centerX - HZ_W / 2, y: centerY - HZ_H / 2, w: HZ_W, h: HZ_H, label };
-}
-
-function collectHandoffZones() {
-    const zones = [];
-    let idx = 1;
-    const arms = Array.from(state.assets.values())
-        .filter(a => a.type === 'arm')
-        .sort((a, b) => (a.numericId ?? 0) - (b.numericId ?? 0));
-
-    // 1. Arm\u2192Arm direct edges (skip if a non-arm chain already links them).
-    for (let i = 0; i < arms.length - 1; i++) {
-        const a = arms[i], b = arms[i + 1];
-        if (buildTransitRoute(a.numericId, b.numericId)) continue;
-        const out = anchorOut(a), inn = anchorIn(b);
-        zones.push(zoneBox((out.x + inn.x) / 2, (out.y + inn.y) / 2, `Handoff ${idx++}`));
-    }
-
-    // 2. Every non-arm asset's upstream edge, then downstream-to-arm edge.
-    const seen = new Set();
-    const edges = [];
-    for (const a of state.assets.values()) {
-        if (a.type === 'arm') continue;
-        for (const srcId of (a.upstream || [])) {
-            const key = `${srcId}\u2192${a.id}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            edges.push({ src: state.assets.get(srcId), dst: a });
-        }
-        for (const dstId of (a.downstream || [])) {
-            const dst = state.assets.get(dstId);
-            if (!dst) continue;
-            const key = `${a.id}\u2192${dstId}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            edges.push({ src: a, dst });
-        }
-    }
-    for (const e of edges) {
-        if (!e.src || !e.dst) continue;
-        const out = anchorOut(e.src), inn = anchorIn(e.dst);
-        zones.push(zoneBox((out.x + inn.x) / 2, (out.y + inn.y) / 2, `Handoff ${idx++}`));
-    }
-
-    return zones;
 }
 
 function computeDisplayAngle(asset, now) {

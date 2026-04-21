@@ -22,31 +22,30 @@ health:
 #   width: 1920
 #   height: 720
 
+# Arms are positioned automatically in sequence. Add vehicles/conveyors
+# in the assets section below to insert them in the flow. The layout engine
+# will reposition all assets to create a continuous, gap-free layout.
 arms:
   - id: 1
     label: "Arm 1"
     color: "#e74c3c"
     depends_on: []
     critical: true
-    pivot_x: 280
 
   - id: 2
     label: "Arm 2"
     color: "#2ecc71"
     depends_on: [1]
     critical: true
-    pivot_x: 580
 
   - id: 3
     label: "Arm 3"
     color: "#3498db"
     depends_on: [2]
     critical: true
-    pivot_x: 1400
 
 # Optional: add vehicles and conveyors here. Frontend renders + ticks them;
 # backend ignores them (arms-only for lifecycle). Uncomment to enable.
-#
 assets:
   - id: veh-a
     type: vehicle
@@ -70,3 +69,14 @@ assets:
     shift_interval: 1.2
     upstream: [veh-a]
     downstream: [arm-3]
+
+# - id: conv-1
+#   type: conveyor
+#   label: "Belt 1"
+#   color: "#34495e"
+#   from: { x: 900, y: 300 }
+#   to: { x: 1250, y: 300 }
+#   slot_count: 4
+#   shift_interval: 1.2
+#   upstream: [veh-a]
+#   downstream: [arm-3]

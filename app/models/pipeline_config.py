@@ -88,139 +88,351 @@ def get_failure_policy(arm_id=None):
 
 
 def generate_scene_config():
-    """Build the full scene config dict that the browser needs.
-
-    Computes handoff zones as midpoints between adjacent arms.
-    Intake zone is left of arm 1, output zone is right of the last arm.
+    """Build the full scene config dict using graph-driven layout.
+    
+    The layout engine:
+    1. Builds a flow order from the asset graph
+    2. Assigns each asset a visual block with computed positions
+    3. Derives handoff zones from connection gaps
+    4. Computes canvas dimensions from total layout width
+    
+    This single algorithm handles all cases: arms-only, arms+vehicle,
+    arms+vehicle+conveyor, without conditional branching.
     """
     cfg = get_config()
     arms_cfg = cfg["arms"]
-    n = len(arms_cfg)
-
-    # Keep each arm's visual geometry stable regardless of arm count.
-    # Only grow the canvas width horizontally as more arms are added.
-    arm_spacing = 300
-    default_arm_length = 150
-    canvas_h = 600
-    pivot_y = 300
-
-    resolved_arms = []
-    for i, arm in enumerate(arms_cfg):
-        resolved_arms.append({
-            "id": arm["id"],
-            "pivot_x": int(arm.get("pivot_x", arm_spacing * (i + 1))),
-            "pivot_y": int(arm.get("pivot_y", pivot_y)),
-            "length": int(arm.get("length", default_arm_length)),
-            "color": arm.get("color", "#888"),
-            "label": arm.get("label", f"Arm {arm['id']}"),
-        })
-
-    first_arm = resolved_arms[0]
-    last_arm = resolved_arms[-1]
-
-    # Keep zone dimensions fixed for consistent readability.
-    zone_w = 105
-    zone_h = 180
-
-    # Compute width from absolute right extent so output is never clipped.
-    scene_right = last_arm["pivot_x"] + last_arm["length"] + zone_w // 2
-    canvas_w = int(scene_right + 30)
-
-    # Arms
-    arms = resolved_arms
-
-    # Reach zones
-    reach_zones = [
-        {
-            "id": arm["id"],
-            "cx": arm["pivot_x"],
-            "cy": arm["pivot_y"],
-            "radius": arm["length"],
-            "color": arm.get("color", "#888"),
-        }
-        for arm in resolved_arms
-    ]
-
-    # Handoff zones
-    hz_width = 90
-    hz_height = 190
-    hz_y = pivot_y - hz_height // 2
-
-    handoff_zones = []
-    for i in range(n - 1):
-        mid_x = (resolved_arms[i]["pivot_x"] + resolved_arms[i + 1]["pivot_x"]) / 2
-        handoff_zones.append({
-            "id": f"handoff_{i + 1}",
-            "label": f"Handoff {i + 1}",
-            "x": int(mid_x - hz_width // 2),
-            "y": hz_y,
-            "width": hz_width,
-            "height": hz_height,
-            "color": "#f39c12",
-        })
-
-    # Intake zone — left of the first arm
-    intake_x = first_arm["pivot_x"] - first_arm["length"] - zone_w // 2
-    intake_y = pivot_y - zone_h // 2
-    intake_zone = {
-        "x": intake_x,
-        "y": intake_y,
-        "width": zone_w,
-        "height": zone_h,
-        "color": "#95a5a6",
-        "label": "INTAKE",
-        "label_x": intake_x + zone_w // 2,
-        "label_y": intake_y - 8,
-        "entry_x": intake_x + zone_w // 2,
-        "entry_y": intake_y + 15,
-    }
-
-    # Output zone — mirror intake behavior on the right side
-    output_x = last_arm["pivot_x"] + last_arm["length"] - zone_w // 2
-    output_y = pivot_y - zone_h // 2
-    output_zone = {
-        "x": output_x,
-        "y": output_y,
-        "width": zone_w,
-        "height": zone_h,
-        "color": "#27ae60",
-        "label": "OUTPUT",
-        "label_x": output_x + zone_w // 2,
-        "label_y": output_y - 8,
-    }
-
-    labels = {
-        "intake": {"text": "INTAKE", "x": intake_zone["label_x"], "y": 200},
-        "output": {"text": "OUTPUT", "x": output_zone["label_x"], "y": 200},
-    }
-
     extra_assets = get_extra_assets()
-
-    # Extend canvas rightward if any extra asset sits beyond the arm row.
-    for ea in extra_assets:
-        g = ea.get("geometry", {})
-        if ea["type"] == "vehicle":
-            for wp in g.get("waypoints", []):
-                canvas_w = max(canvas_w, int(wp.get("x", 0)) + 40)
-        elif ea["type"] == "conveyor":
-            for p in (g.get("from"), g.get("to")):
-                if p:
-                    canvas_w = max(canvas_w, int(p.get("x", 0)) + 40)
-
+    
+    layout = _compute_graph_layout(arms_cfg, extra_assets)
+    
     return {
-        "canvas_width": canvas_w,
-        "canvas_height": canvas_h,
-        "arms": arms,
-        "assets": extra_assets,
-        "reach_zones": reach_zones,
-        "handoff_zones": handoff_zones,
-        "intake_zone": intake_zone,
-        "output_zone": output_zone,
-        "labels": labels,
+        "canvas_width": layout["canvas_width"],
+        "canvas_height": layout["canvas_height"],
+        "arms": layout["arms"],
+        "assets": layout["assets"],
+        "reach_zones": layout["reach_zones"],
+        "handoff_zones": layout["handoff_zones"],
+        "intake_zone": layout["intake_zone"],
+        "output_zone": layout["output_zone"],
+        "labels": layout["labels"],
         "min_angle": MIN_ANGLE,
         "max_angle": MAX_ANGLE,
         "default_angle": DEFAULT_ANGLE,
     }
+
+
+def _compute_graph_layout(arms_cfg, extra_assets):
+    """Graph-driven layout engine.
+    
+    Computes positions, handoff zones, and canvas size from the asset graph
+    without conditional logic based on asset counts.
+    """
+    # Layout constants
+    CANVAS_HEIGHT = 600
+    CENTER_Y = 300
+    LEFT_PADDING = 120
+    RIGHT_PADDING = 120
+    ARM_SPACING = 300
+    DEFAULT_ARM_LENGTH = 150
+    MIN_GAP = 40
+    ZONE_WIDTH = 105
+    ZONE_HEIGHT = 180
+    
+    # Build unified asset list with IDs
+    all_assets = []
+    asset_by_id = {}
+    
+    # Add arms
+    for i, arm in enumerate(arms_cfg):
+        arm_id = f"arm-{arm['id']}"
+        asset = {
+            'id': arm_id,
+            'numeric_id': arm['id'],
+            'type': 'arm',
+            'config': arm,
+            'upstream': [f"arm-{d}" for d in arm.get('depends_on', [])],
+            'downstream': [],
+        }
+        all_assets.append(asset)
+        asset_by_id[arm_id] = asset
+    
+    # Add extra assets (vehicles, conveyors)
+    for ea in extra_assets:
+        asset = {
+            'id': ea['id'],
+            'type': ea['type'],
+            'config': ea,
+            'upstream': ea.get('upstream', []),
+            'downstream': ea.get('downstream', []),
+        }
+        all_assets.append(asset)
+        asset_by_id[ea['id']] = asset
+    
+    # Wire downstream links from upstream declarations
+    for asset in all_assets:
+        for up_id in asset['upstream']:
+            if up_id in asset_by_id:
+                up = asset_by_id[up_id]
+                if asset['id'] not in up['downstream']:
+                    up['downstream'].append(asset['id'])
+    
+    # Build flow order: topological sort with stable arm ordering
+    flow_order = _build_flow_order(all_assets, asset_by_id)
+    
+    # Position assets using flow order with boundary-based positioning
+    positioned = []
+    x = LEFT_PADDING
+    prev_asset = None
+    
+    for i, asset in enumerate(flow_order):
+        # Determine gap based on adjacent asset types
+        if prev_asset:
+            # Arm-to-arm: circles should touch exactly (no gap)
+            if prev_asset['type'] == 'arm' and asset['type'] == 'arm':
+                gap = 0
+            # Non-arm assets need spacing for handoff zones
+            else:
+                gap = MIN_GAP
+        else:
+            gap = 0
+        
+        if asset['type'] == 'arm':
+            arm_cfg = asset['config']
+            length = int(arm_cfg.get('length', DEFAULT_ARM_LENGTH))
+            
+            # For arm-to-arm: pivot at x + length so circles touch
+            # For asset-to-arm: pivot at x + gap + length
+            pivot_x = x + gap + length
+            
+            positioned.append({
+                'type': 'arm',
+                'id': asset['id'],
+                'numeric_id': asset['numeric_id'],
+                'pivot_x': pivot_x,
+                'pivot_y': CENTER_Y,
+                'length': length,
+                'color': arm_cfg.get('color', '#888'),
+                'label': arm_cfg.get('label', f"Arm {asset['numeric_id']}"),
+                'depends_on': arm_cfg.get('depends_on', []),
+            })
+            
+            # Next asset starts at right edge of this arm's reach
+            x = pivot_x + length
+            
+        elif asset['type'] == 'vehicle':
+            waypoints = asset['config']['geometry']['waypoints']
+            if waypoints:
+                path_length = abs(waypoints[-1]['x'] - waypoints[0]['x'])
+                start_x = x + gap
+                
+                # Rewrite waypoints to fit current layout position
+                offset = start_x - waypoints[0]['x']
+                adjusted_waypoints = [
+                    {'x': wp['x'] + offset, 'y': wp.get('y', CENTER_Y)}
+                    for wp in waypoints
+                ]
+                
+                positioned.append({
+                    'type': 'vehicle',
+                    'id': asset['id'],
+                    'label': asset['config']['label'],
+                    'color': asset['config']['color'],
+                    'upstream': asset['upstream'],
+                    'downstream': asset['downstream'],
+                    'geometry': {
+                        **asset['config']['geometry'],
+                        'waypoints': adjusted_waypoints,
+                    },
+                })
+                
+                x = start_x + path_length
+        
+        elif asset['type'] == 'conveyor':
+            geom = asset['config']['geometry']
+            frm = geom['from']
+            to = geom['to']
+            belt_length = abs(to['x'] - frm['x'])
+            start_x = x + gap
+            
+            # Rewrite conveyor endpoints to fit current layout position
+            offset = start_x - frm['x']
+            adjusted_from = {'x': frm['x'] + offset, 'y': frm.get('y', CENTER_Y)}
+            adjusted_to = {'x': to['x'] + offset, 'y': to.get('y', CENTER_Y)}
+            
+            # Recompute slot positions
+            slot_count = geom['slot_count']
+            slot_positions = _compute_slot_positions(adjusted_from, adjusted_to, slot_count)
+            
+            positioned.append({
+                'type': 'conveyor',
+                'id': asset['id'],
+                'label': asset['config']['label'],
+                'color': asset['config']['color'],
+                'upstream': asset['upstream'],
+                'downstream': asset['downstream'],
+                'geometry': {
+                    'from': adjusted_from,
+                    'to': adjusted_to,
+                    'slot_count': slot_count,
+                    'slot_positions': slot_positions,
+                    'shift_interval': geom['shift_interval'],
+                },
+            })
+            
+            x = start_x + belt_length
+        
+        prev_asset = asset
+    
+    canvas_width = x + RIGHT_PADDING
+    
+    # Extract positioned arms for legacy arms array
+    arms = [p for p in positioned if p['type'] == 'arm']
+    
+    # Extract extra assets
+    assets = [p for p in positioned if p['type'] != 'arm']
+    
+    # Build reach zones
+    reach_zones = [
+        {
+            'id': arm['numeric_id'],
+            'cx': arm['pivot_x'],
+            'cy': arm['pivot_y'],
+            'radius': arm['length'],
+            'color': arm['color'],
+        }
+        for arm in arms
+    ]
+    
+    # Derive handoff zones from connections (frontend will draw these dynamically)
+    # Legacy backend expects arm-to-arm handoff zones only
+    handoff_zones = []
+    for i in range(len(arms) - 1):
+        mid_x = (arms[i]['pivot_x'] + arms[i + 1]['pivot_x']) / 2
+        handoff_zones.append({
+            'id': f"handoff_{i + 1}",
+            'label': f"Handoff {i + 1}",
+            'x': int(mid_x - 90 // 2),
+            'y': CENTER_Y - 190 // 2,
+            'width': 90,
+            'height': 190,
+            'color': '#f39c12',
+        })
+    
+    # Intake and output zones
+    first_arm = arms[0]
+    last_arm = arms[-1]
+    
+    intake_x = first_arm['pivot_x'] - first_arm['length'] - ZONE_WIDTH // 2
+    intake_y = CENTER_Y - ZONE_HEIGHT // 2
+    intake_zone = {
+        'x': intake_x,
+        'y': intake_y,
+        'width': ZONE_WIDTH,
+        'height': ZONE_HEIGHT,
+        'color': '#95a5a6',
+        'label': 'INTAKE',
+        'label_x': intake_x + ZONE_WIDTH // 2,
+        'label_y': intake_y - 8,
+        'entry_x': intake_x + ZONE_WIDTH // 2,
+        'entry_y': intake_y + 15,
+    }
+    
+    output_x = last_arm['pivot_x'] + last_arm['length'] - ZONE_WIDTH // 2
+    output_y = CENTER_Y - ZONE_HEIGHT // 2
+    output_zone = {
+        'x': output_x,
+        'y': output_y,
+        'width': ZONE_WIDTH,
+        'height': ZONE_HEIGHT,
+        'color': '#27ae60',
+        'label': 'OUTPUT',
+        'label_x': output_x + ZONE_WIDTH // 2,
+        'label_y': output_y - 8,
+    }
+    
+    labels = {
+        'intake': {'text': 'INTAKE', 'x': intake_zone['label_x'], 'y': 200},
+        'output': {'text': 'OUTPUT', 'x': output_zone['label_x'], 'y': 200},
+    }
+    
+    # Normalize arms array to remove internal fields
+    normalized_arms = [
+        {
+            'id': arm['numeric_id'],
+            'pivot_x': arm['pivot_x'],
+            'pivot_y': arm['pivot_y'],
+            'length': arm['length'],
+            'color': arm['color'],
+            'label': arm['label'],
+        }
+        for arm in arms
+    ]
+    
+    return {
+        'canvas_width': canvas_width,
+        'canvas_height': CANVAS_HEIGHT,
+        'arms': normalized_arms,
+        'assets': assets,
+        'reach_zones': reach_zones,
+        'handoff_zones': handoff_zones,
+        'intake_zone': intake_zone,
+        'output_zone': output_zone,
+        'labels': labels,
+    }
+
+
+def _build_flow_order(all_assets, asset_by_id):
+    """Build visual flow order from asset graph using topological sort.
+    
+    Preserves stable arm ordering while inserting vehicles/conveyors
+    at their logical connection points.
+    """
+    # Separate arms and non-arms
+    arms = [a for a in all_assets if a['type'] == 'arm']
+    non_arms = [a for a in all_assets if a['type'] != 'arm']
+    
+    # Sort arms by numeric ID for stable ordering
+    arms.sort(key=lambda a: a['numeric_id'])
+    
+    # Build flow by inserting non-arms between their connected arms
+    flow = []
+    arm_positions = {a['id']: i for i, a in enumerate(arms)}
+    
+    # Assign each non-arm to the gap between its upstream and downstream arms
+    gaps = {i: [] for i in range(len(arms))}  # gap[i] = assets between arm[i] and arm[i+1]
+    
+    for na in non_arms:
+        # Find which arms this connects
+        upstream_arms = [aid for aid in na['upstream'] if aid in arm_positions]
+        downstream_arms = [aid for aid in na['downstream'] if aid in arm_positions]
+        
+        if upstream_arms and downstream_arms:
+            # Place in gap after the max upstream arm
+            max_up_pos = max(arm_positions[aid] for aid in upstream_arms)
+            min_down_pos = min(arm_positions[aid] for aid in downstream_arms)
+            
+            # Insert in the gap if it's sequential
+            if max_up_pos + 1 == min_down_pos:
+                gaps[max_up_pos].append(na)
+            else:
+                # Non-sequential connection - place at upstream position
+                gaps[max_up_pos].append(na)
+        elif upstream_arms:
+            # Only upstream defined - place after max upstream
+            max_up_pos = max(arm_positions[aid] for aid in upstream_arms)
+            gaps[max_up_pos].append(na)
+        elif downstream_arms:
+            # Only downstream defined - place before min downstream
+            min_down_pos = min(arm_positions[aid] for aid in downstream_arms)
+            if min_down_pos > 0:
+                gaps[min_down_pos - 1].append(na)
+    
+    # Build final flow order
+    for i, arm in enumerate(arms):
+        flow.append(arm)
+        flow.extend(gaps.get(i, []))
+    
+    return flow
 
 
 def get_extra_assets():
