@@ -73,18 +73,19 @@ export function createBackgroundCanvas() {
         bg.setLineDash([]);
     });
 
-    // Handoff zones - only draw for connections involving at least one arm
-    // Skip zones between non-arm assets (e.g., vehicle -> conveyor)
+    // Handoff zones - draw for all connections between different assets
+    // Skip only if an asset somehow connects to itself (should never happen)
     let handoffIndex = 1;
     state.connections.forEach((conn) => {
         const fromAsset = state.assets.get(conn.from);
         const toAsset = state.assets.get(conn.to);
         
-        // Skip if both ends are non-arm assets
-        if (fromAsset && toAsset && 
-            fromAsset.type !== 'arm' && toAsset.type !== 'arm') {
+        // Skip only if same asset connects to itself
+        if (conn.from === conn.to) {
             return;
         }
+        
+        if (!fromAsset || !toAsset) return;
         
         drawHandoffZone(bg, conn.from, conn.to, handoffIndex);
         handoffIndex++;

@@ -99,8 +99,8 @@ Conveyor: 970 → 1320 (adjusted from original 900 → 1250)
 Arm 3: pivot at 1510, reach 1360-1660
 Canvas: 1780 x 600
 
-Handoff zones: 3 (arm-arm, arm-vehicle, conveyor-arm)
-Note: No zone between vehicle and conveyor (both non-arm)
+Handoff zones: 4 (arm-arm, arm-vehicle, vehicle-conveyor, conveyor-arm)
+Note: Zones appear at all asset type boundaries
 ```
 
 ## Frontend Integration
@@ -115,15 +115,17 @@ The frontend `state.js` builds the asset graph from `/config` endpoint:
 ### Handoff Zone Rendering
 The frontend `render.js` draws handoff zones dynamically:
 - Iterates `state.connections` array
-- **Filters out non-arm-to-non-arm connections** (e.g., vehicle -> conveyor)
-- Calls `computeHandoffPosition(from, to)` for each valid connection
+- **Skips only self-connections** (asset connecting to itself - should never occur)
+- Draws zones for all valid connections between different assets
+- Calls `computeHandoffPosition(from, to)` for each connection
 - Uses asset geometry (pivot, waypoints, from/to) to calculate zone position
-- Adapts zone placement based on asset types (arm-arm, arm-vehicle, conveyor-arm, etc.)
+- Adapts zone placement based on asset types (arm-arm, arm-vehicle, vehicle-conveyor, etc.)
 
 This ensures:
-- Only ONE handoff zone per logical transfer point
-- Conveyors/vehicles treated as single visual units
-- No redundant zones inside asset chains
+- Handoff zones appear at all transfer boundaries
+- Arm-to-arm zones are preserved
+- Vehicle-to-conveyor zone is visible
+- No duplicate or invalid zones
 
 ### No Position Recalculation
 The frontend never recalculates asset positions. It:
