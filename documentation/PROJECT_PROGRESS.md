@@ -72,6 +72,40 @@
 - Qwen Behaviour completed (April 16)
 - Waiting for new user stories from Product Owner Alex
 
+### April 17 Check-in Meeting
+- Mid-sprint check-in with Product Owner Alex
+- New user stories revealed
+
+### User Story #7: Qwen as Brains for Each Arm (Haris)
+- **Owner:** Haris
+- **Started:** April 17, 2026
+- **Status:** 🔄 IN PROGRESS
+- **Branch:** dev-haris
+- **Description:** 
+  - One Qwen instance (brain) per arm (Arm 1, Arm 2, Arm 3)
+  - Central unit (demo) sends task: "Arm 1, pick object"
+  - Arm 1 asks its Qwen brain: "What should I do?"
+  - Qwen processes and outputs decision: `{"action": "pick", "angle": 45}`
+  - Arm 1 executes the action
+  - Arm 1 sends feedback: "✅ Task complete" or "❌ Failed - motor error"
+  - Brain updates state and sends feedback to central unit
+  - Frontend shows notification: ✅ SUCCESS or ❌ FAILED
+
+**Implementation Plan:**
+- [ ] **app/services/arm_brain.py** (NEW) - One Qwen brain per arm
+- [ ] **app/services/arm_execution.py** (NEW) - Execute task + collect feedback
+- [ ] **app/services/notifications.py** (NEW) - Success/failure alerts
+- [ ] **app/routes/arm_routes.py** (MODIFY) - Add `/execute_task` endpoint
+- [ ] **scripts/run_demo.py** (MODIFY) - Use new execution flow with Qwen brains
+- [ ] **tests/test_arm_execution.py** (NEW) - Unit tests for execution service
+- [ ] **Documentation response** - How to test, run, and what results show
+
+**Testing:**
+- [ ] Local test with `docker-compose up --build`
+- [ ] Show team + Alex: "Here's Qwen as brains for each arm"
+- [ ] Get approval
+- [ ] Merge to dev branch for integration testing
+
 ---
 
 ## TECHNICAL DOCUMENTATION
