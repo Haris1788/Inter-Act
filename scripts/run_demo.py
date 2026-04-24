@@ -198,26 +198,32 @@ class ArmController:
             self.log(self.arm_id, f"Picking {obj_id} from intake")
             time.sleep(ACTION_DURATION * self.speed)
 
-        # Pick up: move to 180, attach, hold
+        # Pick: rotate to pick position
+        self.log(self.arm_id, f"Picking {obj_id}: moving to {PICK_ANGLE}°")
         self.move_to(PICK_ANGLE)
         self.emit_object(obj_id, "carried", self.arm_id)
         time.sleep(ACTION_DURATION * self.speed)
 
-        # Carry to 0
-        self.log(self.arm_id, f"Carrying {obj_id}...")
-        self.move_to(PLACE_ANGLE)
+        # Carry: move to handoff/output position
+        if self.output_tp is not None:
+            self.log(self.arm_id, f"Carrying {obj_id}: moving to handoff at {PLACE_ANGLE}°")
+            self.move_to(PLACE_ANGLE)
+        else:
+            self.log(self.arm_id, f"Carrying {obj_id}: moving to output at {PLACE_ANGLE}°")
+            self.move_to(PLACE_ANGLE)
 
-        # Place: signal downstream, retract in parallel
+        # Place: signal downstream and retract
         if self.output_tp is not None:
             self.output_tp.wait_until_empty(timeout=30.0, cancel_check=self._is_allowed)
             self.log(self.arm_id, f"Placed {obj_id}, signaling...")
             self.emit_object(obj_id, self.handoff_place)
             self.output_tp.place(obj_id)
-            self.log(self.arm_id, f"Retracting...")
+            self.log(self.arm_id, f"Retracting to rest at {REST_ANGLE}°")
             self.move_to(REST_ANGLE)
         else:
             self.log(self.arm_id, f"Delivered {obj_id} to output!")
             self.emit_object(obj_id, "output")
+            self.log(self.arm_id, f"Retracting to rest at {REST_ANGLE}°")
             self.move_to(REST_ANGLE)
 
         time.sleep(ACTION_DURATION * self.speed)

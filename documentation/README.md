@@ -2,7 +2,7 @@
 
 ## 📋 CURRENT WORK (Sprint 2: April 17-24, 2026)
 
-**User Story #7: Qwen as Brains for Each Arm** (Haris - dev-haris branch)
+**User Story #16: Qwen as Brains for Each Arm** (Haris - dev-haris branch)
 
 🔄 **IN PROGRESS** - Building independent Qwen decision engines for each arm
 

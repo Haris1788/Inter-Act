@@ -281,6 +281,7 @@ def execute_task():
     return jsonify(result), status_code
 
 
+@arm_bp.route('/state', methods=['GET'])
 def get_state():
     """Get the current state of all arms.
 
