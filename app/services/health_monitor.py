@@ -16,6 +16,7 @@ from datetime import datetime
 import requests
 
 from app.models import arm_state
+from app.models import asset_state
 from app.models import pipeline_config
 
 _monitor_thread = None
@@ -44,6 +45,39 @@ def _check_arm(arm_id, timeout):
         return resp.status_code == 200
     except Exception:
         return False
+
+
+# ── Phase 6: non-arm asset health checks ──────────────────────────────
+
+def _get_asset_url(asset_id):
+    """Build the health URL for a non-arm asset container.
+
+    Docker Compose service name == asset id (`veh-a`, `conv-1`). Outside
+    Docker we don't auto-monitor (ports vary), so this returns None.
+    """
+    if _DOCKER_MODE:
+        return f"http://{asset_id}:8000/health"
+    return None
+
+
+def _check_asset(asset_id, timeout):
+    url = _get_asset_url(asset_id)
+    if url is None:
+        return None  # local mode: skip auto-monitor
+    try:
+        resp = requests.get(url, timeout=timeout)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _emit_asset_health(asset_id, status, error=None):
+    from app import socketio
+    socketio.emit("asset_health", {
+        "asset_id": asset_id,
+        "status": status,
+        "error": error,
+    })
 
 
 def _emit_health(arm_id, health, error=None):
@@ -147,6 +181,37 @@ def _monitor_loop():
                     error_msg = f"missed {missed[arm_id]} health check(s)"
                     arm_state.set_health(arm_id, "unhealthy", error=error_msg)
                     _emit_health(arm_id, "unhealthy", error_msg)
+
+        # ── Phase 6: poll non-arm asset containers (vehicle, conveyor) ──
+        # Asset registry is populated either by /assets/<id>/register from
+        # asset containers themselves, or — in this phase — implicitly by
+        # the demo runner / config helpers. We iterate whatever is registered.
+        for asset_id, rec in asset_state.get_all().items():
+            current = rec.get("status")
+            alive = _check_asset(asset_id, timeout)
+            if alive is None:
+                continue  # not docker mode — skip
+
+            if current == "failed":
+                if alive:
+                    asset_state.recover(asset_id)
+                    asset_state.mark_idle(asset_id)
+                    missed[asset_id] = 0
+                    _emit_asset_health(asset_id, "idle")
+                    _emit_log("system", f"{asset_id} recovered")
+                continue
+
+            if alive:
+                missed[asset_id] = 0
+            else:
+                missed[asset_id] = missed.get(asset_id, 0) + 1
+                if missed[asset_id] >= max_missed:
+                    asset_state.fail(asset_id, "container stopped responding")
+                    missed[asset_id] = 0
+                    _emit_asset_health(asset_id, "failed",
+                                       "container stopped responding")
+                    _emit_log("pipeline",
+                              f"{asset_id} FAILED: container stopped responding")
 
         time.sleep(interval)
 

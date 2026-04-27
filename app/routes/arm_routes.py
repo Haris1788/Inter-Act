@@ -17,6 +17,7 @@ from app.models import arm_state
 from app.models import asset_state
 from app.models.scene_config import get_full_config
 from app.models import pipeline_config
+from app.services import container_manager
 from app import socketio
 
 arm_bp = Blueprint('arms', __name__)
@@ -271,9 +272,17 @@ def set_arm_health(arm_id):
 
 @arm_bp.route('/arms/<int:arm_id>/stop', methods=['POST'])
 def stop_arm(arm_id):
-    """Stop an arm and propagate to all downstream dependents."""
+    """Stop an arm container AND propagate to all downstream dependents.
+
+    Phase 7: actually stops the docker container so the failure path is
+    indistinguishable from a `docker stop` issued from the CLI. State
+    update remains so downstream cascades happen instantly without
+    waiting for the health monitor.
+    """
     data = request.get_json(silent=True) or {}
     reason = data.get('reason', 'manually stopped')
+
+    docker_err = container_manager.stop_container(f"arm-{arm_id}")
 
     arm_state.mark_arm_stopped(arm_id, reason)
     downstream = pipeline_config.get_all_downstream(arm_id)
@@ -296,6 +305,25 @@ def stop_arm(arm_id):
         "status": "ok",
         "arm_id": arm_id,
         "downstream_stopped": downstream,
+        "container_control": "ok" if docker_err is None else docker_err,
+    })
+
+
+@arm_bp.route('/arms/<int:arm_id>/start', methods=['POST'])
+def start_arm(arm_id):
+    """Start an arm container. Health monitor recovers the in-memory state."""
+    docker_err = container_manager.start_container(f"arm-{arm_id}")
+
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    socketio.emit('log_message', {
+        'timestamp': timestamp,
+        'source': 'pipeline',
+        'message': f'Arm {arm_id} container start requested',
+    })
+    return jsonify({
+        "status": "ok",
+        "arm_id": arm_id,
+        "container_control": "ok" if docker_err is None else docker_err,
     })
 
 
@@ -356,9 +384,19 @@ def get_asset_runtime_state(asset_id):
 
 @arm_bp.route('/assets/<asset_id>/fail', methods=['POST'])
 def fail_asset(asset_id):
-    """Mark a non-arm asset as failed. Caller must restart pipeline to reset."""
+    """Stop the asset's container, then mark it failed.
+
+    Phase 7: failure is now driven by Docker, not an in-memory flag. The
+    container is stopped first so health pings start failing immediately;
+    in-memory `asset_state.fail()` mirrors the reality.
+    """
     data = request.get_json(silent=True) or {}
     reason = data.get('reason', 'manually failed')
+
+    # 1) Stop the container (best-effort; soft-fails when docker not wired up).
+    docker_err = container_manager.stop_container(asset_id)
+
+    # 2) Flip in-memory state so the rest of the system reacts immediately.
     rec = asset_state.fail(asset_id, reason)
     if rec is None:
         return jsonify({"error": "unknown asset", "code": "NOT_FOUND"}), 404
@@ -370,12 +408,22 @@ def fail_asset(asset_id):
         'message': f'{asset_id} FAILED: {reason}',
     })
     socketio.emit('asset_health', {"asset_id": asset_id, **rec})
-    return jsonify({"status": "ok", "asset": rec})
+    return jsonify({
+        "status": "ok",
+        "asset": rec,
+        "container_control": "ok" if docker_err is None else docker_err,
+    })
 
 
 @arm_bp.route('/assets/<asset_id>/recover', methods=['POST'])
 def recover_asset(asset_id):
-    """Clear an asset's failure flag. Pipeline resumes from last valid state."""
+    """Start the asset's container, then mark it recovering.
+
+    Health monitor will flip the asset back to `idle` once /health
+    succeeds. Caller doesn't need to wait for that here.
+    """
+    docker_err = container_manager.start_container(asset_id)
+
     rec = asset_state.recover(asset_id)
     if rec is None:
         return jsonify({"error": "unknown asset", "code": "NOT_FOUND"}), 404
@@ -387,7 +435,11 @@ def recover_asset(asset_id):
         'message': f'{asset_id} recovering',
     })
     socketio.emit('asset_health', {"asset_id": asset_id, **rec})
-    return jsonify({"status": "ok", "asset": rec})
+    return jsonify({
+        "status": "ok",
+        "asset": rec,
+        "container_control": "ok" if docker_err is None else docker_err,
+    })
 
 
 # ── Demo Proxy (forwards to demo-runner container) ──────
