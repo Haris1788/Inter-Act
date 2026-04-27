@@ -381,6 +381,28 @@ def _compute_graph_layout(arms_cfg, extra_assets):
     }
 
 
+# Hook generate_scene_config so /config also exposes the unified asset graph
+# without changing existing keys. Defined as a wrapper to avoid mutating the
+# layout return shape used by older consumers.
+_orig_generate_scene_config = generate_scene_config
+
+
+def generate_scene_config():  # noqa: F811 — intentional override
+    """Augment the scene config with `asset_graph` for backend consumers.
+
+    Existing keys (`arms`, `assets`, `reach_zones`, `handoff_zones`,
+    `intake_zone`, `output_zone`, `labels`, `canvas_*`, `min_angle`,
+    `max_angle`, `default_angle`) are preserved verbatim. New top-level
+    `asset_graph` key carries the unified registry from `get_all_assets()`.
+    """
+    base = _orig_generate_scene_config()
+    base['asset_graph'] = get_all_assets()
+    valid, errors = validate_asset_graph()
+    base['graph_valid'] = valid
+    base['graph_errors'] = errors
+    return base
+
+
 def _build_flow_order(all_assets, asset_by_id):
     """Build visual flow order from asset graph using topological sort.
     
@@ -609,6 +631,216 @@ def get_topological_order():
             if in_degree[dependent] == 0:
                 queue.append(dependent)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Unified asset registry (Phase 1 backend foundation).
+# Arms remain backend-controlled; vehicles and conveyors are registered but
+# passive (no controller, no socket events). All assets are exposed here as
+# plain dicts so consumers can iterate the full graph without recomputing.
+# ---------------------------------------------------------------------------
+
+ASSET_TYPES = ('arm', 'vehicle', 'conveyor')
+
+
+def _arm_string_id(numeric_id):
+    return f"arm-{numeric_id}"
+
+
+def get_all_assets():
+    """Return the unified asset registry as a list of dicts.
+
+    Shape per entry:
+        {
+          'id':         str,        # 'arm-1' | 'veh-a' | 'conv-1'
+          'type':       str,        # 'arm' | 'vehicle' | 'conveyor'
+          'label':      str,
+          'color':      str,
+          'upstream':   list[str],  # asset IDs
+          'downstream': list[str],  # asset IDs
+          'status':     str,        # 'idle' (initial)
+          'geometry':   dict,       # type-specific
+          'critical':   bool,       # arms only; False for non-arm
+          'numeric_id': int|None,   # arms only
+        }
+
+    Order: arms first by numeric id, then non-arm assets in flow order.
+    Geometry for arms is the positioned pivot (after layout engine), so
+    consumers see exactly the same coordinates the frontend renders.
+    """
+    cfg = get_config()
+    arms_cfg = cfg.get('arms') or []
+    extras = get_extra_assets()
+    scene = _compute_graph_layout(arms_cfg, extras)
+
+    out = []
+    arms_cfg_by_id = {a['id']: a for a in arms_cfg}
+
+    for arm in scene['arms']:
+        aid = arm['id']
+        sid = _arm_string_id(aid)
+        raw = arms_cfg_by_id.get(aid, {})
+
+        upstream = [_arm_string_id(d) for d in raw.get('depends_on', [])]
+        downstream = [
+            _arm_string_id(other['id'])
+            for other in arms_cfg
+            if aid in other.get('depends_on', [])
+        ]
+
+        # Bridge with non-arm graph so a full upstream/downstream view exists.
+        for ea in extras:
+            if sid in ea.get('upstream', []) and ea['id'] not in downstream:
+                downstream.append(ea['id'])
+            if sid in ea.get('downstream', []) and ea['id'] not in upstream:
+                upstream.append(ea['id'])
+
+        out.append({
+            'id': sid,
+            'type': 'arm',
+            'label': arm['label'],
+            'color': arm['color'],
+            'upstream': upstream,
+            'downstream': downstream,
+            'status': 'idle',
+            'critical': bool(raw.get('critical', False)),
+            'numeric_id': aid,
+            'geometry': {
+                'pivot': {'x': arm['pivot_x'], 'y': arm['pivot_y']},
+                'length': arm['length'],
+                'min_angle': MIN_ANGLE,
+                'max_angle': MAX_ANGLE,
+            },
+        })
+
+    for ea in scene['assets']:
+        out.append({
+            'id': ea['id'],
+            'type': ea['type'],
+            'label': ea['label'],
+            'color': ea['color'],
+            'upstream': list(ea.get('upstream', [])),
+            'downstream': list(ea.get('downstream', [])),
+            'status': 'idle',
+            'critical': False,
+            'numeric_id': None,
+            'geometry': ea['geometry'],
+        })
+
+    return out
+
+
+def get_asset(asset_id):
+    """Lookup unified asset by string id. Returns None if not found."""
+    for a in get_all_assets():
+        if a['id'] == asset_id:
+            return a
+    return None
+
+
+def get_asset_ids():
+    """Return list of all asset ids in registry order."""
+    return [a['id'] for a in get_all_assets()]
+
+
+def get_assets_by_type(asset_type):
+    """Return assets of a given type (arm | vehicle | conveyor)."""
+    return [a for a in get_all_assets() if a['type'] == asset_type]
+
+
+def validate_asset_graph():
+    """Validate the full asset graph (arms + extras).
+
+    Checks:
+    - Arm `depends_on` references valid arm numeric ids (existing rule).
+    - Non-arm `upstream`/`downstream` references resolve to known asset ids.
+    - No cycles across the unified graph (string id space).
+    - Asset type is one of ASSET_TYPES.
+
+    Returns (valid: bool, errors: list[str]).
+    """
+    cfg = get_config()
+    arms_cfg = cfg.get('arms') or []
+    extras_raw = cfg.get('assets') or []
+    errors = []
+
+    arm_numeric_ids = {a['id'] for a in arms_cfg}
+    arm_string_ids = {_arm_string_id(aid) for aid in arm_numeric_ids}
+    extra_ids = []
+    for ea in extras_raw:
+        eid = ea.get('id')
+        etype = ea.get('type')
+        if etype == 'arm':
+            continue  # legacy: arms live under arms:
+        if etype not in ASSET_TYPES:
+            errors.append(f"Asset {eid!r} has unknown type {etype!r}")
+            continue
+        if not eid:
+            errors.append("Asset entry missing id")
+            continue
+        extra_ids.append(eid)
+    string_ids = arm_string_ids | set(extra_ids)
+
+    # Arm depends_on must point to valid arm numeric ids.
+    for arm in arms_cfg:
+        for dep in arm.get('depends_on', []):
+            if dep not in arm_numeric_ids:
+                errors.append(
+                    f"Arm {arm['id']} depends on non-existent arm {dep}"
+                )
+
+    # Non-arm refs must resolve to known asset ids (string space).
+    for ea in extras_raw:
+        if ea.get('type') == 'arm':
+            continue
+        eid = ea.get('id', '?')
+        for ref in ea.get('upstream', []):
+            if ref not in string_ids:
+                errors.append(
+                    f"Asset {eid!r} upstream references unknown asset {ref!r}"
+                )
+        for ref in ea.get('downstream', []):
+            if ref not in string_ids:
+                errors.append(
+                    f"Asset {eid!r} downstream references unknown asset {ref!r}"
+                )
+
+    # Cycle detection across the full graph.
+    in_degree = {sid: 0 for sid in string_ids}
+    out_adj = {sid: [] for sid in string_ids}
+
+    def add_edge(src, dst):
+        if src in in_degree and dst in in_degree:
+            in_degree[dst] += 1
+            out_adj[src].append(dst)
+
+    for arm in arms_cfg:
+        sid = _arm_string_id(arm['id'])
+        for dep in arm.get('depends_on', []):
+            add_edge(_arm_string_id(dep), sid)
+
+    for ea in extras_raw:
+        if ea.get('type') == 'arm' or ea.get('type') not in ASSET_TYPES:
+            continue
+        eid = ea['id']
+        for u in ea.get('upstream', []):
+            add_edge(u, eid)
+        for d in ea.get('downstream', []):
+            add_edge(eid, d)
+
+    queue = [n for n, deg in in_degree.items() if deg == 0]
+    visited = 0
+    while queue:
+        cur = queue.pop(0)
+        visited += 1
+        for nxt in out_adj[cur]:
+            in_degree[nxt] -= 1
+            if in_degree[nxt] == 0:
+                queue.append(nxt)
+    if visited != len(in_degree):
+        errors.append("Cycle detected in asset graph")
+
+    return len(errors) == 0, errors
 
 
 def get_health_config():
