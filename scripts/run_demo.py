@@ -22,6 +22,20 @@ import yaml
 from utils import (send_command, send_object_event, send_log, reset_objects,
                     send_health, send_stop_arm, is_arm_allowed_http, DEFAULT_HOST)
 
+# Phase 2: optional asset chain (vehicle/conveyor) controllers — imported
+# lazily so the demo can still run without the Flask app context (older
+# call sites that bypass `run_pipeline_with_callbacks`).
+try:
+    from app.services.asset_controllers import VehicleController, ConveyorController
+    from app.models import asset_state, pipeline_config as _pc
+    _ASSET_RUNTIME_AVAILABLE = True
+except Exception:
+    VehicleController = None
+    ConveyorController = None
+    asset_state = None
+    _pc = None
+    _ASSET_RUNTIME_AVAILABLE = False
+
 # ── Configuration ──────────────────────────────────────────
 
 PICK_ANGLE = 180.0
@@ -403,7 +417,99 @@ def thread_safe_log(arm_id, message):
             _browser_log_fn(f"arm_{arm_id}", message)
 
 
+def thread_safe_log_asset(asset_id, message):
+    """Log helper for non-arm assets (vehicle, conveyor)."""
+    with _log_lock:
+        timestamp = time.strftime("%H:%M:%S")
+        print(f"[{timestamp}] {asset_id}: {message}")
+        if _browser_log_fn:
+            _browser_log_fn(asset_id, message)
+
+
 # ── Dynamic Pipeline Builder ──────────────────────────────
+
+
+def _find_asset_chain(src_arm_id, dst_arm_id, all_assets):
+    """Find a non-arm chain (vehicle/conveyor) connecting two arms.
+
+    Returns ordered list of asset dicts, or None if no chain exists.
+    Uses upstream/downstream string ids (`arm-1`, `veh-a`, `conv-1`).
+    """
+    src_id = f"arm-{src_arm_id}"
+    dst_id = f"arm-{dst_arm_id}"
+    by_id = {a["id"]: a for a in all_assets}
+
+    first = None
+    for a in all_assets:
+        if a.get("type") == "arm":
+            continue
+        if src_id in a.get("upstream", []):
+            first = a
+            break
+    if first is None:
+        return None
+
+    chain = [first]
+    cur = first
+    while cur.get("downstream"):
+        nxt = by_id.get(cur["downstream"][0])
+        if nxt is None:
+            break
+        if nxt["id"] == dst_id:
+            return chain
+        if nxt.get("type") == "arm":
+            return None
+        chain.append(nxt)
+        cur = nxt
+    return None
+
+
+def _build_asset_controller(asset, input_tp, output_tp, num_products,
+                            speed_factor, src_arm_id, dst_arm_id,
+                            object_event_fn, is_allowed_fn, log_fn):
+    """Construct a VehicleController or ConveyorController for an asset dict."""
+    if not _ASSET_RUNTIME_AVAILABLE:
+        return None
+
+    def emit(obj_id, state, **extra):
+        # Adapt to the demo runner's object_event callback signature.
+        carrier_arm = extra.get("carrier_arm")
+        try:
+            object_event_fn(obj_id, state, carrier_arm=carrier_arm,
+                            carrier_asset=extra.get("carrier_asset"),
+                            slot=extra.get("slot"))
+        except TypeError:
+            # Old 3-arg signature — fall back to direct HTTP call.
+            send_object_event(DEFAULT_HOST, obj_id, state,
+                              carrier_arm=carrier_arm,
+                              carrier_asset=extra.get("carrier_asset"),
+                              slot=extra.get("slot"))
+
+    upstream_alive = (lambda: is_allowed_fn(src_arm_id)) if is_allowed_fn else (lambda: True)
+    downstream_alive = (lambda: is_allowed_fn(dst_arm_id)) if is_allowed_fn else (lambda: True)
+
+    common = dict(
+        asset_id=asset["id"],
+        label=asset.get("label", asset["id"]),
+        input_tp=input_tp,
+        output_tp=output_tp,
+        speed_factor=speed_factor,
+        log_fn=log_fn,
+        object_event_fn=emit,
+        upstream_alive_fn=upstream_alive,
+        downstream_alive_fn=downstream_alive,
+        num_products=num_products,
+    )
+    if asset["type"] == "vehicle":
+        return VehicleController(**common, travel_time=2.0)
+    if asset["type"] == "conveyor":
+        geom = asset.get("geometry", {}) or {}
+        return ConveyorController(
+            **common,
+            slot_count=int(geom.get("slot_count", 3)),
+            shift_interval=float(geom.get("shift_interval", 1.0)),
+        )
+    return None
 
 
 def _get_arm_failure_policy(arm_cfg, global_policy):
@@ -520,11 +626,56 @@ def _run_pipeline_core(speed_factor, num_products,
         # For branching graphs, each dependency edge gets its own transfer point.
         arm_map = {a["id"]: a for a in arms_cfg}
         tps = {}  # (from_id, to_id) -> TransferPoint
+        # Phase 2: when a non-arm chain (vehicle/conveyor) connects two arms,
+        # the dst arm's input_tp is overridden to the chain exit TP. Source
+        # arm continues to write into the original tps[(src,dst)] which feeds
+        # the first AssetController in the chain.
+        chain_input_overrides = {}     # (src_id, dst_id) -> TP for dst arm
+        asset_controllers = []
+        if _ASSET_RUNTIME_AVAILABLE:
+            asset_state.reset()
 
         for arm_cfg in arms_cfg:
             for dep_id in arm_cfg.get("depends_on", []):
                 key = (dep_id, arm_cfg["id"])
                 tps[key] = TransferPoint(f"TP (Arm{dep_id}->Arm{arm_cfg['id']})")
+
+        # Splice asset controllers into edges that have a non-arm chain.
+        if _ASSET_RUNTIME_AVAILABLE and _pc is not None:
+            try:
+                all_assets = _pc.get_all_assets()
+            except Exception:
+                all_assets = []
+            for arm_cfg in arms_cfg:
+                for dep_id in arm_cfg.get("depends_on", []):
+                    chain = _find_asset_chain(dep_id, arm_cfg["id"], all_assets)
+                    if not chain:
+                        continue
+                    edge_key = (dep_id, arm_cfg["id"])
+                    src_tp = tps[edge_key]
+                    internal_tps = [
+                        TransferPoint(f"TP-{a['id']}->{arm_cfg['id']}-{i}")
+                        for i, a in enumerate(chain)
+                    ]
+                    for i, asset in enumerate(chain):
+                        in_tp = src_tp if i == 0 else internal_tps[i - 1]
+                        out_tp = internal_tps[i]
+                        ctrl = _build_asset_controller(
+                            asset=asset,
+                            input_tp=in_tp,
+                            output_tp=out_tp,
+                            num_products=num_products,
+                            speed_factor=speed_factor,
+                            src_arm_id=dep_id,
+                            dst_arm_id=arm_cfg["id"],
+                            object_event_fn=object_event_fn,
+                            is_allowed_fn=is_allowed_fn,
+                            log_fn=lambda src, msg: thread_safe_log_asset(src, msg),
+                        )
+                        if ctrl is not None:
+                            asset_controllers.append(ctrl)
+                    # Dst arm picks from chain's exit TP, not the original.
+                    chain_input_overrides[edge_key] = internal_tps[-1]
 
         # Use topological order from config to determine execution order
         topo_order = load_pipeline_config().get("_topo_order", None)
@@ -549,8 +700,13 @@ def _run_pipeline_core(speed_factor, num_products,
             arm_cfg = arm_map[arm_id]
             deps = arm_cfg.get("depends_on", [])
 
-            # Input: transfer point from first dependency (linear chains have one)
-            input_tp = tps.get((deps[0], arm_id)) if deps else None
+            # Input: transfer point from first dependency (linear chains have one).
+            # Phase 2: if a non-arm chain feeds this arm, use the chain's exit TP.
+            if deps:
+                edge_key = (deps[0], arm_id)
+                input_tp = chain_input_overrides.get(edge_key, tps.get(edge_key))
+            else:
+                input_tp = None
             upstream_id = deps[0] if deps else None
 
             # Output: transfer points to all arms that depend on this one
@@ -613,11 +769,19 @@ def _run_pipeline_core(speed_factor, num_products,
         t = threading.Thread(target=ctrl.run, name=f"Arm-{ctrl.arm_id}", daemon=True)
         threads.append(t)
 
+    # Phase 2: launch asset controller threads (vehicle/conveyor) — they
+    # are themselves Thread subclasses, so just start them.
+    asset_ctrl_list = locals().get("asset_controllers", []) or []
+    for ac in asset_ctrl_list:
+        ac.start()
+
     start_time = time.time()
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=120)
+    for ac in asset_ctrl_list:
+        ac.join(timeout=10)
     elapsed = time.time() - start_time
 
     # Summary

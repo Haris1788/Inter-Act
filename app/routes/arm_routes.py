@@ -14,6 +14,7 @@ import threading
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from app.models import arm_state
+from app.models import asset_state
 from app.models.scene_config import get_full_config
 from app.models import pipeline_config
 from app import socketio
@@ -124,8 +125,15 @@ def object_event():
     if not object_id or not state:
         return jsonify({"error": "Missing object_id or state"}), 400
 
-    valid_states = pipeline_config.get_valid_handoff_states()
-    if state not in valid_states:
+    # Phase 2: also accept asset-mediated states like 'on_<asset_id>',
+    # 'at_<asset_id>_exit', and 'carried' with carrier_asset payload.
+    valid_states = set(pipeline_config.get_valid_handoff_states())
+    is_asset_state = (
+        state.startswith("on_")
+        or state.startswith("at_")
+        or state == "carried"
+    )
+    if state not in valid_states and not is_asset_state:
         return jsonify({"error": f"Invalid state: {state}"}), 400
 
     obj = {
@@ -133,6 +141,12 @@ def object_event():
         "state": state,
         "carrier_arm": data.get('carrier_arm'),
     }
+    # Optional asset metadata — additive, frontend already reads carrier_asset.
+    carrier_asset = data.get('carrier_asset')
+    if carrier_asset:
+        obj["carrier_asset"] = carrier_asset
+    if 'slot' in data:
+        obj['slot'] = data['slot']
     with _object_lock:
         _object_states[object_id] = obj
     socketio.emit('object_update', obj)
@@ -317,6 +331,58 @@ def post_log():
         'message': data.get('message', ''),
     })
     return jsonify({"status": "ok"})
+
+
+# ── Phase 2: non-arm asset runtime state ───────────────
+
+@arm_bp.route('/assets/state', methods=['GET'])
+def get_assets_runtime_state():
+    """Return runtime status for every registered non-arm asset."""
+    return jsonify({"assets": asset_state.get_all()})
+
+
+@arm_bp.route('/assets/<asset_id>/state', methods=['GET'])
+def get_asset_runtime_state(asset_id):
+    rec = asset_state.get(asset_id)
+    if rec is None:
+        return jsonify({"error": "unknown asset", "code": "NOT_FOUND"}), 404
+    return jsonify(rec)
+
+
+@arm_bp.route('/assets/<asset_id>/fail', methods=['POST'])
+def fail_asset(asset_id):
+    """Mark a non-arm asset as failed. Caller must restart pipeline to reset."""
+    data = request.get_json(silent=True) or {}
+    reason = data.get('reason', 'manually failed')
+    rec = asset_state.fail(asset_id, reason)
+    if rec is None:
+        return jsonify({"error": "unknown asset", "code": "NOT_FOUND"}), 404
+
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    socketio.emit('log_message', {
+        'timestamp': timestamp,
+        'source': asset_id,
+        'message': f'{asset_id} FAILED: {reason}',
+    })
+    socketio.emit('asset_health', {"asset_id": asset_id, **rec})
+    return jsonify({"status": "ok", "asset": rec})
+
+
+@arm_bp.route('/assets/<asset_id>/recover', methods=['POST'])
+def recover_asset(asset_id):
+    """Clear an asset's failure flag. Pipeline resumes from last valid state."""
+    rec = asset_state.recover(asset_id)
+    if rec is None:
+        return jsonify({"error": "unknown asset", "code": "NOT_FOUND"}), 404
+
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    socketio.emit('log_message', {
+        'timestamp': timestamp,
+        'source': asset_id,
+        'message': f'{asset_id} recovering',
+    })
+    socketio.emit('asset_health', {"asset_id": asset_id, **rec})
+    return jsonify({"status": "ok", "asset": rec})
 
 
 # ── Demo Proxy (forwards to demo-runner container) ──────

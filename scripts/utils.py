@@ -94,22 +94,30 @@ def send_log(host, source, message):
         pass  # Non-critical
 
 
-def send_object_event(host, object_id, state, carrier_arm=None):
+def send_object_event(host, object_id, state, carrier_arm=None,
+                      carrier_asset=None, slot=None):
     """Notify the server about an object's position in the pipeline.
 
     Args:
         host: Server URL.
         object_id: Object identifier (e.g. "Obj1").
-        state: "intake", "carried", "handoff_1"..."handoff_{N-1}", or "output".
-               Authoritative list: pipeline_config.get_valid_handoff_states().
-        carrier_arm: Arm ID when state is "carried", None otherwise.
+        state: "intake", "carried", "handoff_1"..."handoff_{N-1}", "output",
+               or asset-mediated states like "on_<asset_id>" / "at_<asset_id>_exit".
+        carrier_arm: Arm ID when state is "carried" by an arm.
+        carrier_asset: Asset id when carrier is a vehicle/conveyor (Phase 2).
+        slot: Optional slot index for conveyor states.
     """
+    payload = {
+        'object_id': object_id,
+        'state': state,
+        'carrier_arm': carrier_arm,
+    }
+    if carrier_asset is not None:
+        payload['carrier_asset'] = carrier_asset
+    if slot is not None:
+        payload['slot'] = slot
     try:
-        requests.post(f'{host}/object_event', json={
-            'object_id': object_id,
-            'state': state,
-            'carrier_arm': carrier_arm,
-        }, timeout=5)
+        requests.post(f'{host}/object_event', json=payload, timeout=5)
     except Exception:
         pass  # Non-critical — don't break the pipeline if event fails
 
