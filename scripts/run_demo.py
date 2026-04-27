@@ -163,8 +163,21 @@ class _DrainComplete(Exception):
 # ── Arm Controller (runs in its own thread) ────────────────
 
 
-class ArmController:
-    """Controls one arm in the pipeline. Checks dependencies before each cycle."""
+try:
+    from app.core.module import Module as _ArmModuleBase
+except Exception:
+    _ArmModuleBase = object
+
+
+class ArmController(_ArmModuleBase):
+    """Controls one arm in the pipeline. Checks dependencies before each cycle.
+
+    Phase 4: inherits from `app.core.module.Module` so the pipeline builder
+    can treat arms identically to vehicles and conveyors. Internal behaviour
+    (drain-and-halt, retry policy, dependency awareness) is unchanged.
+    """
+
+    module_type = "arm"
 
     def __init__(self, arm_id, host, speed_factor, input_tp, output_tp,
                  num_products, log_fn, handoff_place=None,
@@ -172,7 +185,11 @@ class ArmController:
                  failure_policy=None,
                  is_allowed_fn=None, on_started_fn=None, on_failed_fn=None,
                  upstream_alive_fn=None, downstream_alive_fn=None,
-                 on_health_change_fn=None):
+                 on_health_change_fn=None,
+                 label=None, keep_alive=False):
+        self.keep_alive = keep_alive
+        if _ArmModuleBase is not object:
+            super().__init__(module_id=f"arm-{arm_id}", label=label or f"Arm {arm_id}")
         self.arm_id = arm_id
         self.host = host
         self.speed = speed_factor
@@ -180,6 +197,7 @@ class ArmController:
         self.output_tp = output_tp
         self.num_products = num_products
         self.log = log_fn
+        self.log_fn = log_fn
         self.processed = 0
         self.handoff_place = handoff_place
         self.error = None
@@ -210,9 +228,30 @@ class ArmController:
             send_object_event(self.host, obj_id, state, carrier_arm)
 
     def _report_state_change(self, state, reason=None):
-        """Report a pipeline state change (draining, stopped) without cascade."""
+        """Report a pipeline state change (draining, stopped) without cascade.
+
+        Phase 5 lifecycle: also mirror the change into Module._state so
+        non-arm neighbours observe arm failures through the unified Module
+        interface (their cancel_check calls `is_module_alive()`).
+        """
         if self._on_health_change:
             self._on_health_change(state, reason)
+        # Map arm health vocabulary to Module state machine.
+        mapped = {
+            "alive": "idle",
+            "idle": "idle",
+            "busy": "busy",
+            "draining": "draining",
+            "unhealthy": "draining",
+            "dead": "failed",
+            "stopped": "stopped",
+            "failed": "failed",
+            "recovering": "recovering",
+        }.get(state, "idle")
+        try:
+            self.set_state(mapped, reason)
+        except (ValueError, AttributeError):
+            pass
 
     def _report_drain_stop(self, reason):
         """Report this arm as stopped after drain completion (no cascade)."""
@@ -224,10 +263,18 @@ class ArmController:
         if self._is_allowed and not self._is_allowed():
             self.error = "blocked by upstream dependency"
             self.log(self.arm_id, "BLOCKED: upstream dependency stopped or failed")
+            try:
+                self.set_state("stopped", self.error)
+            except (ValueError, AttributeError):
+                pass
             return
 
         if self._on_started:
             self._on_started()
+        try:
+            self.set_state("busy")
+        except (ValueError, AttributeError):
+            pass
 
         try:
             self._run_cycle()
@@ -236,6 +283,26 @@ class ArmController:
             self.log(self.arm_id, f"FATAL ERROR: {e}")
             if self._on_failed:
                 self._on_failed(str(e))
+            try:
+                self.set_state("failed", str(e))
+            except (ValueError, AttributeError):
+                pass
+
+        # Module state reflects natural completion if not already failed/stopped.
+        try:
+            if self.state not in ("failed", "stopped"):
+                self.set_state("stopped")
+        except (ValueError, AttributeError):
+            pass
+
+        # Phase 5 lifecycle: stay alive after the configured product run
+        # finishes. Idle-wait until stop_module() fires (or fail/stopped).
+        if getattr(self, "keep_alive", False):
+            stop_event = getattr(self, "_stop_event", None)
+            if stop_event is not None:
+                self.log(self.arm_id, "idle — pipeline staying alive")
+                while not stop_event.is_set():
+                    time.sleep(0.5)
 
     def _process_one_product(self, obj_id):
         """Process a single product through this arm's cycle.
@@ -408,6 +475,30 @@ class ArmController:
 _log_lock = threading.Lock()
 _browser_log_fn = None
 
+# Phase 5 lifecycle: shared registry of running modules + manual stop signal
+# so external HTTP endpoints (demo-runner /stop) can halt the pipeline.
+_active_modules = []
+_stop_pipeline_event = threading.Event()
+
+
+def stop_pipeline():
+    """Stop every running module and signal the main demo loop to exit.
+
+    Safe to call from any thread (e.g. the demo-runner /stop route handler).
+    Idempotent — calling when no pipeline is active is a no-op.
+    """
+    _stop_pipeline_event.set()
+    for m in list(_active_modules):
+        try:
+            m.stop_module()
+        except Exception:
+            pass
+
+
+def get_active_modules():
+    """Return a snapshot list of currently running modules (debug helper)."""
+    return list(_active_modules)
+
 
 def thread_safe_log(arm_id, message):
     with _log_lock:
@@ -429,76 +520,71 @@ def thread_safe_log_asset(asset_id, message):
 # ── Dynamic Pipeline Builder ──────────────────────────────
 
 
-def _find_asset_chain(src_arm_id, dst_arm_id, all_assets):
-    """Find a non-arm chain (vehicle/conveyor) connecting two arms.
+def _build_arm_module(arm_cfg, num_products, speed_factor,
+                      set_angle_fn, object_event_fn, failure_cfg,
+                      make_is_allowed, make_on_started, make_on_failed,
+                      make_on_health_change, keep_alive=False):
+    """Construct an ArmController as a Module.
 
-    Returns ordered list of asset dicts, or None if no chain exists.
-    Uses upstream/downstream string ids (`arm-1`, `veh-a`, `conv-1`).
+    Phase 4: arms expose the same interface as vehicles/conveyors. Internal
+    behaviour (drain logic, retry, dependency awareness) is preserved.
+    Neighbour-alive callbacks are wired by the caller after TP linking.
     """
-    src_id = f"arm-{src_arm_id}"
-    dst_id = f"arm-{dst_arm_id}"
-    by_id = {a["id"]: a for a in all_assets}
-
-    first = None
-    for a in all_assets:
-        if a.get("type") == "arm":
-            continue
-        if src_id in a.get("upstream", []):
-            first = a
-            break
-    if first is None:
-        return None
-
-    chain = [first]
-    cur = first
-    while cur.get("downstream"):
-        nxt = by_id.get(cur["downstream"][0])
-        if nxt is None:
-            break
-        if nxt["id"] == dst_id:
-            return chain
-        if nxt.get("type") == "arm":
-            return None
-        chain.append(nxt)
-        cur = nxt
-    return None
+    return ArmController(
+        arm_id=arm_cfg["id"],
+        host=None,
+        speed_factor=speed_factor,
+        input_tp=None,
+        output_tp=None,
+        num_products=num_products,
+        log_fn=thread_safe_log,
+        set_angle_fn=set_angle_fn,
+        object_event_fn=object_event_fn,
+        failure_policy=_get_arm_failure_policy(arm_cfg, failure_cfg),
+        is_allowed_fn=make_is_allowed(arm_cfg["id"]),
+        on_started_fn=make_on_started(arm_cfg["id"]),
+        on_failed_fn=make_on_failed(arm_cfg["id"]),
+        on_health_change_fn=make_on_health_change(arm_cfg["id"]),
+        label=arm_cfg.get("label"),
+        keep_alive=keep_alive,
+    )
 
 
-def _build_asset_controller(asset, input_tp, output_tp, num_products,
-                            speed_factor, src_arm_id, dst_arm_id,
-                            object_event_fn, is_allowed_fn, log_fn):
-    """Construct a VehicleController or ConveyorController for an asset dict."""
+def _build_asset_module(asset, num_products, speed_factor, object_event_fn,
+                        keep_alive=False):
+    """Construct a VehicleController or ConveyorController as a Module.
+
+    Caller wires `input_tp`, `output_tp`, and neighbour-alive callbacks
+    after the linear TP chain is built.
+    """
     if not _ASSET_RUNTIME_AVAILABLE:
         return None
 
     def emit(obj_id, state, **extra):
-        # Adapt to the demo runner's object_event callback signature.
-        carrier_arm = extra.get("carrier_arm")
+        kw = dict(
+            carrier_asset=extra.get("carrier_asset"),
+            slot=extra.get("slot"),
+            start_time=extra.get("start_time"),
+            duration_ms=extra.get("duration_ms"),
+            event_time=extra.get("event_time"),
+        )
         try:
-            object_event_fn(obj_id, state, carrier_arm=carrier_arm,
-                            carrier_asset=extra.get("carrier_asset"),
-                            slot=extra.get("slot"))
+            object_event_fn(obj_id, state,
+                            carrier_arm=extra.get("carrier_arm"), **kw)
         except TypeError:
-            # Old 3-arg signature — fall back to direct HTTP call.
             send_object_event(DEFAULT_HOST, obj_id, state,
-                              carrier_arm=carrier_arm,
-                              carrier_asset=extra.get("carrier_asset"),
-                              slot=extra.get("slot"))
-
-    upstream_alive = (lambda: is_allowed_fn(src_arm_id)) if is_allowed_fn else (lambda: True)
-    downstream_alive = (lambda: is_allowed_fn(dst_arm_id)) if is_allowed_fn else (lambda: True)
+                              carrier_arm=extra.get("carrier_arm"), **kw)
 
     common = dict(
         asset_id=asset["id"],
         label=asset.get("label", asset["id"]),
-        input_tp=input_tp,
-        output_tp=output_tp,
+        input_tp=None,
+        output_tp=None,
         speed_factor=speed_factor,
-        log_fn=log_fn,
+        log_fn=thread_safe_log_asset,
         object_event_fn=emit,
-        upstream_alive_fn=upstream_alive,
-        downstream_alive_fn=downstream_alive,
         num_products=num_products,
+        keep_alive=keep_alive,
     )
     if asset["type"] == "vehicle":
         return VehicleController(**common, travel_time=2.0)
@@ -585,217 +671,152 @@ def _run_pipeline_core(speed_factor, num_products,
             return lambda status, error=None: on_health_fn(aid, status, error)
         return None
 
-    # Build arm controllers based on mode
-    controllers = []
+    # ── Phase 4: unified module-based pipeline builder. ─────────────
+    # Every component (arm, vehicle, conveyor, future types) implements the
+    # `Module` interface. The builder reads the flow order from config and
+    # connects modules linearly via TransferPoints. There is no type-specific
+    # branching here — adding a new module type requires zero changes in
+    # this function, only a class implementing `Module`.
+    if _ASSET_RUNTIME_AVAILABLE:
+        asset_state.reset()
 
-    if mode == "sequential":
-        tps = [TransferPoint(f"TP{i+1} (Arm{arm_ids[i]}->Arm{arm_ids[i+1]})")
-               for i in range(n - 1)]
-
-        for i, arm_cfg in enumerate(arms_cfg):
-            input_tp = tps[i - 1] if i > 0 else None
-            output_tp = tps[i] if i < n - 1 else None
-            handoff = f"handoff_{i + 1}" if i < n - 1 else None
-            upstream_id = arm_ids[i - 1] if i > 0 else None
-            downstream_id = arm_ids[i + 1] if i < n - 1 else None
-
-            ctrl = ArmController(
-                arm_id=arm_cfg["id"],
-                host=None,
-                speed_factor=speed_factor,
-                input_tp=input_tp,
-                output_tp=output_tp,
-                num_products=num_products,
-                log_fn=thread_safe_log,
-                handoff_place=handoff,
-                set_angle_fn=set_angle_fn,
-                object_event_fn=object_event_fn,
-                failure_policy=_get_arm_failure_policy(arm_cfg, failure_cfg),
-                is_allowed_fn=make_is_allowed(arm_cfg["id"]),
-                on_started_fn=make_on_started(arm_cfg["id"]),
-                on_failed_fn=make_on_failed(arm_cfg["id"]),
-                upstream_alive_fn=make_is_allowed(upstream_id),
-                downstream_alive_fn=make_is_allowed(downstream_id),
-                on_health_change_fn=make_on_health_change(arm_cfg["id"]),
-            )
-            controllers.append(ctrl)
-
-    elif mode == "dependency":
-        # Build transfer points from the depends_on graph.
-        # For a linear chain (1→2→3), this is identical to sequential.
-        # For branching graphs, each dependency edge gets its own transfer point.
+    if mode == "parallel":
+        # Each arm is its own source+sink — no TP chain, no inter-module flow.
+        modules = [
+            _build_arm_module(arm_cfg, num_products, speed_factor,
+                              set_angle_fn, object_event_fn, failure_cfg,
+                              make_is_allowed, make_on_started, make_on_failed,
+                              make_on_health_change)
+            for arm_cfg in arms_cfg
+        ]
+    else:
+        # sequential / dependency: linear pipeline through ordered modules.
+        flow_ids = (_pc.get_module_flow_order()
+                    if _pc is not None
+                    else [f"arm-{a['id']}" for a in arms_cfg])
         arm_map = {a["id"]: a for a in arms_cfg}
-        tps = {}  # (from_id, to_id) -> TransferPoint
-        # Phase 2: when a non-arm chain (vehicle/conveyor) connects two arms,
-        # the dst arm's input_tp is overridden to the chain exit TP. Source
-        # arm continues to write into the original tps[(src,dst)] which feeds
-        # the first AssetController in the chain.
-        chain_input_overrides = {}     # (src_id, dst_id) -> TP for dst arm
-        asset_controllers = []
-        if _ASSET_RUNTIME_AVAILABLE:
-            asset_state.reset()
-
-        for arm_cfg in arms_cfg:
-            for dep_id in arm_cfg.get("depends_on", []):
-                key = (dep_id, arm_cfg["id"])
-                tps[key] = TransferPoint(f"TP (Arm{dep_id}->Arm{arm_cfg['id']})")
-
-        # Splice asset controllers into edges that have a non-arm chain.
-        if _ASSET_RUNTIME_AVAILABLE and _pc is not None:
+        extras_map = {}
+        if _pc is not None:
             try:
-                all_assets = _pc.get_all_assets()
+                extras_map = {ea["id"]: ea for ea in _pc.get_extra_assets()}
             except Exception:
-                all_assets = []
-            for arm_cfg in arms_cfg:
-                for dep_id in arm_cfg.get("depends_on", []):
-                    chain = _find_asset_chain(dep_id, arm_cfg["id"], all_assets)
-                    if not chain:
-                        continue
-                    edge_key = (dep_id, arm_cfg["id"])
-                    src_tp = tps[edge_key]
-                    internal_tps = [
-                        TransferPoint(f"TP-{a['id']}->{arm_cfg['id']}-{i}")
-                        for i, a in enumerate(chain)
-                    ]
-                    for i, asset in enumerate(chain):
-                        in_tp = src_tp if i == 0 else internal_tps[i - 1]
-                        out_tp = internal_tps[i]
-                        ctrl = _build_asset_controller(
-                            asset=asset,
-                            input_tp=in_tp,
-                            output_tp=out_tp,
-                            num_products=num_products,
-                            speed_factor=speed_factor,
-                            src_arm_id=dep_id,
-                            dst_arm_id=arm_cfg["id"],
-                            object_event_fn=object_event_fn,
-                            is_allowed_fn=is_allowed_fn,
-                            log_fn=lambda src, msg: thread_safe_log_asset(src, msg),
-                        )
-                        if ctrl is not None:
-                            asset_controllers.append(ctrl)
-                    # Dst arm picks from chain's exit TP, not the original.
-                    chain_input_overrides[edge_key] = internal_tps[-1]
+                extras_map = {}
 
-        # Use topological order from config to determine execution order
-        topo_order = load_pipeline_config().get("_topo_order", None)
-        if topo_order is None:
-            # Compute it inline (Kahn's algorithm)
-            in_deg = {a["id"]: len(a.get("depends_on", [])) for a in arms_cfg}
-            queue = sorted([aid for aid, d in in_deg.items() if d == 0])
-            topo_order = []
-            dependents_map = {}
-            for a in arms_cfg:
-                for dep in a.get("depends_on", []):
-                    dependents_map.setdefault(dep, []).append(a["id"])
-            while queue:
-                cur = queue.pop(0)
-                topo_order.append(cur)
-                for child in sorted(dependents_map.get(cur, [])):
-                    in_deg[child] -= 1
-                    if in_deg[child] == 0:
-                        queue.append(child)
-
-        for arm_id in topo_order:
-            arm_cfg = arm_map[arm_id]
-            deps = arm_cfg.get("depends_on", [])
-
-            # Input: transfer point from first dependency (linear chains have one).
-            # Phase 2: if a non-arm chain feeds this arm, use the chain's exit TP.
-            if deps:
-                edge_key = (deps[0], arm_id)
-                input_tp = chain_input_overrides.get(edge_key, tps.get(edge_key))
+        modules = []
+        for sid in flow_ids:
+            if sid.startswith("arm-"):
+                arm_id_int = int(sid.split("-", 1)[1])
+                arm_cfg = arm_map.get(arm_id_int)
+                if arm_cfg is None:
+                    continue
+                modules.append(_build_arm_module(
+                    arm_cfg, num_products, speed_factor,
+                    set_angle_fn, object_event_fn, failure_cfg,
+                    make_is_allowed, make_on_started, make_on_failed,
+                    make_on_health_change))
             else:
-                input_tp = None
-            upstream_id = deps[0] if deps else None
+                ea = extras_map.get(sid)
+                if not ea:
+                    continue
+                m = _build_asset_module(ea, num_products, speed_factor,
+                                        object_event_fn)
+                if m is not None:
+                    modules.append(m)
 
-            # Output: transfer points to all arms that depend on this one
-            output_keys = [(arm_id, child) for child in
-                           [a["id"] for a in arms_cfg if arm_id in a.get("depends_on", [])]]
-            output_tp = tps[output_keys[0]] if len(output_keys) == 1 else None
-            downstream_id = output_keys[0][1] if output_keys else None
+        # Connect TPs linearly. Arm modules also get a `handoff_place` name
+        # so existing arm-zone object_event tracking keeps emitting valid
+        # `handoff_N` states for the legacy frontend rendering layer.
+        arm_to_arm_index = 0
+        for i in range(len(modules) - 1):
+            tp = TransferPoint(f"TP {modules[i].id}->{modules[i+1].id}")
+            modules[i].output_tp = tp
+            modules[i + 1].input_tp = tp
+            if hasattr(modules[i], "arm_id") and hasattr(modules[i + 1], "arm_id"):
+                arm_to_arm_index += 1
+                modules[i].handoff_place = f"handoff_{arm_to_arm_index}"
 
-            # Handoff name: based on the output transfer point index
-            handoff = None
-            if output_tp:
-                # Find the handoff index by position in topo order
-                tp_index = list(tps.keys()).index(output_keys[0])
-                handoff = f"handoff_{tp_index + 1}"
+        # Wire neighbor-alive callbacks uniformly. Every module's drain
+        # decisions reference its immediate neighbors via two checks:
+        #   1. `is_module_alive()` — state-based (failed/stopped → dead).
+        #   2. `Thread.is_alive()` — real thread liveness; covers the case
+        #      where a module's run() returned without ever updating _state
+        #      (e.g. early exit on _is_allowed False, or natural completion).
+        # A neighbour is "alive" only when both predicates hold.
+        def _make_alive(m):
+            return (m is None
+                    or (m.is_module_alive() and m.is_alive()))
+        for i, m in enumerate(modules):
+            prev_m = modules[i - 1] if i > 0 else None
+            next_m = modules[i + 1] if i + 1 < len(modules) else None
+            m._upstream_alive = (lambda pm=prev_m: _make_alive(pm))
+            m._downstream_alive = (lambda nm=next_m: _make_alive(nm))
 
-            ctrl = ArmController(
-                arm_id=arm_cfg["id"],
-                host=None,
-                speed_factor=speed_factor,
-                input_tp=input_tp,
-                output_tp=output_tp,
-                num_products=num_products,
-                log_fn=thread_safe_log,
-                handoff_place=handoff,
-                set_angle_fn=set_angle_fn,
-                object_event_fn=object_event_fn,
-                failure_policy=_get_arm_failure_policy(arm_cfg, failure_cfg),
-                is_allowed_fn=make_is_allowed(arm_cfg["id"]),
-                on_started_fn=make_on_started(arm_cfg["id"]),
-                on_failed_fn=make_on_failed(arm_cfg["id"]),
-                upstream_alive_fn=make_is_allowed(upstream_id),
-                downstream_alive_fn=make_is_allowed(downstream_id),
-                on_health_change_fn=make_on_health_change(arm_cfg["id"]),
-            )
-            controllers.append(ctrl)
+    controllers = modules  # legacy alias for the summary block below
 
-    elif mode == "parallel":
-        for arm_cfg in arms_cfg:
-            ctrl = ArmController(
-                arm_id=arm_cfg["id"],
-                host=None,
-                speed_factor=speed_factor,
-                input_tp=None,
-                output_tp=None,
-                num_products=num_products,
-                log_fn=thread_safe_log,
-                set_angle_fn=set_angle_fn,
-                object_event_fn=object_event_fn,
-                failure_policy=_get_arm_failure_policy(arm_cfg, failure_cfg),
-                is_allowed_fn=make_is_allowed(arm_cfg["id"]),
-                on_started_fn=make_on_started(arm_cfg["id"]),
-                on_failed_fn=make_on_failed(arm_cfg["id"]),
-                on_health_change_fn=make_on_health_change(arm_cfg["id"]),
-            )
-            controllers.append(ctrl)
+    # Phase 5: register modules for external stop control + open the demo
+    # status window. The blocking main loop below keeps this thread alive so
+    # the demo-runner reports "running" until manual stop or all modules die.
+    global _active_modules
+    _active_modules = list(modules)
+    _stop_pipeline_event.clear()
 
-    # Launch all arms
-    threads = []
-    for ctrl in controllers:
-        t = threading.Thread(target=ctrl.run, name=f"Arm-{ctrl.arm_id}", daemon=True)
-        threads.append(t)
-
-    # Phase 2: launch asset controller threads (vehicle/conveyor) — they
-    # are themselves Thread subclasses, so just start them.
-    asset_ctrl_list = locals().get("asset_controllers", []) or []
-    for ac in asset_ctrl_list:
-        ac.start()
+    print("[SYSTEM] Demo started, modules running...")
+    for m in modules:
+        print(f"[SYSTEM]   module: {m.id} ({type(m).__name__})")
 
     start_time = time.time()
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=120)
-    for ac in asset_ctrl_list:
-        ac.join(timeout=10)
+    for m in modules:
+        m.start()
+
+    try:
+        last_log = 0.0
+        while not _stop_pipeline_event.is_set():
+            # Use Thread.is_alive() (real thread liveness) so the main loop
+            # exits ONLY on manual stop or when every worker thread has truly
+            # terminated. A module reporting state=='failed' does NOT halt
+            # the pipeline — keep_alive idle wait keeps its thread alive
+            # until stop_pipeline() fires.
+            threads_alive = [m for m in modules if m.is_alive()]
+            if not threads_alive:
+                break
+            now = time.time()
+            if now - last_log >= 5.0:
+                module_alive = [m.id for m in modules if m.is_module_alive()]
+                print("[SYSTEM] Alive modules:", module_alive,
+                      "| threads:", len(threads_alive))
+                last_log = now
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("[SYSTEM] KeyboardInterrupt — stopping modules")
+        for m in modules:
+            m.stop_module()
+
+    # Final join with bounded timeout so we don't hang forever on stuck threads.
+    for m in modules:
+        m.join(timeout=5.0)
+
+    _active_modules = []
     elapsed = time.time() - start_time
+    print(f"[SYSTEM] Demo loop exited after {elapsed:.1f}s")
 
     # Summary
     print()
-    errors = [(c.arm_id, c.error) for c in controllers if c.error]
-    if errors:
+    arm_modules = [c for c in controllers if hasattr(c, "arm_id")]
+    asset_modules = [c for c in controllers if not hasattr(c, "arm_id")]
+    errors = [(c.arm_id, c.error) for c in arm_modules if c.error]
+    asset_errors = [(c.id, c.error) for c in asset_modules if getattr(c, "error", None)]
+    if errors or asset_errors:
         print("=== Pipeline FAILED ===")
         for arm_id, err in errors:
             print(f"  Arm {arm_id}: {err}")
+        for aid, err in asset_errors:
+            print(f"  {aid}: {err}")
     else:
         print("=== Pipeline Complete ===")
 
-    parts = [f"Arm{c.arm_id}={c.processed}" for c in controllers]
-    print(f"Products processed: {', '.join(parts)}")
+    arm_parts = [f"Arm{c.arm_id}={c.processed}" for c in arm_modules]
+    asset_parts = [f"{c.id}={getattr(c, 'processed', 0)}" for c in asset_modules]
+    print(f"Products processed: {', '.join(arm_parts + asset_parts)}")
     print(f"Total time: {elapsed:.1f}s")
 
     # Reset all to rest
@@ -809,8 +830,8 @@ def run_pipeline(host, speed_factor, num_products):
     def http_set_angle(arm_id, angle):
         send_command(host, arm_id, angle)
 
-    def http_object_event(obj_id, state, carrier_arm=None):
-        send_object_event(host, obj_id, state, carrier_arm)
+    def http_object_event(obj_id, state, carrier_arm=None, **kw):
+        send_object_event(host, obj_id, state, carrier_arm=carrier_arm, **kw)
 
     def http_reset():
         reset_objects(host)

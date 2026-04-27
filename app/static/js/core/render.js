@@ -293,15 +293,21 @@ function getObjectPosition(obj) {
     const cfg = state.config;
     if (!cfg) return null;
 
-    // Carried by an asset (arm or vehicle) — attach point updates per frame.
+    // Frozen by failed asset — render exactly where it was when failure hit.
+    if (obj._frozen) return obj._frozen;
+
+    // Carried by arm or vehicle — attach point reflects backend timing.
     if (obj.state === 'carried') {
         if (obj.carrier_asset) return getAssetAttachPoint(obj.carrier_asset);
         if (obj.carrier_arm != null) return getAssetAttachPoint(`arm-${obj.carrier_arm}`);
         return null;
     }
-    // On a conveyor slot — locate asset + slot.
+    // On a conveyor slot — backend supplies carrier_asset + slot index.
     if (typeof obj.state === 'string' && obj.state.startsWith('on_')) {
-        // e.g. "on_conv-1#2"
+        if (obj.carrier_asset && typeof obj.slot === 'number') {
+            return getAssetAttachPoint(obj.carrier_asset, obj.slot);
+        }
+        // Legacy fallback: parse slot from state string ("on_conv-1#2").
         const rest = obj.state.slice(3);
         const hashIdx = rest.lastIndexOf('#');
         if (hashIdx >= 0) {
@@ -309,6 +315,11 @@ function getObjectPosition(obj) {
             const slot = parseInt(rest.slice(hashIdx + 1), 10);
             return getAssetAttachPoint(assetId, slot);
         }
+        if (obj.carrier_asset) return getAssetAttachPoint(obj.carrier_asset);
+    }
+    // Just exited an asset — sit at its exit point until next event.
+    if (typeof obj.state === 'string' && obj.state.startsWith('at_')) {
+        if (obj.carrier_asset) return getAssetAttachPoint(obj.carrier_asset);
     }
     if (obj.state === 'intake') {
         const iz = cfg.intake_zone;
@@ -365,10 +376,13 @@ function renderObjects(now) {
         const transition = state.objectTransitions[id];
         let pos = targetPos;
 
-        // 'carried' hard-locks to carrier tip (arm/vehicle) — already smooth.
-        // 'on_X#N' conveyor slots get an easing transition when a slot shift
-        // just occurred; otherwise snap to slot center.
-        if (obj.state === 'carried') {
+        // 'carried' hard-locks to carrier tip (arm/vehicle/conveyor).
+        // 'on_X' conveyor slots are deterministic per backend slot field.
+        // Phase 3: snap on every asset-carried state — no client-side ease.
+        const stateStr = obj.state;
+        const isCarrierState = stateStr === 'carried'
+            || (typeof stateStr === 'string' && (stateStr.startsWith('on_') || stateStr.startsWith('at_')));
+        if (isCarrierState) {
             delete state.objectTransitions[id];
             pos = targetPos;
         } else if (transition) {
@@ -414,6 +428,57 @@ export function renderFrame() {
 
     renderObjects(now);
     drawFlashes(now);
+    if (state.debugOverlay) drawDebugOverlay();
+}
+
+/* Debug overlay: asset ids, statuses, ownership lines. Toggled in ui/controls.js. */
+function drawDebugOverlay() {
+    ctx.save();
+    ctx.font = '10px monospace';
+    ctx.textBaseline = 'top';
+    for (const a of state.assets.values()) {
+        const center = getAssetCenter(a);
+        const carrier = a.carriedObject ? `←${a.carriedObject}` : '';
+        const text = `${a.id} [${a.status}] ${carrier}`;
+        const w = ctx.measureText(text).width + 8;
+        ctx.fillStyle = 'rgba(20,20,20,0.8)';
+        ctx.fillRect(center.x - w / 2, center.y - 30, w, 14);
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.fillText(text, center.x, center.y - 28);
+    }
+    // Ownership lines: from asset center to its carried object position.
+    for (const a of state.assets.values()) {
+        if (!a.carriedObject) continue;
+        const pos = state.objectPositions[a.carriedObject];
+        if (!pos) continue;
+        const center = getAssetCenter(a);
+        ctx.strokeStyle = 'rgba(255,200,0,0.6)';
+        ctx.setLineDash([3, 3]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(center.x, center.y);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    // Connection boundaries
+    for (const c of state.connections) {
+        const from = state.assets.get(c.from);
+        const to = state.assets.get(c.to);
+        if (!from || !to) continue;
+        const a = getAssetCenter(from);
+        const b = getAssetCenter(to);
+        ctx.strokeStyle = 'rgba(52,152,219,0.4)';
+        ctx.setLineDash([2, 4]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    ctx.restore();
 }
 
 /* Small neutral dots at junction points replacing the hidden handoff boxes. */

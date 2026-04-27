@@ -1,20 +1,25 @@
-/* Central state: assets Map + tracked objects + attach-point lookup. */
+/* Central frontend state.
+ *
+ * Phase 3 contract: this module is a pure reflection of backend state.
+ * The frontend NEVER simulates pipeline progress. Every position update
+ * comes from a SocketIO event (`state_update`, `arm_health`, `asset_health`,
+ * `object_update`). When backend emits `carried` for a vehicle, it includes
+ * `start_time` + `duration_ms`; the frontend interpolates between the
+ * vehicle's first and last waypoint based on those timestamps. When backend
+ * emits `on_<conv>#<slot>`, the frontend snaps the object to that slot.
+ */
 
 import { polylineInterp } from './geometry.js';
 
 export const state = {
     config: null,
-    assets: new Map(),          // id -> Asset
-    connections: [],            // [{from,to}] derived from asset graph
-    trackedObjects: {},         // object_id -> {object_id, state, carrier_arm, carrier_asset?}
-    objectPositions: {},        // object_id -> {x, y}
-    objectTransitions: {},      // object_id -> {fromX, fromY, startTime}
-    draining: new Set(),        // asset ids flagged drain locally (for vehicle/conveyor)
-    // Visual transit: maps backend "handoff_N" for an object onto a chain of
-    // non-arm assets so it visibly traverses vehicle/conveyor. Backend still
-    // thinks object sits in handoff zone — purely a rendering reroute.
-    transit: new Map(),         // object_id -> {route:Asset[], phase:number}
-    flashes: [],                // [{x,y,startTime,duration}] transfer flash overlay
+    assets: new Map(),                  // id -> Asset
+    connections: [],                    // [{from,to}] derived from asset graph
+    trackedObjects: {},                 // object_id -> backend record (see normalizeObj)
+    objectPositions: {},                // object_id -> last rendered {x,y}
+    objectTransitions: {},              // object_id -> {fromX,fromY,startTime,duration} (arm easing only)
+    flashes: [],                        // [{x,y,startTime,duration}] visual transfer pulses
+    debugOverlay: false,                // toggled by ui/controls.js
 };
 
 export function setConfig(cfg) {
@@ -26,9 +31,7 @@ export function setConfig(cfg) {
     state.connections = buildConnections(state.assets);
 }
 
-/* Build graph edges from actual asset links.
- * Arm->arm baseline edges stay dynamic by arm order, and are suppressed only
- * when a complete non-arm path connects the same arm pair. */
+/* Build graph edges. Arm->arm chain is suppressed when a non-arm path bridges the pair. */
 export function buildConnections(assets) {
     const connections = [];
     const seen = new Set();
@@ -41,15 +44,12 @@ export function buildConnections(assets) {
         connections.push({ from, to });
     }
 
-    // 1) Explicit graph edges from config-provided downstream arrays.
     for (const asset of assets.values()) {
         for (const downstreamId of asset.downstream || []) {
             if (assets.has(downstreamId)) add(asset.id, downstreamId);
         }
     }
 
-    // 2) Add baseline arm->arm chain for dynamic N-arm layout.
-    // Skip only when an explicit non-arm route already bridges the same pair.
     const arms = Array.from(assets.values())
         .filter(a => a.type === 'arm')
         .sort((a, b) => (a.numericId ?? 0) - (b.numericId ?? 0));
@@ -68,10 +68,7 @@ function sortConnectionsByFlowOrder(connections, assets) {
         const fromA = assets.get(a.from);
         const fromB = assets.get(b.from);
         if (!fromA || !fromB) return 0;
-
-        const xA = getAssetFlowX(fromA);
-        const xB = getAssetFlowX(fromB);
-        return xA - xB;
+        return getAssetFlowX(fromA) - getAssetFlowX(fromB);
     });
 }
 
@@ -81,27 +78,22 @@ function getAssetFlowX(asset) {
         const w = asset.geometry.waypoints || [];
         return w[0] ? w[0].x : 0;
     }
-    if (asset.type === 'conveyor') {
-        return asset.geometry.from.x;
-    }
+    if (asset.type === 'conveyor') return asset.geometry.from.x;
     return 0;
 }
 
 function hasNonArmPathBetween(assets, srcId, dstId) {
     const queue = [{ id: srcId, usedNonArm: false }];
     const seen = new Set([`${srcId}|0`]);
-
     while (queue.length) {
         const { id, usedNonArm } = queue.shift();
         const cur = assets.get(id);
         if (!cur) continue;
-
         for (const nextId of cur.downstream || []) {
             const next = assets.get(nextId);
             if (!next) continue;
             const nextUsedNonArm = usedNonArm || next.type !== 'arm';
             if (nextId === dstId && nextUsedNonArm) return true;
-
             const key = `${nextId}|${nextUsedNonArm ? 1 : 0}`;
             if (seen.has(key)) continue;
             seen.add(key);
@@ -111,20 +103,15 @@ function hasNonArmPathBetween(assets, srcId, dstId) {
     return false;
 }
 
-/* Build unified asset list from /config response.
- * Accepts either legacy arm list (cfg.arms) or new cfg.assets (or both). */
 function buildAssets(cfg) {
     const out = [];
     const seen = new Set();
-
     if (Array.isArray(cfg.assets)) {
         for (const raw of cfg.assets) {
             const a = normalizeAsset(raw);
             if (a) { out.push(a); seen.add(a.id); }
         }
     }
-
-    // Legacy arms fallback — inject as type:'arm' only if not already provided.
     if (Array.isArray(cfg.arms)) {
         for (const arm of cfg.arms) {
             const id = `arm-${arm.id}`;
@@ -141,7 +128,6 @@ function buildAssets(cfg) {
                 carriedObject: null,
                 upstream: (arm.depends_on || []).map(depId => `arm-${depId}`),
                 downstream: [],
-                draining: false,
                 geometry: {
                     pivot: { x: arm.pivot_x, y: arm.pivot_y },
                     length: arm.length,
@@ -174,9 +160,7 @@ function normalizeAsset(raw) {
         carriedObject: null,
         upstream: raw.upstream || [],
         downstream: raw.downstream || [],
-        draining: false,
     };
-
     switch (raw.type) {
         case 'arm': {
             const g = raw.geometry || {};
@@ -192,9 +176,7 @@ function normalizeAsset(raw) {
                     minAngle: g.min_angle ?? 0,
                     maxAngle: g.max_angle ?? 180,
                 },
-                dynamic: {
-                    angle: 90, displayedAngle: 90, targetAngle: 90, transition: null,
-                },
+                dynamic: { angle: 90, displayedAngle: 90, targetAngle: 90, transition: null },
             };
         }
         case 'vehicle': {
@@ -206,7 +188,9 @@ function normalizeAsset(raw) {
                     loop: !!g.loop,
                     speed: g.speed ?? 100,
                 },
-                dynamic: { segIndex: 0, t: 0, direction: 1 },
+                // dynamic.t reflects backend-driven progress in [0,1]; updated
+                // on every render frame from the carried object's timestamps.
+                dynamic: { t: 0, frozenAt: null },
             };
         }
         case 'conveyor': {
@@ -220,12 +204,10 @@ function normalizeAsset(raw) {
                     to: g.to || { x: 0, y: 0 },
                     slotCount,
                     slotPositions,
-                    shiftInterval: g.shift_interval ?? 1.2,
+                    shiftInterval: g.shift_interval ?? 1.0,
                 },
-                dynamic: {
-                    slots: new Array(slotCount).fill(null),
-                    sinceShift: 0,
-                },
+                // slots are filled by backend object_update events with `slot` field.
+                dynamic: { slots: new Array(slotCount).fill(null) },
             };
         }
     }
@@ -243,11 +225,6 @@ function computeSlotPositions(from, to, n) {
     return out;
 }
 
-/* Ensure graph edges are consistent:
- * - keep declared downstream links
- * - add reverse links from upstream declarations
- * This makes zone rendering truly graph-driven even when only upstream
- * is present in config (common for arm dependencies). */
 function wireAssetGraph(assets) {
     const byId = new Map(assets.map(a => [a.id, a]));
     const armIds = assets
@@ -263,8 +240,7 @@ function wireAssetGraph(assets) {
     }
 
     for (const asset of assets) {
-        const ups = Array.isArray(asset.upstream) ? asset.upstream : [];
-        for (const upId of ups) {
+        for (const upId of (asset.upstream || [])) {
             const up = byId.get(upId);
             if (!up) continue;
             if (!Array.isArray(up.downstream)) up.downstream = [];
@@ -272,24 +248,19 @@ function wireAssetGraph(assets) {
         }
     }
 
-    // If a non-arm asset has arm upstreams but no valid downstream, connect it
-    // to the next arm in order so a partial asset chain still renders and hands off.
     for (const asset of assets) {
         if (asset.type === 'arm') continue;
         if ((asset.downstream || []).length > 0) continue;
-
         const upstreamArmNums = (asset.upstream || [])
             .map(id => byId.get(id))
             .filter(a => a && a.type === 'arm' && Number.isFinite(a.numericId))
             .map(a => a.numericId);
-        if (upstreamArmNums.length === 0) continue;
-
+        if (!upstreamArmNums.length) continue;
         const maxUp = Math.max(...upstreamArmNums);
         const nextArmNum = armIds.find(n => n > maxUp);
         if (!nextArmNum) continue;
         const nextArmId = `arm-${nextArmNum}`;
         if (!byId.has(nextArmId)) continue;
-
         asset.downstream.push(nextArmId);
         const nextArm = byId.get(nextArmId);
         if (!Array.isArray(nextArm.upstream)) nextArm.upstream = [];
@@ -297,7 +268,9 @@ function wireAssetGraph(assets) {
     }
 }
 
-/* Apply backend state_update for arms. */
+/* ── Backend event appliers ──────────────────────────────────── */
+
+/* state_update — arm angles. */
 export function applyStateUpdate(data) {
     if (!data || !data.arms) return;
     const now = performance.now();
@@ -308,63 +281,93 @@ export function applyStateUpdate(data) {
         const d = asset.dynamic;
         const newTarget = arm.angle;
         if (d.targetAngle === undefined || newTarget !== d.targetAngle) {
-            d.transition = {
-                from: d.displayedAngle,
-                to: newTarget,
-                startTime: now,
-                duration: ANIM,
-            };
+            d.transition = { from: d.displayedAngle, to: newTarget, startTime: now, duration: ANIM };
         }
         d.targetAngle = newTarget;
     }
 }
 
-/* Apply backend arm_health for arms. */
+/* arm_health — arm status. */
 export function applyArmHealth(data) {
     if (!data || data.arm_id == null) return;
     const asset = state.assets.get(`arm-${data.arm_id}`);
     if (!asset) return;
     asset.status = data.health;
     asset.error = data.error || null;
-    asset.draining = data.health === 'draining';
 }
 
-/* Apply backend object_update. Mirrors `carried` onto the arm asset's
- * `carriedObject` field so proximity-handoff logic can see what arms hold.
- * Intercepts backend `handoff_N` states when a non-arm chain exists between
- * the two arms: the object is routed through vehicle + conveyor visually. */
+/* asset_health — non-arm asset status (Phase 3 new event). */
+export function applyAssetHealth(data) {
+    if (!data || !data.asset_id) return;
+    const asset = state.assets.get(data.asset_id);
+    if (!asset) return;
+    const next = data.status;
+    asset.status = next;
+    asset.error = data.error || null;
+    // Freeze any object riding this asset at its current rendered position.
+    if (next === 'failed') {
+        for (const obj of Object.values(state.trackedObjects)) {
+            if (obj.carrier_asset === asset.id) {
+                const pos = state.objectPositions[obj.object_id];
+                if (pos) obj._frozen = { ...pos };
+            }
+        }
+    } else if (next === 'idle' || next === 'recovering' || next === 'busy') {
+        for (const obj of Object.values(state.trackedObjects)) {
+            if (obj.carrier_asset === asset.id) delete obj._frozen;
+        }
+    }
+}
+
+/* object_update — single source of truth for object positions. */
 export function applyObjectUpdate(data) {
     if (!data || !data.object_id) return;
     const id = data.object_id;
     const old = state.trackedObjects[id];
 
-    // Clear any previous carrier reference.
-    if (old && (old.state === 'carried')) {
-        const prev = state.assets.get(old.carrier_asset || `arm-${old.carrier_arm}`);
-        if (prev && prev.carriedObject === id) prev.carriedObject = null;
-    }
-
-    // Backend took the object back (carried by arm, output, etc.) — end any transit.
-    if (state.transit.has(id) && data.state !== 'handoff_1' && !data.state.startsWith('handoff_')) {
-        endTransit(id);
-    }
-
-    // Redirect handoff_N → visual transit chain (vehicle, conveyor, ...).
-    if (typeof data.state === 'string' && data.state.startsWith('handoff_')) {
-        const n = parseInt(data.state.split('_')[1], 10);
-        const chain = buildTransitRoute(n, n + 1);
-        if (chain && chain.length > 0 && !state.transit.has(id)) {
-            startTransit(id, chain, data);
-            return;   // don't store raw handoff_N state — transit owns rendering
+    // Detach from previous carrier asset.
+    if (old) {
+        const prevCarrierId = old.carrier_asset || (old.carrier_arm != null ? `arm-${old.carrier_arm}` : null);
+        const prev = prevCarrierId ? state.assets.get(prevCarrierId) : null;
+        if (prev) {
+            if (prev.carriedObject === id) prev.carriedObject = null;
+            if (prev.type === 'conveyor') {
+                const idx = prev.dynamic.slots.indexOf(id);
+                if (idx >= 0) prev.dynamic.slots[idx] = null;
+            }
+            // Vehicle returns to its start waypoint after handing the object
+            // off, so it is positioned for the next pickup. Backend does not
+            // emit a return-trip — this is a deterministic visual reset.
+            if (prev.type === 'vehicle') {
+                prev.dynamic.t = 0;
+                prev.dynamic.frozenAt = null;
+            }
         }
     }
 
     state.trackedObjects[id] = data;
 
-    if (data.state === 'carried') {
-        const carrierId = data.carrier_asset || (data.carrier_arm != null ? `arm-${data.carrier_arm}` : null);
-        const carrier = carrierId ? state.assets.get(carrierId) : null;
-        if (carrier) carrier.carriedObject = id;
+    // Attach to new carrier asset.
+    const carrierId = data.carrier_asset || (data.carrier_arm != null ? `arm-${data.carrier_arm}` : null);
+    const carrier = carrierId ? state.assets.get(carrierId) : null;
+    if (carrier) {
+        if (carrier.type === 'arm' || carrier.type === 'vehicle') {
+            carrier.carriedObject = id;
+        } else if (carrier.type === 'conveyor' && typeof data.slot === 'number') {
+            const slots = carrier.dynamic.slots;
+            // Clear any other slot still holding this object (shift case).
+            for (let i = 0; i < slots.length; i++) {
+                if (slots[i] === id && i !== data.slot) slots[i] = null;
+            }
+            slots[data.slot] = id;
+        }
+    }
+
+    // Arm-zone easing for legacy intake/handoff/output snap states.
+    const isCarried = data.state === 'carried';
+    const isOnAsset = typeof data.state === 'string' &&
+        (data.state.startsWith('on_') || data.state.startsWith('at_'));
+    if (isCarried || isOnAsset) {
         delete state.objectTransitions[id];
         return;
     }
@@ -373,125 +376,31 @@ export function applyObjectUpdate(data) {
             fromX: state.objectPositions[id].x,
             fromY: state.objectPositions[id].y,
             startTime: performance.now(),
+            duration: 400,
         };
     }
-}
-
-/* Walk non-arm asset graph from arm-src to arm-dst via upstream/downstream. */
-export function buildTransitRoute(srcArmId, dstArmId) {
-    const srcId = `arm-${srcArmId}`;
-    const dstId = `arm-${dstArmId}`;
-    // Find first non-arm asset whose upstream includes srcId.
-    let first = null;
-    for (const a of state.assets.values()) {
-        if (a.type === 'arm') continue;
-        if (a.upstream && a.upstream.includes(srcId)) { first = a; break; }
-    }
-    if (!first) return null;
-
-    const chain = [first];
-    let cur = first;
-    while (cur && cur.downstream && cur.downstream.length) {
-        const nxt = state.assets.get(cur.downstream[0]);
-        if (!nxt) break;
-        if (nxt.id === dstId) return chain;
-        if (nxt.type === 'arm') return null;       // wrong arm — abort
-        chain.push(nxt);
-        cur = nxt;
-    }
-    return null;
-}
-
-function startTransit(objId, chain, backendData) {
-    const first = chain[0];
-    let synthetic;
-    if (first.type === 'vehicle') {
-        first.carriedObject = objId;
-        synthetic = { object_id: objId, state: 'carried', carrier_asset: first.id, carrier_arm: null };
-    } else if (first.type === 'conveyor') {
-        const freeIdx = first.dynamic.slots.findIndex(s => s == null);
-        const slot = freeIdx >= 0 ? freeIdx : 0;
-        first.dynamic.slots[slot] = objId;
-        synthetic = { object_id: objId, state: `on_${first.id}#${slot}`, carrier_asset: first.id, carrier_arm: null };
-    } else {
-        return;
-    }
-    state.trackedObjects[objId] = synthetic;
-    state.transit.set(objId, { route: chain, phase: 0, backend: backendData });
-    delete state.objectTransitions[objId];
-    addFlash(getAssetAttachPoint(first.id));
-    console.log('[TRANSIT start]', objId, '\u2192', first.id);
-}
-
-export function endTransit(objId) {
-    const t = state.transit.get(objId);
-    if (!t) return;
-    for (const a of t.route) {
-        if (a.carriedObject === objId) a.carriedObject = null;
-        if (a.type === 'conveyor') {
-            const idx = a.dynamic.slots.indexOf(objId);
-            if (idx >= 0) a.dynamic.slots[idx] = null;
-        }
-    }
-    state.transit.delete(objId);
-    console.log('[TRANSIT end]', objId);
-}
-
-export function advanceTransit(objId, currentAsset, nextAsset) {
-    const t = state.transit.get(objId);
-    if (!t) return;
-    // Capture current screen position BEFORE detaching so transition can ease.
-    const prevPos = state.objectPositions[objId] || getAssetAttachPoint(currentAsset.id);
-    // Detach from current
-    if (currentAsset.type === 'vehicle') currentAsset.carriedObject = null;
-    if (currentAsset.type === 'conveyor') {
-        const idx = currentAsset.dynamic.slots.indexOf(objId);
-        if (idx >= 0) currentAsset.dynamic.slots[idx] = null;
-    }
-    // Attach to next
-    let newState;
-    if (nextAsset.type === 'vehicle') {
-        nextAsset.carriedObject = objId;
-        newState = 'carried';
-    } else if (nextAsset.type === 'conveyor') {
-        if (nextAsset.dynamic.slots[0] == null) {
-            nextAsset.dynamic.slots[0] = objId;
-            nextAsset.dynamic.sinceShift = 0;
-        }
-        newState = `on_${nextAsset.id}#0`;
-    } else {
-        newState = 'carried';
-    }
-    state.trackedObjects[objId] = {
-        object_id: objId, state: newState, carrier_asset: nextAsset.id, carrier_arm: null,
-    };
-    // Seed smooth transition from previous visual position to new slot (conveyor only).
-    if (prevPos && nextAsset.type === 'conveyor') {
-        state.objectTransitions[objId] = {
-            fromX: prevPos.x, fromY: prevPos.y,
-            startTime: performance.now(),
-            duration: 700,
-        };
-    } else {
-        delete state.objectTransitions[objId];
-    }
-    t.phase++;
-    addFlash(getAssetAttachPoint(nextAsset.id));
-    console.log('[TRANSIT hop]', objId, currentAsset.id, '\u2192', nextAsset.id);
-}
-
-export function addFlash(pos) {
-    if (!pos) return;
-    state.flashes.push({ x: pos.x, y: pos.y, startTime: performance.now(), duration: 450 });
 }
 
 export function resetObjects() {
     state.trackedObjects = {};
     state.objectPositions = {};
     state.objectTransitions = {};
+    for (const a of state.assets.values()) {
+        a.carriedObject = null;
+        if (a.type === 'conveyor') a.dynamic.slots.fill(null);
+        if (a.type === 'vehicle') { a.dynamic.t = 0; a.dynamic.frozenAt = null; }
+    }
 }
 
-/* Compute current attach point for an asset (arm tip, vehicle pos, conveyor slot). */
+/* ── Position resolution ─────────────────────────────────────── */
+
+export function addFlash(pos) {
+    if (!pos) return;
+    state.flashes.push({ x: pos.x, y: pos.y, startTime: performance.now(), duration: 450 });
+}
+
+/* Compute current attach point for an asset.
+ * For vehicles, t comes from the carried object's start_time + duration_ms. */
 export function getAssetAttachPoint(assetId, slotHint) {
     const a = state.assets.get(assetId);
     if (!a) return null;
@@ -501,19 +410,55 @@ export function getAssetAttachPoint(assetId, slotHint) {
             const rad = a.dynamic.displayedAngle * Math.PI / 180;
             return { x: pivot.x + length * Math.cos(rad), y: pivot.y - length * Math.sin(rad) };
         }
-        case 'vehicle':
-            return polylineInterp(a.geometry.waypoints, a.dynamic.segIndex, a.dynamic.t);
+        case 'vehicle': {
+            const wp = a.geometry.waypoints;
+            if (!wp.length) return { x: 0, y: 0 };
+            const t = vehicleProgress(a);
+            // Single-segment lerp from first to last waypoint.
+            const start = wp[0], end = wp[wp.length - 1];
+            return { x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t };
+        }
         case 'conveyor': {
             const slots = a.geometry.slotPositions;
             if (slotHint != null && slots[slotHint]) return { ...slots[slotHint] };
-            const firstOcc = a.dynamic.slots.findIndex(s => s != null);
-            return { ...(slots[firstOcc >= 0 ? firstOcc : 0] || { x: 0, y: 0 }) };
+            const occ = a.dynamic.slots.findIndex(s => s != null);
+            return { ...(slots[occ >= 0 ? occ : 0] || { x: 0, y: 0 }) };
         }
     }
     return null;
 }
 
-/* Find the first occupied conveyor slot index. */
+/* Vehicle progress in [0,1] derived from its currently carried object's
+ * backend timestamps. Frozen if asset.status === 'failed'. */
+function vehicleProgress(asset) {
+    if (asset.status === 'failed' && asset.dynamic.frozenAt != null) {
+        return asset.dynamic.frozenAt;
+    }
+    const objId = asset.carriedObject;
+    if (!objId) {
+        // No carried object — sit at start (idle) or end (after delivery).
+        return asset.dynamic.t ?? 0;
+    }
+    const obj = state.trackedObjects[objId];
+    if (!obj) return 0;
+    const start = obj.start_time;
+    const dur = obj.duration_ms;
+    if (!start || !dur || dur <= 0) {
+        return asset.dynamic.t ?? 0;
+    }
+    const elapsed = Date.now() - start;
+    let t = elapsed / dur;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    if (asset.status === 'failed') {
+        asset.dynamic.frozenAt = t;
+    } else {
+        asset.dynamic.frozenAt = null;
+    }
+    asset.dynamic.t = t;
+    return t;
+}
+
 export function firstOccupiedSlot(asset) {
     return asset.dynamic.slots.findIndex(s => s != null);
 }
@@ -522,4 +467,9 @@ export function getAssetsByType(type) {
     const out = [];
     for (const a of state.assets.values()) if (a.type === type) out.push(a);
     return out;
+}
+
+/* Debug overlay toggle. */
+export function setDebugOverlay(on) {
+    state.debugOverlay = !!on;
 }

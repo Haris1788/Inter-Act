@@ -1,8 +1,8 @@
-/* Minimal UI controls: demo proxy + per-asset kill buttons for vehicle/conveyor. */
+/* Minimal UI controls: demo button + per-asset kill/recover + debug overlay. */
 
-import { state } from '../core/state.js';
-import { notifyLocalDrain } from '../core/tick.js';
+import { state, setDebugOverlay } from '../core/state.js';
 import { logLocal } from '../core/log.js';
+import { addNotification } from '../core/notif.js';
 
 let backendUrl = '';
 let demoPollingId = null;
@@ -11,6 +11,7 @@ export function initControls(url) {
     backendUrl = url || '';
     wireDemoButton();
     renderAssetControls();
+    renderDebugToggle();
 }
 
 function wireDemoButton() {
@@ -61,7 +62,7 @@ function checkDemoStatus() {
         .catch(() => {});
 }
 
-/* Render a Kill button per non-arm asset (arms killed via backend). */
+/* Per-asset Kill / Recover buttons (vehicles + conveyors only). */
 function renderAssetControls() {
     let panel = document.getElementById('asset-controls');
     if (!panel) {
@@ -78,21 +79,55 @@ function renderAssetControls() {
 
     for (const asset of state.assets.values()) {
         if (asset.type !== 'vehicle' && asset.type !== 'conveyor') continue;
-        const btn = document.createElement('button');
-        btn.textContent = `Kill ${asset.label}`;
-        btn.className = 'asset-kill-btn';
-        btn.addEventListener('click', () => killAsset(asset.id, btn));
-        panel.appendChild(btn);
+
+        const killBtn = document.createElement('button');
+        killBtn.textContent = `Kill ${asset.label}`;
+        killBtn.className = 'asset-kill-btn';
+        killBtn.addEventListener('click', () => failAsset(asset.id));
+        panel.appendChild(killBtn);
+
+        const recoverBtn = document.createElement('button');
+        recoverBtn.textContent = `Recover ${asset.label}`;
+        recoverBtn.className = 'asset-recover-btn';
+        recoverBtn.addEventListener('click', () => recoverAsset(asset.id));
+        panel.appendChild(recoverBtn);
     }
 }
 
-function killAsset(assetId, btn) {
-    const asset = state.assets.get(assetId);
-    if (!asset) return;
-    if (asset.draining || asset.status === 'dead') return;
-    asset.draining = true;
-    asset.status = 'draining';
-    notifyLocalDrain(asset);
-    logLocal(asset.id, `Kill signal received \u2014 draining`);
-    if (btn) btn.disabled = true;
+function failAsset(assetId) {
+    fetch(backendUrl + `/assets/${assetId}/fail`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'manually killed' }),
+    }).then(r => r.json()).then(() => {
+        logLocal(assetId, 'Kill signal sent to backend');
+    }).catch(() => {
+        addNotification('error', assetId, 'Kill request failed');
+    });
+}
+
+function recoverAsset(assetId) {
+    fetch(backendUrl + `/assets/${assetId}/recover`, { method: 'POST' })
+        .then(r => r.json())
+        .then(() => {
+            logLocal(assetId, 'Recover signal sent to backend');
+        })
+        .catch(() => {
+            addNotification('error', assetId, 'Recover request failed');
+        });
+}
+
+/* Debug overlay toggle: shows asset ids, ownership, connection boundaries. */
+function renderDebugToggle() {
+    let panel = document.getElementById('asset-controls');
+    if (!panel) return;
+    const btn = document.createElement('button');
+    btn.textContent = 'Debug: off';
+    btn.className = 'asset-recover-btn';
+    btn.addEventListener('click', () => {
+        const next = !state.debugOverlay;
+        setDebugOverlay(next);
+        btn.textContent = next ? 'Debug: on' : 'Debug: off';
+    });
+    panel.appendChild(btn);
 }

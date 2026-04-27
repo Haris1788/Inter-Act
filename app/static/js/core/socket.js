@@ -3,6 +3,7 @@
 import {
     applyStateUpdate,
     applyArmHealth,
+    applyAssetHealth,
     applyObjectUpdate,
     resetObjects,
     state,
@@ -32,6 +33,12 @@ export function initSocket({ backendUrl: url, statusDot: dotEl, statusText: text
         applyArmHealth(data);
         notifyHealthChange(data, prev);
     });
+    // Phase 3: non-arm asset status updates.
+    socket.on('asset_health', (data) => {
+        const prev = state.assets.get(data.asset_id)?.status || 'idle';
+        applyAssetHealth(data);
+        notifyAssetHealthChange(data, prev);
+    });
     socket.on('log_message', appendLogEntry);
 }
 
@@ -50,6 +57,14 @@ function onConnect() {
         if (data && data.arms) {
             for (const [id, h] of Object.entries(data.arms)) {
                 applyArmHealth({ arm_id: parseInt(id, 10), health: h.health, error: h.error });
+            }
+        }
+    }).catch(() => {});
+    // Phase 3: hydrate non-arm asset state on (re)connect.
+    fetch(backendUrl + '/assets/state').then(r => r.json()).then(data => {
+        if (data && data.assets) {
+            for (const [id, rec] of Object.entries(data.assets)) {
+                applyAssetHealth({ asset_id: id, status: rec.status, error: rec.error });
             }
         }
     }).catch(() => {});
@@ -80,6 +95,32 @@ function notifyHealthChange(data, prev) {
             break;
         case 'alive':
             if (prev !== 'idle') addNotification('success', `${label} \u2014 Recovered`, 'Back online');
+            break;
+    }
+}
+
+function notifyAssetHealthChange(data, prev) {
+    const next = data.status;
+    if (prev === next) return;
+    const asset = state.assets.get(data.asset_id);
+    const label = asset?.label || data.asset_id;
+    switch (next) {
+        case 'failed':
+            addNotification('error', `${label} — Failed`, data.error || 'Asset failed');
+            break;
+        case 'recovering':
+            addNotification('info', `${label} — Recovering`, '');
+            break;
+        case 'idle':
+            if (prev === 'failed' || prev === 'recovering') {
+                addNotification('success', `${label} — Recovered`, 'Back online');
+            }
+            break;
+        case 'busy':
+            // Busy is a normal active state — no notification.
+            break;
+        case 'stopped':
+            addNotification('warning', `${label} — Stopped`, data.error || '');
             break;
     }
 }

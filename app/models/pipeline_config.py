@@ -457,6 +457,55 @@ def _build_flow_order(all_assets, asset_by_id):
     return flow
 
 
+def get_module_flow_order():
+    """Return list of asset string ids in pipeline flow order.
+
+    Combines arms (sorted by numeric id) with non-arm assets inserted at
+    their connection points, using the same topological algorithm as the
+    layout engine (`_build_flow_order`). Used by the Phase 4 pipeline
+    builder so it can wire modules linearly without any type-specific
+    branching.
+
+    Example for default pipeline.yaml: ['arm-1', 'arm-2', 'veh-a', 'conv-1', 'arm-3'].
+    """
+    arms_cfg = get_config().get("arms") or []
+    extras = get_extra_assets()
+
+    all_assets = []
+    asset_by_id = {}
+    for arm in arms_cfg:
+        sid = f"arm-{arm['id']}"
+        a = {
+            "id": sid,
+            "numeric_id": arm["id"],
+            "type": "arm",
+            "config": arm,
+            "upstream": [f"arm-{d}" for d in arm.get("depends_on", [])],
+            "downstream": [],
+        }
+        all_assets.append(a)
+        asset_by_id[sid] = a
+    for ea in extras:
+        a = {
+            "id": ea["id"],
+            "type": ea["type"],
+            "config": ea,
+            "upstream": list(ea.get("upstream", [])),
+            "downstream": list(ea.get("downstream", [])),
+        }
+        all_assets.append(a)
+        asset_by_id[ea["id"]] = a
+
+    # Wire downstream from upstream declarations.
+    for asset in all_assets:
+        for up_id in asset["upstream"]:
+            up = asset_by_id.get(up_id)
+            if up and asset["id"] not in up["downstream"]:
+                up["downstream"].append(asset["id"])
+
+    return [a["id"] for a in _build_flow_order(all_assets, asset_by_id)]
+
+
 def get_extra_assets():
     """Return pass-through `assets:` entries for non-arm types (vehicle, conveyor).
 

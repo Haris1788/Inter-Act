@@ -2,12 +2,19 @@ FROM python:3.11-slim
 
 WORKDIR /demo-runner
 
-# Only needs flask (to serve endpoints) and requests (for HTTP calls to backend)
-RUN pip install --no-cache-dir flask requests pyyaml
+# Demo-runner needs flask (HTTP control), requests (calling backend), pyyaml (config),
+# and flask-socketio for the (optional) socket.io plumbing imported by app/.
+RUN pip install --no-cache-dir flask flask-socketio simple-websocket requests pyyaml
 
-# Copy pipeline scripts and config
+# Copy pipeline scripts, the backend `app/` package (asset_controllers, Module
+# base, pipeline_config helpers), and the config file.
 COPY scripts/ ./scripts/
+COPY app/ ./app/
 COPY pipeline.yaml ./pipeline.yaml
+
+# Make `from app.*` and `from run_demo import *` both resolvable from any CWD.
+ENV PYTHONPATH=/demo-runner:/demo-runner/scripts \
+    PYTHONUNBUFFERED=1
 
 EXPOSE 6000
 

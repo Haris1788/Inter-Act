@@ -17,7 +17,7 @@ from flask import Flask, request, jsonify
 
 # Add scripts dir to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from run_demo import run_pipeline, SPEED_FACTORS
+from run_demo import run_pipeline, SPEED_FACTORS, stop_pipeline
 from utils import DEFAULT_HOST
 
 app = Flask(__name__)
@@ -87,9 +87,10 @@ def status():
 
 @app.route('/stop', methods=['POST'])
 def stop():
-    """Stop the running demo (best-effort)."""
+    """Stop the running demo by signaling every module to halt."""
     global _status
-    _status = {"running": False, "error": "Stopped by user"}
+    stop_pipeline()
+    _status = {"running": False, "error": None}
     return jsonify({"status": "stopped"})
 
 

@@ -1,7 +1,8 @@
-/* Vehicle renderer + tick (polyline path + moving dot). */
+/* Vehicle renderer. Position derived from backend timestamps via state.js. */
 
 import { polylineInterp, segmentLen, hexToRgba } from '../core/geometry.js';
 import { statusColor, isDegraded } from '../core/status.js';
+import { getAssetAttachPoint } from '../core/state.js';
 
 const DOT_RADIUS = 11;
 
@@ -29,8 +30,8 @@ export function render(ctx, asset, now, env) {
     for (const p of wp) ctx.fillRect(p.x - 3, p.y - 3, 6, 6);
     ctx.restore();
 
-    // Vehicle dot
-    const pos = polylineInterp(wp, asset.dynamic.segIndex, asset.dynamic.t);
+    // Vehicle dot — position computed from backend timestamps in state.js.
+    const pos = getAssetAttachPoint(asset.id) || polylineInterp(wp, 0, asset.dynamic.t || 0);
     ctx.save();
     if (degraded) ctx.globalAlpha = 0.45;
     ctx.beginPath();
@@ -54,12 +55,8 @@ export function render(ctx, asset, now, env) {
 
 function drawHeadingArrow(ctx, asset, pos) {
     const wp = asset.geometry.waypoints;
-    const d = asset.dynamic;
-    const dir = d.direction ?? 1;
-    const targetIdx = dir > 0
-        ? Math.min(d.segIndex + 1, wp.length - 1)
-        : Math.max(d.segIndex, 0);
-    const next = wp[targetIdx];
+    if (wp.length < 2) return;
+    const next = wp[wp.length - 1];
     if (!next || (next.x === pos.x && next.y === pos.y)) return;
     const dx = next.x - pos.x;
     const dy = next.y - pos.y;
@@ -117,74 +114,18 @@ function drawStatusBadge(ctx, asset, pos) {
     ctx.fillText(labels[s] || s.toUpperCase(), pos.x, pos.y - DOT_RADIUS - 8);
 }
 
-export function tick(asset, dt) {
-    const d = asset.dynamic;
-    const g = asset.geometry;
-    if (g.waypoints.length < 2) return;
-    if (asset.status === 'dead' || asset.status === 'stopped') return;
-
-    if (d.direction == null) d.direction = 1;
-
-    // Active segment is always between waypoints[segIndex] and waypoints[segIndex+1].
-    // Forward: t 0→1. Reverse: t 1→0.
-    const segStart = g.waypoints[d.segIndex];
-    const segEnd = g.waypoints[d.segIndex + 1];
-    if (!segEnd) return;
-    const len = segmentLen(segStart, segEnd);
-    if (len <= 0) { advanceSegment(asset); return; }
-
-    const step = (g.speed * dt) / len;
-    d.t += step * d.direction;
-
-    if (d.t >= 1) {
-        d.t = 1;
-        advanceSegment(asset);
-    } else if (d.t <= 0) {
-        d.t = 0;
-        advanceSegment(asset);
-    }
-}
-
-function advanceSegment(asset) {
-    const d = asset.dynamic;
-    const g = asset.geometry;
-    const lastSeg = g.waypoints.length - 2;
-
-    if (d.direction > 0) {
-        // Reached end of current forward segment.
-        if (d.segIndex < lastSeg) {
-            d.segIndex++;
-            d.t = 0;
-        } else if (g.loop) {
-            d.segIndex = 0;
-            d.t = 0;
-        } else {
-            // Bounce: reverse direction, keep segIndex at last, t stays at 1.
-            d.direction = -1;
-            if (asset.draining) asset.status = 'dead';
-        }
-    } else {
-        // Reversing: reached start of current segment.
-        if (d.segIndex > 0) {
-            d.segIndex--;
-            d.t = 1;
-        } else {
-            // Reached beginning — flip back forward.
-            d.direction = 1;
-            if (asset.draining) asset.status = 'dead';
-        }
-    }
-}
+/* Phase 3: tick removed. Vehicle position derived from backend timestamps in
+ * core/state.js. canPick/canDrop kept for legacy import compatibility. */
 
 export function getAttachPoint(asset) {
-    return polylineInterp(asset.geometry.waypoints, asset.dynamic.segIndex, asset.dynamic.t);
+    return getAssetAttachPoint(asset.id) || asset.geometry.waypoints[0];
 }
 
 export function canPick(asset) {
-    return !asset.draining && asset.status !== 'dead' && asset.status !== 'stopped'
-        && asset.carriedObject == null;
+    return asset.carriedObject == null
+        && asset.status !== 'failed' && asset.status !== 'stopped';
 }
 
 export function canDrop(asset) {
-    return !asset.draining && asset.status !== 'dead' && asset.status !== 'stopped';
+    return asset.status !== 'failed' && asset.status !== 'stopped';
 }

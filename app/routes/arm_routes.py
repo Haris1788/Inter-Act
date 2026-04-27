@@ -147,6 +147,11 @@ def object_event():
         obj["carrier_asset"] = carrier_asset
     if 'slot' in data:
         obj['slot'] = data['slot']
+    # Phase 3: timing fields so the frontend can interpolate positions or
+    # snap deterministically based on backend timestamps. All optional.
+    for ts_field in ("start_time", "duration_ms", "event_time"):
+        if ts_field in data and data[ts_field] is not None:
+            obj[ts_field] = data[ts_field]
     with _object_lock:
         _object_states[object_id] = obj
     socketio.emit('object_update', obj)

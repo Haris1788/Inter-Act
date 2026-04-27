@@ -131,8 +131,10 @@ class TestArmVehicleArmFlow:
         _drain([veh], timeout=5.0)
 
         states = [s for s, _ in ev.states_for("Obj1")]
+        # Phase 5: vehicle emits "carried" on accept; downstream pickup event
+        # is no longer emitted by the source asset (consumer's first event
+        # owns the next position). So we only assert the entry event here.
         assert "carried" in states
-        assert any(s.startswith("at_veh-a_exit") for s in states)
         rec = asset_state.get("veh-a")
         assert rec["status"] in ("idle", "stopped")  # final state varies on timing
         assert rec["carried_object"] is None
@@ -185,8 +187,10 @@ class TestFullChainFlow:
         assert result == ["Obj1"]
         states = [s for s, _ in ev.states_for("Obj1")]
         # Vehicle then conveyor should have emitted these.
+        # Phase 5: conveyor emits per-slot `on_conv-1` events as the object
+        # shifts; the redundant `at_conv-1_exit` event was removed (caused a
+        # frontend detach race that visually snapped the object back to slot 0).
         assert any(s.startswith("on_conv-1") for s in states)
-        assert any(s.startswith("at_conv-1_exit") for s in states)
 
 
 # ── Failure handling ─────────────────────────────────────────────────

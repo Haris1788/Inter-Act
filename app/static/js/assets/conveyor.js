@@ -84,37 +84,7 @@ function drawStatusBadge(ctx, asset) {
     ctx.fillText(labels[s] || s.toUpperCase(), midX, badgeY);
 }
 
-/* tick: periodically shift slots toward `to`. Last-slot handoff handled elsewhere. */
-export function tick(asset, dt, env) {
-    const d = asset.dynamic;
-    const g = asset.geometry;
-    if (asset.status === 'dead' || asset.status === 'stopped') return;
-
-    d.sinceShift += dt;
-    if (d.sinceShift < g.shiftInterval) return;
-    d.sinceShift = 0;
-
-    const lastIdx = g.slotCount - 1;
-
-    // If last slot occupied, env.tryConveyorOutput returns true on successful handoff.
-    if (d.slots[lastIdx] != null && env && env.tryConveyorOutput) {
-        env.tryConveyorOutput(asset, lastIdx);
-    }
-
-    // Shift all objects one slot toward `to` (higher index).
-    for (let i = lastIdx; i > 0; i--) {
-        if (d.slots[i] == null && d.slots[i - 1] != null) {
-            d.slots[i] = d.slots[i - 1];
-            d.slots[i - 1] = null;
-            if (env && env.onSlotShift) env.onSlotShift(asset, i - 1, i);
-        }
-    }
-
-    // Drain finalization: if empty and draining, mark dead.
-    if (asset.draining && d.slots.every(s => s == null)) {
-        asset.status = 'dead';
-    }
-}
+/* Phase 3: tick removed. Slots populated by backend `object_update` events. */
 
 export function getAttachPoint(asset, slotHint) {
     const slots = asset.geometry.slotPositions;
