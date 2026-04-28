@@ -82,13 +82,13 @@ function renderAssetControls() {
 
         const killBtn = document.createElement('button');
         killBtn.textContent = `Kill ${asset.label}`;
-        killBtn.className = 'asset-kill-btn';
+        killBtn.className = 'control-btn control-btn-danger asset-kill-btn';
         killBtn.addEventListener('click', () => failAsset(asset.id));
         panel.appendChild(killBtn);
 
         const recoverBtn = document.createElement('button');
         recoverBtn.textContent = `Recover ${asset.label}`;
-        recoverBtn.className = 'asset-recover-btn';
+        recoverBtn.className = 'control-btn control-btn-ghost asset-recover-btn';
         recoverBtn.addEventListener('click', () => recoverAsset(asset.id));
         panel.appendChild(recoverBtn);
     }
@@ -123,11 +123,12 @@ function renderDebugToggle() {
     if (!panel) return;
     const btn = document.createElement('button');
     btn.textContent = 'Debug: off';
-    btn.className = 'asset-recover-btn';
+    btn.className = 'control-btn control-btn-debug asset-debug-btn';
     btn.addEventListener('click', () => {
         const next = !state.debugOverlay;
         setDebugOverlay(next);
         btn.textContent = next ? 'Debug: on' : 'Debug: off';
+        btn.classList.toggle('is-active', next);
     });
     panel.appendChild(btn);
 }

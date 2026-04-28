@@ -1,6 +1,6 @@
 /* Entry point. Fetches /config, wires socket, starts render + tick loop. */
 
-import { setConfig, state } from './core/state.js';
+import { setConfig, state, applyObjectUpdate } from './core/state.js';
 import { initRender, setupCanvasResolution, createBackgroundCanvas, renderFrame } from './core/render.js';
 import { initSocket } from './core/socket.js';
 import { initLog } from './core/log.js';
@@ -48,7 +48,7 @@ async function init() {
         const resp = await fetch(BACKEND_URL + '/objects');
         const data = await resp.json();
         if (data && data.objects) {
-            data.objects.forEach(obj => { state.trackedObjects[obj.object_id] = obj; });
+            data.objects.forEach(applyObjectUpdate);
         }
     } catch (e) { /* non-critical */ }
 

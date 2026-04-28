@@ -15,9 +15,10 @@ export const state = {
     config: null,
     assets: new Map(),                  // id -> Asset
     connections: [],                    // [{from,to}] derived from asset graph
+    transferPoints: new Map(),          // transfer-point-id -> {from,to}
     trackedObjects: {},                 // object_id -> backend record (see normalizeObj)
     objectPositions: {},                // object_id -> last rendered {x,y}
-    objectTransitions: {},              // object_id -> {fromX,fromY,startTime,duration} (arm easing only)
+    objectTransitions: {},              // object_id -> {fromX,fromY,startTime,duration}
     flashes: [],                        // [{x,y,startTime,duration}] visual transfer pulses
     debugOverlay: false,                // toggled by ui/controls.js
 };
@@ -28,11 +29,12 @@ export function setConfig(cfg) {
     for (const a of buildAssets(cfg)) {
         state.assets.set(a.id, a);
     }
-    state.connections = buildConnections(state.assets);
+    state.connections = buildConnections(state.assets, cfg);
+    state.transferPoints = buildTransferPoints(state.connections);
 }
 
-/* Build graph edges. Arm->arm chain is suppressed when a non-arm path bridges the pair. */
-export function buildConnections(assets) {
+/* Build graph edges from explicit topology only. */
+export function buildConnections(assets, cfg = null) {
     const connections = [];
     const seen = new Set();
 
@@ -44,31 +46,51 @@ export function buildConnections(assets) {
         connections.push({ from, to });
     }
 
+    // Prefer canonical module flow order from backend when available.
+    const flow = Array.isArray(cfg?.module_flow_order) ? cfg.module_flow_order : null;
+    if (flow && flow.length > 1) {
+        for (let i = 0; i < flow.length - 1; i++) {
+            const from = flow[i];
+            const to = flow[i + 1];
+            if (assets.has(from) && assets.has(to)) add(from, to);
+        }
+        return connections;
+    }
+
     for (const asset of assets.values()) {
         for (const downstreamId of asset.downstream || []) {
             if (assets.has(downstreamId)) add(asset.id, downstreamId);
         }
     }
 
-    const arms = Array.from(assets.values())
-        .filter(a => a.type === 'arm')
-        .sort((a, b) => (a.numericId ?? 0) - (b.numericId ?? 0));
-    for (let i = 0; i < arms.length - 1; i++) {
-        const src = arms[i].id;
-        const dst = arms[i + 1].id;
-        if (hasNonArmPathBetween(assets, src, dst)) continue;
-        add(src, dst);
-    }
-
     return sortConnectionsByFlowOrder(connections, assets);
+}
+
+function buildTransferPoints(connections) {
+    const tps = new Map();
+    for (const conn of connections) {
+        tps.set(`TP ${conn.from}->${conn.to}`, { from: conn.from, to: conn.to });
+    }
+    return tps;
 }
 
 function sortConnectionsByFlowOrder(connections, assets) {
     return connections.sort((a, b) => {
         const fromA = assets.get(a.from);
         const fromB = assets.get(b.from);
-        if (!fromA || !fromB) return 0;
-        return getAssetFlowX(fromA) - getAssetFlowX(fromB);
+        const toA = assets.get(a.to);
+        const toB = assets.get(b.to);
+        if (!fromA || !fromB || !toA || !toB) return 0;
+
+        const dxFrom = getAssetFlowX(fromA) - getAssetFlowX(fromB);
+        if (dxFrom !== 0) return dxFrom;
+
+        const dxTo = getAssetFlowX(toA) - getAssetFlowX(toB);
+        if (dxTo !== 0) return dxTo;
+
+        const keyA = `${a.from}->${a.to}`;
+        const keyB = `${b.from}->${b.to}`;
+        return keyA.localeCompare(keyB);
     });
 }
 
@@ -82,32 +104,12 @@ function getAssetFlowX(asset) {
     return 0;
 }
 
-function hasNonArmPathBetween(assets, srcId, dstId) {
-    const queue = [{ id: srcId, usedNonArm: false }];
-    const seen = new Set([`${srcId}|0`]);
-    while (queue.length) {
-        const { id, usedNonArm } = queue.shift();
-        const cur = assets.get(id);
-        if (!cur) continue;
-        for (const nextId of cur.downstream || []) {
-            const next = assets.get(nextId);
-            if (!next) continue;
-            const nextUsedNonArm = usedNonArm || next.type !== 'arm';
-            if (nextId === dstId && nextUsedNonArm) return true;
-            const key = `${nextId}|${nextUsedNonArm ? 1 : 0}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            queue.push({ id: nextId, usedNonArm: nextUsedNonArm });
-        }
-    }
-    return false;
-}
-
 function buildAssets(cfg) {
     const out = [];
     const seen = new Set();
-    if (Array.isArray(cfg.assets)) {
-        for (const raw of cfg.assets) {
+    const sourceAssets = Array.isArray(cfg.asset_graph) ? cfg.asset_graph : cfg.assets;
+    if (Array.isArray(sourceAssets)) {
+        for (const raw of sourceAssets) {
             const a = normalizeAsset(raw);
             if (a) { out.push(a); seen.add(a.id); }
         }
@@ -227,11 +229,6 @@ function computeSlotPositions(from, to, n) {
 
 function wireAssetGraph(assets) {
     const byId = new Map(assets.map(a => [a.id, a]));
-    const armIds = assets
-        .filter(a => a.type === 'arm')
-        .map(a => a.numericId)
-        .filter(v => Number.isFinite(v))
-        .sort((a, b) => a - b);
 
     for (const asset of assets) {
         asset.downstream = Array.isArray(asset.downstream)
@@ -246,25 +243,6 @@ function wireAssetGraph(assets) {
             if (!Array.isArray(up.downstream)) up.downstream = [];
             if (!up.downstream.includes(asset.id)) up.downstream.push(asset.id);
         }
-    }
-
-    for (const asset of assets) {
-        if (asset.type === 'arm') continue;
-        if ((asset.downstream || []).length > 0) continue;
-        const upstreamArmNums = (asset.upstream || [])
-            .map(id => byId.get(id))
-            .filter(a => a && a.type === 'arm' && Number.isFinite(a.numericId))
-            .map(a => a.numericId);
-        if (!upstreamArmNums.length) continue;
-        const maxUp = Math.max(...upstreamArmNums);
-        const nextArmNum = armIds.find(n => n > maxUp);
-        if (!nextArmNum) continue;
-        const nextArmId = `arm-${nextArmNum}`;
-        if (!byId.has(nextArmId)) continue;
-        asset.downstream.push(nextArmId);
-        const nextArm = byId.get(nextArmId);
-        if (!Array.isArray(nextArm.upstream)) nextArm.upstream = [];
-        if (!nextArm.upstream.includes(asset.id)) nextArm.upstream.push(asset.id);
     }
 }
 
@@ -282,6 +260,9 @@ export function applyStateUpdate(data) {
         const newTarget = arm.angle;
         if (d.targetAngle === undefined || newTarget !== d.targetAngle) {
             d.transition = { from: d.displayedAngle, to: newTarget, startTime: now, duration: ANIM };
+            // UI-only reconciliation: if an arm is actively moving, treat stale
+            // "draining" as busy for display purposes until a fresh health event arrives.
+            if (asset.status === 'draining') asset.status = 'busy';
         }
         d.targetAngle = newTarget;
     }
@@ -324,10 +305,23 @@ export function applyObjectUpdate(data) {
     if (!data || !data.object_id) return;
     const id = data.object_id;
     const old = state.trackedObjects[id];
+    const incomingSeq = Number(data.event_seq || 0);
+    const prevSeq = old ? Number(old.event_seq || 0) : 0;
+    if (old && incomingSeq && prevSeq && incomingSeq < prevSeq) return;
+    const incomingTs = Number(data.event_time || data.start_time || 0);
+    const prevTs = old ? Number(old.event_time || old.start_time || 0) : 0;
+    if (old && incomingTs && prevTs && incomingTs < prevTs) return;
+
+    if (!data.owner_type || !data.owner_id) {
+        return;
+    }
+
+    // Capture last rendered position before any state changes.
+    const lastPos = state.objectPositions[id];
 
     // Detach from previous carrier asset.
     if (old) {
-        const prevCarrierId = old.carrier_asset || (old.carrier_arm != null ? `arm-${old.carrier_arm}` : null);
+        const prevCarrierId = old.owner_id;
         const prev = prevCarrierId ? state.assets.get(prevCarrierId) : null;
         if (prev) {
             if (prev.carriedObject === id) prev.carriedObject = null;
@@ -348,11 +342,15 @@ export function applyObjectUpdate(data) {
     state.trackedObjects[id] = data;
 
     // Attach to new carrier asset.
-    const carrierId = data.carrier_asset || (data.carrier_arm != null ? `arm-${data.carrier_arm}` : null);
+    const carrierId = data.owner_id;
     const carrier = carrierId ? state.assets.get(carrierId) : null;
     if (carrier) {
         if (carrier.type === 'arm' || carrier.type === 'vehicle') {
             carrier.carriedObject = id;
+            if (carrier.type === 'arm' && carrier.status === 'draining') {
+                // UI-only reconciliation: ownership proves active work.
+                carrier.status = 'busy';
+            }
         } else if (carrier.type === 'conveyor' && typeof data.slot === 'number') {
             const slots = carrier.dynamic.slots;
             // Clear any other slot still holding this object (shift case).
@@ -363,20 +361,19 @@ export function applyObjectUpdate(data) {
         }
     }
 
-    // Arm-zone easing for legacy intake/handoff/output snap states.
-    const isCarried = data.state === 'carried';
-    const isOnAsset = typeof data.state === 'string' &&
-        (data.state.startsWith('on_') || data.state.startsWith('at_'));
-    if (isCarried || isOnAsset) {
+    // 'carried' / 'on_X' / 'at_X' states hard-lock to the carrier tip.
+    // All other ownership changes (TP, zone, conveyor) animate from last pos.
+    const stateStr = data.state;
+    const snapNow = stateStr === 'carried'
+        || (typeof stateStr === 'string' && (stateStr.startsWith('on_') || stateStr.startsWith('at_')));
+    if (snapNow || !lastPos) {
         delete state.objectTransitions[id];
-        return;
-    }
-    if (old && state.objectPositions[id]) {
+    } else {
         state.objectTransitions[id] = {
-            fromX: state.objectPositions[id].x,
-            fromY: state.objectPositions[id].y,
+            fromX: lastPos.x,
+            fromY: lastPos.y,
             startTime: performance.now(),
-            duration: 400,
+            duration: 350,
         };
     }
 }

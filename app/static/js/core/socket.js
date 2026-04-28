@@ -49,8 +49,7 @@ function onConnect() {
     fetch(backendUrl + '/state').then(r => r.json()).then(applyStateUpdate).catch(() => {});
     fetch(backendUrl + '/objects').then(r => r.json()).then(data => {
         if (data && data.objects) {
-            resetObjects();
-            data.objects.forEach(obj => { state.trackedObjects[obj.object_id] = obj; });
+            data.objects.forEach(applyObjectUpdate);
         }
     }).catch(() => {});
     fetch(backendUrl + '/arms/health').then(r => r.json()).then(data => {
@@ -107,6 +106,9 @@ function notifyAssetHealthChange(data, prev) {
     switch (next) {
         case 'failed':
             addNotification('error', `${label} — Failed`, data.error || 'Asset failed');
+            break;
+        case 'draining':
+            addNotification('warning', `${label} — DRAINING`, data.error || 'downstream blocked');
             break;
         case 'recovering':
             addNotification('info', `${label} — Recovering`, '');

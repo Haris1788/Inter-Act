@@ -32,6 +32,12 @@ body {
     overflow-x: hidden;
 }
 
+:root {
+    --control-radius: 6px;
+    --control-shadow: 0 1px 2px rgba(44, 62, 80, 0.12);
+    --control-shadow-hover: 0 3px 8px rgba(44, 62, 80, 0.16);
+}
+
 h1 {
     font-size: 22px;
     color: #2c3e50;
@@ -61,67 +67,130 @@ h1 {
     background: #27ae60;
 }
 
-/* Demo button */
+/* Shared control buttons */
+#demo-btn,
+.control-btn {
+    appearance: none;
+    min-height: 24px;
+    padding: 5px 13px;
+    border: 1px solid transparent;
+    border-radius: var(--control-radius);
+    font: 700 11px/1.1 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: var(--control-shadow);
+    transition:
+        background-color 0.18s ease,
+        border-color 0.18s ease,
+        color 0.18s ease,
+        box-shadow 0.18s ease,
+        transform 0.12s ease;
+}
+
 #demo-btn {
     margin-left: 16px;
-    padding: 5px 16px;
-    font-size: 12px;
-    font-weight: 600;
-    color: #fff;
-    background: #3498db;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background 0.2s;
+    color: #236a8d;
+    background: #edf6fb;
+    border-color: #8fc5df;
 }
 
 #demo-btn:hover {
-    background: #2980b9;
+    color: #fff;
+    background: #3498db;
+    border-color: #3498db;
+    box-shadow: var(--control-shadow-hover);
+    transform: translateY(-1px);
+}
+
+#demo-btn:active {
+    transform: translateY(0);
+    box-shadow: var(--control-shadow);
 }
 
 #demo-btn.running {
     background: #e67e22;
+    border-color: #e67e22;
     cursor: default;
+    transform: none;
 }
 
 #demo-btn.done {
     background: #27ae60;
+    border-color: #27ae60;
 }
 
-/* Asset kill controls — visually consistent with demo button */
+#demo-btn:focus-visible,
+.control-btn:focus-visible {
+    outline: 2px solid rgba(52, 152, 219, 0.28);
+    outline-offset: 2px;
+}
+
+/* Asset controls */
 #asset-controls {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
     justify-content: center;
-    padding: 8px 0 4px;
-    margin-top: 4px;
+    align-items: center;
+    width: min(100%, 980px);
+    padding: 8px 10px 5px;
+    margin-top: 2px;
 }
 
-.asset-kill-btn {
-    padding: 5px 14px;
-    font-size: 12px;
-    font-weight: 600;
+.control-btn-danger {
+    color: #52686c;
+    background: #eef3f4;
+    border-color: #aebdc1;
+}
+
+.control-btn-danger:hover:not(:disabled) {
     color: #fff;
-    background: #95a5a6;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background 0.2s, transform 0.1s;
+    background: #c94f45;
+    border-color: #c94f45;
+    box-shadow: var(--control-shadow-hover);
+    transform: translateY(-1px);
 }
 
-.asset-kill-btn:hover:not(:disabled) {
-    background: #e74c3c;
+.control-btn-ghost {
+    color: #236a8d;
+    background: #edf6fb;
+    border-color: #8fc5df;
 }
 
-.asset-kill-btn:active:not(:disabled) {
-    transform: translateY(1px);
+.control-btn-ghost:hover:not(:disabled) {
+    color: #fff;
+    background: #3498db;
+    border-color: #3498db;
+    box-shadow: var(--control-shadow-hover);
+    transform: translateY(-1px);
 }
 
-.asset-kill-btn:disabled {
-    background: #bdc3c7;
+.control-btn-debug {
+    color: #52686c;
+    background: #f7f9fa;
+    border-color: #bdc8cb;
+}
+
+.control-btn-debug:hover:not(:disabled),
+.control-btn-debug.is-active {
+    color: #fff;
+    background: #34495e;
+    border-color: #34495e;
+    box-shadow: var(--control-shadow-hover);
+}
+
+.control-btn:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: var(--control-shadow);
+}
+
+.control-btn:disabled {
+    color: #7f8c8d;
+    background: #dce3e5;
+    border-color: #dce3e5;
     cursor: not-allowed;
-    opacity: 0.7;
+    opacity: 0.75;
 }
 
 /* Canvas wrapper */

@@ -75,7 +75,6 @@ export function createBackgroundCanvas() {
 
     // Handoff zones - draw for all connections between different assets
     // Skip only if an asset somehow connects to itself (should never happen)
-    let handoffIndex = 1;
     state.connections.forEach((conn) => {
         const fromAsset = state.assets.get(conn.from);
         const toAsset = state.assets.get(conn.to);
@@ -87,8 +86,7 @@ export function createBackgroundCanvas() {
         
         if (!fromAsset || !toAsset) return;
         
-        drawHandoffZone(bg, conn.from, conn.to, handoffIndex);
-        handoffIndex++;
+        drawHandoffZone(bg, conn.from, conn.to);
     });
 
     // Intake
@@ -154,7 +152,7 @@ export function createBackgroundCanvas() {
     }
 }
 
-function drawHandoffZone(bg, fromId, toId, index) {
+function drawHandoffZone(bg, fromId, toId) {
     const from = state.assets.get(fromId);
     const to = state.assets.get(toId);
     if (!from || !to) return;
@@ -181,7 +179,7 @@ function drawHandoffZone(bg, fromId, toId, index) {
     bg.fillStyle = LABEL_COLOR;
     bg.font = '11px sans-serif';
     bg.textAlign = 'center';
-    bg.fillText(`Handoff ${index}`, pos.x, pos.y - HZ_HEIGHT / 2 - 4);
+    bg.fillText(`${fromId} -> ${toId}`, pos.x, pos.y - HZ_HEIGHT / 2 - 4);
 }
 
 function computeHandoffPosition(from, to) {
@@ -296,73 +294,69 @@ function getObjectPosition(obj) {
     // Frozen by failed asset — render exactly where it was when failure hit.
     if (obj._frozen) return obj._frozen;
 
-    // Carried by arm or vehicle — attach point reflects backend timing.
-    if (obj.state === 'carried') {
-        if (obj.carrier_asset) return getAssetAttachPoint(obj.carrier_asset);
-        if (obj.carrier_arm != null) return getAssetAttachPoint(`arm-${obj.carrier_arm}`);
+    if (!obj.owner_type || !obj.owner_id) return null;
+
+    if (obj.owner_type === 'arm') {
+        return getAssetAttachPoint(obj.owner_id, obj.slot);
+    }
+    if (obj.owner_type === 'vehicle' || obj.owner_type === 'conveyor' || obj.owner_type === 'asset') {
+        return getAssetAttachPoint(obj.owner_id, obj.slot);
+    }
+    if (obj.owner_type === 'transfer_point') {
+        const tpPos = resolveTransferPointPosition(obj.owner_id);
+        if (tpPos) return tpPos;
         return null;
     }
-    // On a conveyor slot — backend supplies carrier_asset + slot index.
-    if (typeof obj.state === 'string' && obj.state.startsWith('on_')) {
-        if (obj.carrier_asset && typeof obj.slot === 'number') {
-            return getAssetAttachPoint(obj.carrier_asset, obj.slot);
+    if (obj.owner_type === 'zone') {
+        if (obj.owner_id === 'intake-zone') {
+            const iz = cfg.intake_zone;
+            if (!iz) return null;
+            const intakeObjs = Object.values(state.trackedObjects)
+                .filter(o => o.owner_type === 'zone' && o.owner_id === 'intake-zone')
+                .map(o => o.object_id)
+                .sort();
+            const idx = intakeObjs.indexOf(obj.object_id);
+            const total = intakeObjs.length;
+            const padding = 8;
+            const availableHeight = iz.height - padding * 2;
+            const maxSpacing = OBJ_HEIGHT + 6;
+            const spacing = Math.min(maxSpacing, availableHeight / Math.max(total, 1));
+            const bottomY = iz.y + iz.height - padding - OBJ_HEIGHT / 2;
+            return { x: iz.entry_x, y: bottomY - (total - 1 - idx) * spacing };
         }
-        // Legacy fallback: parse slot from state string ("on_conv-1#2").
-        const rest = obj.state.slice(3);
-        const hashIdx = rest.lastIndexOf('#');
-        if (hashIdx >= 0) {
-            const assetId = rest.slice(0, hashIdx);
-            const slot = parseInt(rest.slice(hashIdx + 1), 10);
-            return getAssetAttachPoint(assetId, slot);
+        if (obj.owner_id === 'output-zone') {
+            const oz = cfg.output_zone;
+            if (!oz) return null;
+            const outputObjs = Object.values(state.trackedObjects)
+                .filter(o => o.owner_type === 'zone' && o.owner_id === 'output-zone')
+                .map(o => o.object_id)
+                .sort();
+            const idx = outputObjs.indexOf(obj.object_id);
+            const total = outputObjs.length;
+            const padding = 8;
+            const availableHeight = oz.height - padding * 2;
+            const maxSpacing = OBJ_HEIGHT + 6;
+            const spacing = Math.min(maxSpacing, availableHeight / Math.max(total, 1));
+            const bottomY = oz.y + oz.height - padding - OBJ_HEIGHT / 2;
+            return { x: oz.x + oz.width / 2, y: bottomY - idx * spacing };
         }
-        if (obj.carrier_asset) return getAssetAttachPoint(obj.carrier_asset);
-    }
-    // Just exited an asset — sit at its exit point until next event.
-    if (typeof obj.state === 'string' && obj.state.startsWith('at_')) {
-        if (obj.carrier_asset) return getAssetAttachPoint(obj.carrier_asset);
-    }
-    if (obj.state === 'intake') {
-        const iz = cfg.intake_zone;
-        if (!iz) return null;
-        const intakeObjs = Object.values(state.trackedObjects)
-            .filter(o => o.state === 'intake')
-            .map(o => o.object_id)
-            .sort();
-        const idx = intakeObjs.indexOf(obj.object_id);
-        const total = intakeObjs.length;
-        const padding = 8;
-        const availableHeight = iz.height - padding * 2;
-        const maxSpacing = OBJ_HEIGHT + 6;
-        const spacing = Math.min(maxSpacing, availableHeight / Math.max(total, 1));
-        const bottomY = iz.y + iz.height - padding - OBJ_HEIGHT / 2;
-        return { x: iz.entry_x, y: bottomY - (total - 1 - idx) * spacing };
-    }
-    if (typeof obj.state === 'string' && obj.state.startsWith('handoff_')) {
-        const idx = parseInt(obj.state.split('_')[1], 10) - 1;
-        const hz = (cfg.handoff_zones || [])[idx];
-        if (hz) {
-            const arms = Array.from(state.assets.values()).filter(a => a.type === 'arm');
-            const pivotY = arms[0]?.geometry.pivot.y ?? 300;
-            return { x: hz.x + hz.width / 2, y: pivotY };
-        }
-    }
-    if (obj.state === 'output') {
-        const oz = cfg.output_zone;
-        if (!oz) return null;
-        const outputObjs = Object.values(state.trackedObjects)
-            .filter(o => o.state === 'output')
-            .map(o => o.object_id)
-            .sort();
-        const idx = outputObjs.indexOf(obj.object_id);
-        const total = outputObjs.length;
-        const padding = 8;
-        const availableHeight = oz.height - padding * 2;
-        const maxSpacing = OBJ_HEIGHT + 6;
-        const spacing = Math.min(maxSpacing, availableHeight / Math.max(total, 1));
-        const bottomY = oz.y + oz.height - padding - OBJ_HEIGHT / 2;
-        return { x: oz.x + oz.width / 2, y: bottomY - idx * spacing };
     }
     return null;
+}
+
+function resolveTransferPointPosition(tpOwnerId) {
+    if (typeof tpOwnerId !== 'string') return null;
+    const prefix = 'TP ';
+    if (!tpOwnerId.startsWith(prefix)) return null;
+    const spec = tpOwnerId.slice(prefix.length);
+    const arrowIdx = spec.indexOf('->');
+    if (arrowIdx < 0) return null;
+    const fromId = spec.slice(0, arrowIdx);
+    const toId = spec.slice(arrowIdx + 2);
+    const fromAsset = state.assets.get(fromId);
+    const toAsset = state.assets.get(toId);
+    if (!fromAsset || !toAsset) return null;
+    return computeHandoffPosition(fromAsset, toAsset);
 }
 
 /* Render tracked objects + objects currently occupying conveyor slots (not in trackedObjects). */
@@ -370,9 +364,15 @@ function renderObjects(now) {
     // Backend-tracked objects
     Object.values(state.trackedObjects).forEach(obj => {
         const targetPos = getObjectPosition(obj);
-        if (!targetPos) return;
-
         const id = obj.object_id;
+
+        // If position can't be resolved right now (e.g. mid-transition between
+        // ownership states), keep the last rendered position — prevents flicker.
+        if (!targetPos) {
+            const frozen = state.objectPositions[id];
+            if (frozen) drawObject(obj, frozen);
+            return;
+        }
         const transition = state.objectTransitions[id];
         let pos = targetPos;
 
