@@ -8,6 +8,7 @@ and arm_3_script.py to avoid code duplication.
 
 import os
 import sys
+import time
 import requests
 
 
@@ -96,7 +97,8 @@ def send_log(host, source, message):
 
 def send_object_event(host, object_id, state, carrier_arm=None,
                       carrier_asset=None, slot=None,
-                      start_time=None, duration_ms=None, event_time=None):
+                      start_time=None, duration_ms=None, event_time=None,
+                      owner_id=None, owner_type=None):
     """Notify the server about an object's position in the pipeline.
 
     Args:
@@ -121,8 +123,11 @@ def send_object_event(host, object_id, state, carrier_arm=None,
         payload['start_time'] = start_time
     if duration_ms is not None:
         payload['duration_ms'] = duration_ms
-    if event_time is not None:
-        payload['event_time'] = event_time
+    payload['event_time'] = int(event_time if event_time is not None else time.time() * 1000)
+    if owner_id is not None:
+        payload['owner_id'] = owner_id
+    if owner_type is not None:
+        payload['owner_type'] = owner_type
     try:
         requests.post(f'{host}/object_event', json=payload, timeout=5)
     except Exception:

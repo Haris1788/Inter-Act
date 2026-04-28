@@ -97,19 +97,60 @@ class Module(threading.Thread):
         self.set_state("failed", reason)
         self._log(f"FAILED: {reason}")
 
+    # Time spent in `recovering` before auto-transitioning back to `idle`.
+    # During this window the controller MUST NOT process objects.
+    RECOVERY_GRACE_S = 2.0
+
     def recover(self) -> None:
-        """Clear fail flag; next cycle resumes."""
+        """Transition failed → recovering → idle.
+
+        Phase 9 lifecycle: only meaningful from `failed` or `recovering`. From
+        any other state we log + ignore so an accidental click on a healthy
+        asset doesn't disrupt processing. After `RECOVERY_GRACE_S` the asset
+        auto-transitions to `idle` (ready for work).
+        """
+        if self.state not in ("failed", "recovering"):
+            self._log(f"recover() ignored — already {self.state}")
+            return
         self._fail_reason = None
         self._fail_event.clear()
         self.set_state("recovering")
         self._log("Recovering")
+        # Auto-finish: transition to idle after grace, unless re-failed.
+        timer = threading.Timer(self.RECOVERY_GRACE_S, self._finish_recovery)
+        timer.daemon = True
+        timer.start()
+
+    def _finish_recovery(self) -> None:
+        if self.state == "recovering":
+            self.set_state("idle")
+            self._log("Recovery complete — ready")
 
     def _is_running(self) -> bool:
         return not self._stop_event.is_set() and not self._fail_event.is_set()
 
+    def _can_process(self) -> bool:
+        """True only when the module is healthy enough to handle objects."""
+        return (self._is_running()
+                and self.state not in ("failed", "recovering", "stopped"))
+
     # ── default accept/process/emit hooks ─────────────────────────────
 
     def can_accept(self, obj: str) -> bool:
+        return True
+
+    def downstream_ready(self) -> bool:
+        """True when this module can safely forward an object downstream."""
+        if self.state in ("failed", "recovering", "draining", "stopped"):
+            return False
+        downstream_alive = getattr(self, "_downstream_alive", None)
+        if callable(downstream_alive) and not downstream_alive():
+            return False
+        if self.output_tp is None:
+            return True
+        is_empty = getattr(self.output_tp, "is_empty", None)
+        if callable(is_empty):
+            return bool(is_empty())
         return True
 
     def accept(self, obj: str) -> None:

@@ -192,6 +192,27 @@ def _monitor_loop():
             if alive is None:
                 continue  # not docker mode — skip
 
+            # Container's reported state (when reachable) — drives sync.
+            container_state = None
+            if alive:
+                try:
+                    resp = requests.get(_get_asset_url(asset_id), timeout=timeout)
+                    if resp.status_code == 200:
+                        container_state = (resp.json() or {}).get("state")
+                except Exception:
+                    container_state = None
+
+            if alive and container_state in ("idle", "busy", "draining", "recovering", "failed", "stopped"):
+                if container_state != current:
+                    try:
+                        asset_state.set_status(asset_id, container_state, rec.get("error"))
+                    except Exception:
+                        pass
+                    _emit_asset_health(asset_id, container_state, rec.get("error"))
+                    if container_state == "draining":
+                        _emit_log("state", f"[STATE] {asset_id} → draining (downstream blocked)")
+                    current = container_state
+
             if current == "failed":
                 if alive:
                     asset_state.recover(asset_id)
@@ -199,6 +220,15 @@ def _monitor_loop():
                     missed[asset_id] = 0
                     _emit_asset_health(asset_id, "idle")
                     _emit_log("system", f"{asset_id} recovered")
+                continue
+
+            # Phase 9: backend says recovering → wait for container to settle
+            # back to idle, then mirror so the UI flips "RECOVERING" → ready.
+            if current == "recovering":
+                if alive and container_state in ("idle", "busy"):
+                    asset_state.mark_idle(asset_id)
+                    _emit_asset_health(asset_id, "idle")
+                    _emit_log("system", f"{asset_id} ready")
                 continue
 
             if alive:

@@ -25,6 +25,141 @@ arm_bp = Blueprint('arms', __name__)
 # In-memory object state for the pipeline visualization (lock-protected)
 _object_states = {}  # {"Obj1": {"object_id": "Obj1", "state": "intake", "carrier_arm": None}}
 _object_lock = threading.Lock()
+_object_versions = {}  # {"Obj1": last_event_time_ms}
+_object_owners = {}    # {"Obj1": "arm-1" | "TP arm-1->arm-2" | "conv-1" | ...}
+_event_seq = 0         # monotonic backend sequence for object_update ordering
+
+
+def _topology_snapshot():
+    flow = pipeline_config.get_module_flow_order()
+    assets = {a["id"]: a for a in pipeline_config.get_all_assets()}
+    transfer_points = {}
+    for i in range(len(flow) - 1):
+        src = flow[i]
+        dst = flow[i + 1]
+        tp_id = f"TP {src}->{dst}"
+        transfer_points[tp_id] = {"from": src, "to": dst}
+    last_arm = None
+    for sid in reversed(flow):
+        if isinstance(sid, str) and sid.startswith("arm-"):
+            last_arm = sid
+            break
+    return {
+        "flow": flow,
+        "assets": assets,
+        "transfer_points": transfer_points,
+        "last_arm": last_arm,
+        "asset_index": {sid: i for i, sid in enumerate(flow)},
+    }
+
+
+def _canonical_owner(owner_type, owner_id):
+    if owner_type == "zone":
+        if owner_id == "intake-zone":
+            return "intake"
+        if owner_id == "output-zone":
+            return "output"
+    if owner_type == "transfer_point":
+        return "transfer_point"
+    if owner_type == "arm":
+        return "arm"
+    if owner_type in ("asset", "vehicle", "conveyor"):
+        return "asset"
+    return None
+
+
+def _owner_exists(topo, owner_type, owner_id):
+    canonical = _canonical_owner(owner_type, owner_id)
+    if canonical in ("intake", "output"):
+        return True
+    if canonical == "transfer_point":
+        return owner_id in topo["transfer_points"]
+    if canonical == "arm":
+        rec = topo["assets"].get(owner_id)
+        return bool(rec and rec.get("type") == "arm")
+    if canonical == "asset":
+        rec = topo["assets"].get(owner_id)
+        return bool(rec and rec.get("type") in ("vehicle", "conveyor"))
+    return False
+
+
+def _adjacent_owner(topo, src_id, dst_id):
+    idx = topo["asset_index"]
+    if src_id not in idx or dst_id not in idx:
+        return False
+    return idx[dst_id] == idx[src_id] + 1
+
+
+def _valid_transition(topo, prev_owner_type, prev_owner_id, next_owner_type, next_owner_id):
+    prev_kind = _canonical_owner(prev_owner_type, prev_owner_id)
+    next_kind = _canonical_owner(next_owner_type, next_owner_id)
+    if prev_kind is None or next_kind is None:
+        return False, "unknown owner type"
+
+    # Repeated updates for the same owner are valid (e.g. timing/slot refresh).
+    if prev_owner_type == next_owner_type and prev_owner_id == next_owner_id:
+        return True, None
+
+    if prev_kind == "intake":
+        if next_kind == "arm":
+            first_arm = next((sid for sid in topo["flow"] if sid.startswith("arm-")), None)
+            return (next_owner_id == first_arm, "intake must transition to first arm")
+        return False, "intake can only transition to arm"
+
+    if prev_kind == "arm":
+        # Race-tolerant fast path:
+        # In concurrent arm threads, a direct arm->next-arm or arm->asset event can
+        # arrive before the intermediate transfer-point event is committed.
+        if next_kind in ("arm", "asset"):
+            tp_id = f"TP {prev_owner_id}->{next_owner_id}"
+            if tp_id in topo["transfer_points"]:
+                return True, None
+        if next_kind == "transfer_point":
+            tp = topo["transfer_points"].get(next_owner_id)
+            if not tp:
+                return False, "unknown transfer point"
+            if tp["from"] != prev_owner_id:
+                return False, "arm can only place to its own outbound transfer point"
+            return True, None
+        if next_kind == "output":
+            if prev_owner_id != topo["last_arm"]:
+                return False, "only terminal arm may transition to output"
+            return True, None
+        return False, "arm can only transition to transfer_point or output"
+
+    if prev_kind == "transfer_point":
+        tp = topo["transfer_points"].get(prev_owner_id)
+        if not tp:
+            return False, "unknown transfer point"
+        # Race-tolerant fast path:
+        # If terminal-arm "carried" event was dropped/reordered, allow TP->output
+        # only when this TP feeds the terminal arm.
+        if next_kind == "output":
+            return (tp["to"] == topo["last_arm"], "only terminal inbound transfer point may transition to output")
+        if next_kind not in ("arm", "asset"):
+            return False, "transfer_point can only transition to arm or asset"
+        if tp["to"] != next_owner_id:
+            return False, "transfer_point can only transition to declared downstream owner"
+        return True, None
+
+    if prev_kind == "asset":
+        if next_kind == "transfer_point":
+            tp = topo["transfer_points"].get(next_owner_id)
+            if not tp:
+                return False, "unknown transfer point"
+            if tp["from"] != prev_owner_id:
+                return False, "asset can only transition to its own outbound transfer point"
+            return True, None
+        if next_kind == "arm":
+            if not _adjacent_owner(topo, prev_owner_id, next_owner_id):
+                return False, "asset->arm transition must follow topology adjacency"
+            return True, None
+        return False, "asset can only transition to transfer_point or arm"
+
+    if prev_kind == "output":
+        return False, "output is terminal owner"
+
+    return False, "invalid owner transition"
 
 
 @arm_bp.route('/set_angle', methods=['POST'])
@@ -129,6 +264,7 @@ def object_event():
     # Phase 2: also accept asset-mediated states like 'on_<asset_id>',
     # 'at_<asset_id>_exit', and 'carried' with carrier_asset payload.
     valid_states = set(pipeline_config.get_valid_handoff_states())
+    valid_states.add("transfer_point")
     is_asset_state = (
         state.startswith("on_")
         or state.startswith("at_")
@@ -137,15 +273,59 @@ def object_event():
     if state not in valid_states and not is_asset_state:
         return jsonify({"error": f"Invalid state: {state}"}), 400
 
+    incoming_ts = data.get("event_time")
+    if incoming_ts is None:
+        incoming_ts = data.get("start_time")
+    if incoming_ts is None:
+        incoming_ts = int(datetime.now().timestamp() * 1000)
+    try:
+        incoming_ts = int(incoming_ts)
+    except Exception:
+        return jsonify({"error": "Invalid event_time"}), 400
+
+    owner_id = data.get("owner_id")
+    owner_type = data.get("owner_type")
+    if owner_id is None:
+        if data.get("carrier_asset"):
+            owner_id = data.get("carrier_asset")
+            owner_type = owner_type or "asset"
+        elif data.get("carrier_arm") is not None:
+            owner_id = f"arm-{data.get('carrier_arm')}"
+            owner_type = owner_type or "arm"
+        elif isinstance(state, str) and state.startswith("handoff_"):
+            owner_id = state
+            owner_type = owner_type or "transfer_point"
+        elif state in ("intake", "output"):
+            owner_id = f"{state}-zone"
+            owner_type = owner_type or "zone"
+
+    if not owner_id or not owner_type:
+        return jsonify({
+            "error": "missing ownership fields",
+            "code": "INVALID_OWNERSHIP",
+        }), 400
+
+    topo = _topology_snapshot()
+    if not _owner_exists(topo, owner_type, owner_id):
+        return jsonify({
+            "error": f"unknown owner {owner_type}:{owner_id}",
+            "code": "UNKNOWN_OWNER",
+        }), 409
+
     obj = {
         "object_id": object_id,
         "state": state,
         "carrier_arm": data.get('carrier_arm'),
+        "event_time": incoming_ts,
     }
     # Optional asset metadata — additive, frontend already reads carrier_asset.
     carrier_asset = data.get('carrier_asset')
     if carrier_asset:
         obj["carrier_asset"] = carrier_asset
+    if owner_id is not None:
+        obj["owner_id"] = owner_id
+    if owner_type is not None:
+        obj["owner_type"] = owner_type
     if 'slot' in data:
         obj['slot'] = data['slot']
     # Phase 3: timing fields so the frontend can interpolate positions or
@@ -153,7 +333,39 @@ def object_event():
     for ts_field in ("start_time", "duration_ms", "event_time"):
         if ts_field in data and data[ts_field] is not None:
             obj[ts_field] = data[ts_field]
+    global _event_seq
     with _object_lock:
+        prev_ts = _object_versions.get(object_id)
+        if prev_ts is not None and incoming_ts < prev_ts:
+            return jsonify({"status": "ignored_stale", "object_id": object_id}), 202
+        prev_obj = _object_states.get(object_id)
+        prev_owner_type = (prev_obj or {}).get("owner_type")
+        prev_owner_id = (prev_obj or {}).get("owner_id")
+        if prev_owner_type and prev_owner_id:
+            ok, reason = _valid_transition(
+                topo,
+                prev_owner_type, prev_owner_id,
+                owner_type, owner_id,
+            )
+            if not ok:
+                return jsonify({
+                    "error": f"invalid ownership transition {prev_owner_type}:{prev_owner_id} -> "
+                             f"{owner_type}:{owner_id}: {reason}",
+                    "code": "INVALID_OWNERSHIP_TRANSITION",
+                }), 409
+        _object_versions[object_id] = incoming_ts
+        _event_seq += 1
+        obj["event_seq"] = _event_seq
+
+        prev_owner = _object_owners.get(object_id)
+        if owner_id is not None and prev_owner != owner_id:
+            _object_owners[object_id] = owner_id
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            socketio.emit('log_message', {
+                'timestamp': timestamp,
+                'source': 'ownership',
+                'message': f'[OWNERSHIP] {object_id} -> {owner_type}:{owner_id}',
+            })
         _object_states[object_id] = obj
     socketio.emit('object_update', obj)
     return jsonify({"status": "ok"})
@@ -176,6 +388,8 @@ def reset_objects():
     """Clear all tracked objects (called at start of new demo run)."""
     with _object_lock:
         _object_states.clear()
+        _object_versions.clear()
+        _object_owners.clear()
     socketio.emit('objects_reset', {})
     return jsonify({"status": "ok"})
 
@@ -419,14 +633,47 @@ def fail_asset(asset_id):
 def recover_asset(asset_id):
     """Start the asset's container, then mark it recovering.
 
-    Health monitor will flip the asset back to `idle` once /health
-    succeeds. Caller doesn't need to wait for that here.
+    Phase 9: also forwards a recover signal to the container's `/recover`
+    endpoint so the in-container controller transitions
+    failed → recovering → idle in lockstep with the backend registry.
+    Without this hop the UI shows "RECOVERING" while the container's
+    controller stays idle and keeps processing — exactly the bug the user
+    saw on a healthy click. The health monitor still auto-flips
+    `recovering → idle` on the backend side once the container reports
+    `state == "idle"` via `/health`.
     """
+    current = asset_state.get(asset_id)
+    if current is None:
+        return jsonify({"error": "unknown asset", "code": "NOT_FOUND"}), 404
+    if current.get("status") in ("idle", "busy"):
+        return jsonify({
+            "status": "ok",
+            "asset": current,
+            "container_control": "not needed",
+            "message": f"{asset_id} is already {current.get('status')}",
+        })
+    if current.get("status") == "recovering":
+        return jsonify({
+            "status": "ok",
+            "asset": current,
+            "container_control": "already recovering",
+        })
+
     docker_err = container_manager.start_container(asset_id)
 
     rec = asset_state.recover(asset_id)
-    if rec is None:
-        return jsonify({"error": "unknown asset", "code": "NOT_FOUND"}), 404
+
+    # Best-effort: notify the container's controller. Compose service name
+    # equals asset id; in non-Docker dev env we hit the published port.
+    docker_mode = os.path.exists('/.dockerenv') or os.environ.get(
+        'DEMO_RUNNER_HOST', '').startswith('http://demo-runner')
+    fallback_port = pipeline_config.get_asset_host_ports().get(asset_id, 8000)
+    container_url = (f"http://{asset_id}:8000" if docker_mode
+                     else f"http://localhost:{fallback_port}")
+    try:
+        http_requests.post(f"{container_url}/recover", timeout=3)
+    except Exception:
+        pass  # Container may still be coming up; health monitor handles sync.
 
     timestamp = datetime.now().strftime('%H:%M:%S')
     socketio.emit('log_message', {

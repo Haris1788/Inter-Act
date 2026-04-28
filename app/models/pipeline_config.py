@@ -35,6 +35,8 @@ _config = None
 MIN_ANGLE = 0.0
 MAX_ANGLE = 180.0
 DEFAULT_ANGLE = 90.0
+ASSET_PORT_BASE = 8010
+ASSET_PORT_STEP = 10
 
 
 def load_config(path=None):
@@ -65,6 +67,20 @@ def get_arm_count():
 
 def get_arm_ids():
     return [arm["id"] for arm in get_arms()]
+
+
+def get_asset_host_ports(base_port=ASSET_PORT_BASE, step=ASSET_PORT_STEP):
+    """Deterministic host port assignment for non-arm asset services.
+
+    Ports are derived from the order in `assets:` so every subsystem
+    (compose generation, demo runner localhost fallback, backend proxy)
+    uses the same mapping without hardcoded IDs.
+    """
+    extras = get_extra_assets()
+    return {
+        a["id"]: base_port + i * step
+        for i, a in enumerate(extras)
+    }
 
 
 def get_pipeline_mode():
@@ -397,6 +413,10 @@ def generate_scene_config():  # noqa: F811 — intentional override
     """
     base = _orig_generate_scene_config()
     base['asset_graph'] = get_all_assets()
+    # Canonical linear topology used by runtime ownership/transfer semantics.
+    # Frontend should build handoff zones from adjacent pairs in this list,
+    # not from dependency edges embedded in asset_graph.
+    base['module_flow_order'] = get_module_flow_order()
     valid, errors = validate_asset_graph()
     base['graph_valid'] = valid
     base['graph_errors'] = errors
@@ -423,6 +443,7 @@ def _build_flow_order(all_assets, asset_by_id):
     # Assign each non-arm to the gap between its upstream and downstream arms
     gaps = {i: [] for i in range(len(arms))}  # gap[i] = assets between arm[i] and arm[i+1]
     
+    non_arm_order = {a["id"]: idx for idx, a in enumerate(non_arms)}
     for na in non_arms:
         # Find which arms this connects
         upstream_arms = [aid for aid in na['upstream'] if aid in arm_positions]
@@ -448,11 +469,49 @@ def _build_flow_order(all_assets, asset_by_id):
             min_down_pos = min(arm_positions[aid] for aid in downstream_arms)
             if min_down_pos > 0:
                 gaps[min_down_pos - 1].append(na)
+
+    def _toposort_gap_assets(nodes):
+        if len(nodes) <= 1:
+            return nodes
+
+        ids = {n["id"] for n in nodes}
+        by_id = {n["id"]: n for n in nodes}
+        in_degree = {n["id"]: 0 for n in nodes}
+        down = {n["id"]: [] for n in nodes}
+
+        for n in nodes:
+            nid = n["id"]
+            for up_id in n.get("upstream", []):
+                if up_id in ids:
+                    in_degree[nid] += 1
+                    down[up_id].append(nid)
+
+        queue = sorted(
+            [nid for nid, deg in in_degree.items() if deg == 0],
+            key=lambda nid: non_arm_order.get(nid, 0),
+        )
+        ordered = []
+        while queue:
+            nid = queue.pop(0)
+            ordered.append(by_id[nid])
+            for did in down[nid]:
+                in_degree[did] -= 1
+                if in_degree[did] == 0:
+                    queue.append(did)
+            queue.sort(key=lambda x: non_arm_order.get(x, 0))
+
+        if len(ordered) == len(nodes):
+            return ordered
+
+        # Defensive fallback for malformed/cyclic non-arm subgraphs.
+        remaining = [n for n in nodes if n["id"] not in {a["id"] for a in ordered}]
+        remaining.sort(key=lambda n: non_arm_order.get(n["id"], 0))
+        return ordered + remaining
     
     # Build final flow order
     for i, arm in enumerate(arms):
         flow.append(arm)
-        flow.extend(gaps.get(i, []))
+        flow.extend(_toposort_gap_assets(gaps.get(i, [])))
     
     return flow
 
@@ -466,7 +525,7 @@ def get_module_flow_order():
     builder so it can wire modules linearly without any type-specific
     branching.
 
-    Example for default pipeline.yaml: ['arm-1', 'arm-2', 'veh-a', 'conv-1', 'arm-3'].
+    Example: ['arm-1', 'arm-2', 'veh-a', 'conv-1', 'arm-3', 'arm-4', 'veh-b', 'arm-5'].
     """
     arms_cfg = get_config().get("arms") or []
     extras = get_extra_assets()

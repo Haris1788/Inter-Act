@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Dict, Optional
 
-VALID_STATUSES = ("idle", "busy", "failed", "recovering", "stopped")
+VALID_STATUSES = ("idle", "busy", "draining", "failed", "recovering", "stopped")
 
 _lock = threading.RLock()
 _state: Dict[str, dict] = {}
@@ -89,7 +89,7 @@ def is_alive(asset_id: str) -> bool:
     rec = get(asset_id)
     if rec is None:
         return True   # unknown id treated as transparent (back-compat with arms-only)
-    return rec["status"] not in ("failed", "stopped")
+    return rec["status"] not in ("draining", "failed", "stopped")
 
 
 def fail(asset_id: str, reason: str) -> Optional[dict]:

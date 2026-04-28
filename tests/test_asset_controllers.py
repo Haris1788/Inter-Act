@@ -222,6 +222,65 @@ class TestVehicleFailure:
         assert out_tp.is_empty(), "downstream must NOT have received the object"
 
 
+class TestVehicleBackpressure:
+    def test_vehicle_accepts_and_holds_when_downstream_not_ready(self):
+        in_tp = StubTP("in")
+        out_tp = StubTP("out")
+        veh = VehicleController(
+            asset_id="veh-bp", label="Shuttle",
+            input_tp=in_tp, output_tp=out_tp,
+            speed_factor=0.05,
+            num_products=1,
+            travel_time=0.05,
+            keep_alive=True,
+            downstream_alive_fn=lambda: False,
+        )
+        veh.start()
+        in_tp.place("Obj1")
+        time.sleep(0.3)
+
+        # Passive buffer semantics: vehicle accepts one object, then drains
+        # while holding it until downstream path is available again.
+        assert in_tp.is_empty() is True
+        assert getattr(veh, "_current_object", None) == "Obj1"
+        assert asset_state.get("veh-bp")["status"] == "draining"
+
+        veh.stop_module()
+        veh.join(timeout=3.0)
+
+    def test_vehicle_holds_emit_until_downstream_transfer_clears(self):
+        in_tp = StubTP("in")
+        out_tp = StubTP("out")
+
+        veh = VehicleController(
+            asset_id="veh-hold", label="Shuttle",
+            input_tp=in_tp, output_tp=out_tp,
+            speed_factor=1.0,
+            num_products=1,
+            travel_time=0.6,
+            keep_alive=True,
+            downstream_alive_fn=lambda: True,
+        )
+        veh.start()
+        in_tp.place("Obj1")
+        deadline = time.time() + 2.0
+        while time.time() < deadline and getattr(veh, "_current_object", None) != "Obj1":
+            time.sleep(0.02)
+        assert getattr(veh, "_current_object", None) == "Obj1"
+        out_tp.place("blocker")
+        time.sleep(0.2)
+
+        assert out_tp.is_empty() is False
+        assert getattr(veh, "_current_object", None) == "Obj1"
+
+        assert out_tp.wait_and_pick(timeout=1.0) == "blocker"
+        delivered = out_tp.wait_and_pick(timeout=3.0)
+        assert delivered == "Obj1"
+
+        veh.stop_module()
+        veh.join(timeout=3.0)
+
+
 class TestConveyorFailure:
     def test_fail_blocks_belt(self):
         in_tp = StubTP("in")

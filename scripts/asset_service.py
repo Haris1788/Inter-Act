@@ -37,6 +37,7 @@ import signal
 import sys
 import threading
 import time
+from urllib.parse import urlparse
 
 import requests
 from flask import Flask, jsonify, request
@@ -137,6 +138,38 @@ def _post_object_event(obj_id: str, state: str, **extra) -> None:
 input_tp = QueueTransferPoint("input")
 output_tp = QueueTransferPoint("output")
 
+
+def _remote_module_ready(base_url: str) -> bool:
+    if not base_url:
+        return True
+    try:
+        ready_resp = requests.get(f"{base_url}/ready", timeout=1.0)
+        if ready_resp.status_code == 200:
+            data = ready_resp.json() or {}
+            return bool(data.get("downstream_ready"))
+    except Exception:
+        pass
+    try:
+        health_resp = requests.get(f"{base_url}/health", timeout=1.0)
+        if health_resp.status_code != 200:
+            return False
+        state = (health_resp.json() or {}).get("state")
+        return state not in ("failed", "recovering", "stopped")
+    except Exception:
+        return False
+
+
+def _upstream_alive() -> bool:
+    if not UPSTREAM_URL:
+        return True
+    return _remote_module_ready(UPSTREAM_URL)
+
+
+def _downstream_alive() -> bool:
+    if not DOWNSTREAM_URL:
+        return True
+    return _remote_module_ready(DOWNSTREAM_URL)
+
 if ASSET_TYPE == "vehicle":
     controller = VehicleController(
         asset_id=ASSET_ID,
@@ -146,6 +179,8 @@ if ASSET_TYPE == "vehicle":
         speed_factor=SPEED_FACTOR,
         log_fn=_post_log,
         object_event_fn=_post_object_event,
+        upstream_alive_fn=_upstream_alive,
+        downstream_alive_fn=_downstream_alive,
         num_products=10**9,        # effectively infinite — service is long-lived
         keep_alive=True,
         travel_time=TRAVEL_TIME,
@@ -159,6 +194,8 @@ elif ASSET_TYPE == "conveyor":
         speed_factor=SPEED_FACTOR,
         log_fn=_post_log,
         object_event_fn=_post_object_event,
+        upstream_alive_fn=_upstream_alive,
+        downstream_alive_fn=_downstream_alive,
         num_products=10**9,
         keep_alive=True,
         slot_count=SLOT_COUNT,
@@ -170,20 +207,72 @@ else:
 controller.start()
 
 
+def _downstream_target_id(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        host = (urlparse(url).hostname or "").strip()
+    except Exception:
+        host = ""
+    if host in ("localhost", "127.0.0.1"):
+        return ""
+    return host
+
+
+controller._downstream_target = _downstream_target_id(DOWNSTREAM_URL)
+
+
 # ── Optional downstream forwarder (future TransferClient hook) ───────
 
+# Downstream capability flag. None = unknown (probe at runtime). True = remote
+# accepts POST /object (another asset_service). False = remote does not accept
+# POST (e.g. an arm container) — stop forwarding so a polling consumer can
+# claim the object via GET /object.
+_downstream_accepts_post = None
+
+
 def _forward_output_loop():
-    """When DOWNSTREAM_URL is set, push every emitted object to next service."""
+    """When DOWNSTREAM_URL is set, push emitted objects to next service.
+
+    For asset→asset hops the downstream also runs asset_service.py and
+    accepts POST /object. For asset→arm hops the arm container has no such
+    endpoint; we detect that on the first failed POST and disable forwarding.
+    The demo-runner's HttpInputBridge then collects via GET /object polling.
+    """
+    global _downstream_accepts_post
     if not DOWNSTREAM_URL:
         return
     while True:
+        # Don't drain the queue when we know downstream uses polling.
+        if _downstream_accepts_post is False:
+            time.sleep(1.0)
+            continue
         obj = output_tp.wait_and_pick(timeout=60.0, cancel_check=lambda: True)
         if obj is None:
             continue
+        delivered = False
         try:
-            requests.post(f"{DOWNSTREAM_URL}/object", json={"object_id": obj}, timeout=5)
+            resp = requests.post(
+                f"{DOWNSTREAM_URL}/object",
+                json={"object_id": obj},
+                timeout=3,
+            )
+            if resp.status_code in (200, 201):
+                delivered = True
+                _downstream_accepts_post = True
+            else:
+                # 404 / 405 etc → downstream isn't an asset_service.
+                if resp.status_code in (404, 405):
+                    _downstream_accepts_post = False
+                print(f"[{ASSET_ID}] forward {DOWNSTREAM_URL}/object → "
+                      f"{resp.status_code}, requeue", flush=True)
         except Exception as exc:
+            # Network failure — could be transient or downstream down.
+            # Don't permanently disable; just requeue + retry.
             print(f"[{ASSET_ID}] forward failed: {exc}", flush=True)
+        if not delivered:
+            output_tp.place(obj)
+            time.sleep(0.5)
 
 
 threading.Thread(target=_forward_output_loop, daemon=True).start()
@@ -202,20 +291,70 @@ def health():
         "asset_id": ASSET_ID,
         "asset_type": ASSET_TYPE,
         "state": controller.state,
+        "downstream_ready": controller.downstream_ready(),
         "carried_object": getattr(controller, "_current_object", None),
         "server_host": DEFAULT_HOST,
     })
 
 
+@app.route("/ready", methods=["GET"])
+def ready():
+    return jsonify({
+        "asset_id": ASSET_ID,
+        "state": controller.state,
+        "downstream_ready": controller.downstream_ready(),
+    })
+
+
 @app.route("/object", methods=["POST"])
 def receive_object():
-    """Receive an object from upstream. Body: {"object_id": "Obj1"}."""
+    """Receive an object from upstream. Body: {"object_id": "Obj1"}.
+
+    Phase 8 fix: SYNCHRONOUS accept. The HTTP POST blocks until the asset
+    controller has actually picked the object out of the input queue (so
+    `_current_object == obj_id`). This shrinks the window in which a kill
+    between POST-completion and controller-pickup would lose the object.
+    Upstream's HttpOutputBridge.place() therefore knows the object is in
+    the controller's hands when 2xx is returned, not just queued.
+    """
     data = request.get_json(silent=True) or {}
     obj_id = data.get("object_id")
     if not obj_id:
         return jsonify({"error": "missing object_id", "code": "MISSING_FIELD"}), 400
+
+    # Reject when not in a state that can accept new work.
+    # "busy" means carrying an object already — capacity=1 enforcement.
+    # We intentionally do NOT check downstream_ready() here: an idle asset
+    # acts as a 1-slot TP buffer, accepting an object even when its own
+    # downstream is blocked. It will drain or hold until the path clears.
+    if controller.state in ("failed", "recovering", "draining", "stopped", "busy"):
+        return jsonify({
+            "error": f"asset {controller.state} — cannot accept",
+            "asset_id": ASSET_ID,
+            "state": controller.state,
+        }), 503
+
     input_tp.place(obj_id)
-    return jsonify({"status": "queued", "asset_id": ASSET_ID, "object_id": obj_id})
+
+    # Wait until controller takes ownership (or asset failed / timeout).
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if controller.state == "failed":
+            return jsonify({
+                "error": "asset failed before accept",
+                "asset_id": ASSET_ID,
+            }), 503
+        if getattr(controller, "_current_object", None) == obj_id:
+            return jsonify({
+                "status": "accepted",
+                "asset_id": ASSET_ID,
+                "object_id": obj_id,
+            })
+        time.sleep(0.05)
+    return jsonify({
+        "error": "controller did not accept in time",
+        "asset_id": ASSET_ID,
+    }), 504
 
 
 @app.route("/object", methods=["GET"])
@@ -248,28 +387,101 @@ def fail_route():
 @app.route("/recover", methods=["POST"])
 def recover_route():
     controller.recover()
-    try:
-        requests.post(f"{DEFAULT_HOST}/assets/{ASSET_ID}/recover", timeout=3)
-    except Exception:
-        pass
     return jsonify({"status": "ok", "asset_id": ASSET_ID, "state": controller.state})
+
+
+@app.route("/reset", methods=["POST"])
+def reset_route():
+    """Drain internal queues and slot list — called at the start of every demo
+    so leftover objects from a prior crashed run don't poison the next flow.
+    """
+    drained_in = 0
+    drained_out = 0
+    while not input_tp.is_empty():
+        if input_tp.wait_and_pick(timeout=0.1) is None:
+            break
+        drained_in += 1
+    while not output_tp.is_empty():
+        if output_tp.wait_and_pick(timeout=0.1) is None:
+            break
+        drained_out += 1
+    # Clear conveyor slots if applicable.
+    if hasattr(controller, "slots"):
+        controller.slots = [None] * controller.slot_count
+    controller._current_object = None
+    # Also reset the cached downstream-accepts-post flag so a re-detect happens.
+    global _downstream_accepts_post
+    _downstream_accepts_post = None
+    print(f"[{ASSET_ID}] reset: drained input={drained_in} output={drained_out}",
+          flush=True)
+    return jsonify({
+        "status": "ok",
+        "asset_id": ASSET_ID,
+        "drained_in": drained_in,
+        "drained_out": drained_out,
+    })
 
 
 # ── Shutdown handler — instant failure notification ──────────────────
 
+_shutting_down = False
+
+
+def _collect_inflight_objects():
+    """Return list of object_ids currently held by this asset (best-effort)."""
+    held = []
+    cur = getattr(controller, "_current_object", None)
+    if cur:
+        held.append(cur)
+    if hasattr(controller, "slots"):
+        held.extend([s for s in controller.slots if s and s != cur])
+    return held
+
+
 def _handle_shutdown(signum, frame):
+    """SIGTERM/SIGINT handler. Idempotent + hard-exits the process.
+
+    Phase 8 fix: before exiting we report any in-flight objects to the
+    backend log so they aren't silently dropped. A future implementation
+    could re-POST them upstream for true at-least-once delivery; for now
+    we surface the loss explicitly so it's debuggable.
+    """
+    global _shutting_down
     sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+    if _shutting_down:
+        os._exit(0)
+    _shutting_down = True
     print(f"[{ASSET_ID}] {sig_name} received — notifying backend", flush=True)
+
+    inflight = _collect_inflight_objects()
+    if inflight:
+        msg = f"shutting down with in-flight objects LOST: {inflight}"
+        print(f"[{ASSET_ID}] {msg}", flush=True)
+        try:
+            requests.post(
+                f"{DEFAULT_HOST}/log",
+                json={"source": ASSET_ID, "message": msg},
+                timeout=2,
+            )
+        except Exception:
+            pass
+
     try:
         requests.post(
             f"{DEFAULT_HOST}/assets/{ASSET_ID}/fail",
-            json={"reason": "container shutting down"},
+            json={
+                "reason": "container shutting down",
+                "lost_objects": inflight,
+            },
             timeout=3,
         )
     except Exception:
         pass
-    controller.stop_module()
-    sys.exit(0)
+    try:
+        controller.stop_module()
+    except Exception:
+        pass
+    os._exit(0)
 
 
 signal.signal(signal.SIGTERM, _handle_shutdown)

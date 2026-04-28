@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import threading
 import time
+import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +24,10 @@ from app.models import asset_state, pipeline_config
 from app.services.asset_controllers import (
     AssetController, VehicleController, ConveyorController,
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from scripts.run_demo import ArmController, TransferPoint
+import scripts.run_demo as run_demo
 
 
 @contextmanager
@@ -100,6 +106,123 @@ class TestInheritance:
         assert isinstance(c, Module)
 
 
+class TestArmBackpressure:
+    def _arm(self, arm_id, input_tp=None, output_tp=None, downstream_alive=None):
+        return ArmController(
+            arm_id=arm_id,
+            host="http://unused",
+            speed_factor=0,
+            input_tp=input_tp,
+            output_tp=output_tp,
+            num_products=1,
+            log_fn=lambda *_args: None,
+            set_angle_fn=lambda *_args: None,
+            object_event_fn=lambda *_args, **_kwargs: None,
+            downstream_alive_fn=downstream_alive or (lambda: True),
+        )
+
+    def test_arm_buffers_in_tp_while_downstream_arm_is_occupied(self):
+        """arm-1 places into an empty TP even when arm-2 is currently carrying
+        an object — the TP is a passive 1-slot buffer, not a gating signal."""
+        tp = TransferPoint("TP arm-1->arm-2")
+
+        arm2 = self._arm(2, input_tp=tp)
+        arm2._current_object = "Obj2"  # arm2 is busy
+
+        arm1 = self._arm(
+            1,
+            output_tp=tp,
+            downstream_alive=lambda: arm2.is_ready_for_input(),
+        )
+
+        # arm1 must complete immediately — TP is empty so buffering is allowed
+        arm1._process_one_product("Obj3")
+
+        assert not tp.is_empty(), "Obj3 must be buffered in TP"
+        assert tp.wait_and_pick(timeout=0.1) == "Obj3"
+
+    def test_arm_blocks_at_pre_pickup_when_tp_full(self):
+        """If the output TP is already occupied, arm-1 must not pick up a new
+        object — capacity=1 enforced before the pickup phase."""
+        tp = TransferPoint("TP arm-1->arm-2")
+        tp.place("Existing")  # pre-occupy
+
+        arm1 = self._arm(1, output_tp=tp)
+
+        assert arm1.tp_has_capacity() is False
+        assert not arm1.downstream_ready()
+
+    def test_transfer_point_is_capacity_one_blocking_buffer(self):
+        tp = TransferPoint("TP cap1")
+        tp.place("Obj1")
+
+        done = {"placed": False}
+
+        def place_second():
+            tp.place("Obj2")
+            done["placed"] = True
+
+        t = threading.Thread(target=place_second, daemon=True)
+        t.start()
+        time.sleep(0.2)
+        assert done["placed"] is False
+
+        assert tp.wait_and_pick(timeout=0.1) == "Obj1"
+        t.join(timeout=1.0)
+        assert done["placed"] is True
+        assert tp.wait_and_pick(timeout=0.1) == "Obj2"
+
+    def test_only_terminal_arm_emits_output_event(self):
+        events = []
+
+        def on_event(obj_id, state, carrier_arm=None, **extra):
+            events.append((obj_id, state, carrier_arm, extra))
+
+        # Non-terminal arm: must emit handoff, never output.
+        tp_in = TransferPoint("TP arm-2->arm-3")
+        tp_out = TransferPoint("TP arm-3->arm-4")
+        arm3 = ArmController(
+            arm_id=3,
+            host="http://unused",
+            speed_factor=0,
+            input_tp=tp_in,
+            output_tp=tp_out,
+            num_products=1,
+            log_fn=lambda *_args: None,
+            handoff_place="handoff_3",
+            set_angle_fn=lambda *_args: None,
+            object_event_fn=on_event,
+            downstream_alive_fn=lambda: True,
+        )
+        tp_in.place("ObjA")
+        arm3._process_one_product("ObjA")
+
+        arm3_states = [state for obj, state, *_ in events if obj == "ObjA"]
+        assert "handoff_3" in arm3_states
+        assert "output" not in arm3_states
+
+        # Terminal arm: output_tp=None means true sink, emits output.
+        tp_last_in = TransferPoint("TP arm-4->arm-5")
+        arm5 = ArmController(
+            arm_id=5,
+            host="http://unused",
+            speed_factor=0,
+            input_tp=tp_last_in,
+            output_tp=None,
+            num_products=1,
+            log_fn=lambda *_args: None,
+            set_angle_fn=lambda *_args: None,
+            object_event_fn=on_event,
+            downstream_alive_fn=lambda: True,
+            is_terminal_fn=lambda: True,
+        )
+        tp_last_in.place("ObjB")
+        arm5._process_one_product("ObjB")
+
+        arm5_states = [state for obj, state, *_ in events if obj == "ObjB"]
+        assert "output" in arm5_states
+
+
 # ── Flow order helper ────────────────────────────────────────────────
 
 class TestFlowOrder:
@@ -145,6 +268,153 @@ class TestFlowOrder:
         with fake_config(cfg):
             order = pipeline_config.get_module_flow_order()
         assert order == ["arm-1", "arm-2", "conv-1", "arm-3"]
+
+    def test_five_arms_vehicle_between_arm4_and_arm5(self):
+        cfg = {
+            "pipeline": {"mode": "dependency"},
+            "arms": _arms_cfg(5),
+            "assets": [
+                {"id": "veh-a", "type": "vehicle",
+                 "speed": 120,
+                 "waypoints": [{"x": 0, "y": 0}, {"x": 20, "y": 0}],
+                 "upstream": ["arm-2"], "downstream": ["conv-1"]},
+                {"id": "conv-1", "type": "conveyor",
+                 "from": {"x": 20, "y": 0}, "to": {"x": 50, "y": 0},
+                 "slot_count": 4, "shift_interval": 1.2,
+                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
+                {"id": "veh-b", "type": "vehicle",
+                 "speed": 120,
+                 "waypoints": [{"x": 0, "y": 0}, {"x": 20, "y": 0}],
+                 "upstream": ["arm-4"], "downstream": ["arm-5"]},
+            ],
+        }
+        with fake_config(cfg):
+            order = pipeline_config.get_module_flow_order()
+        assert order == [
+            "arm-1", "arm-2", "veh-a", "conv-1",
+            "arm-3", "arm-4", "veh-b", "arm-5",
+        ]
+
+    def test_five_arms_conveyor_only_between_arm4_and_arm5(self):
+        cfg = {
+            "pipeline": {"mode": "dependency"},
+            "arms": _arms_cfg(5),
+            "assets": [
+                {"id": "conv-2", "type": "conveyor",
+                 "from": {"x": 0, "y": 0}, "to": {"x": 20, "y": 0},
+                 "slot_count": 4, "shift_interval": 1.1,
+                 "upstream": ["arm-4"], "downstream": ["arm-5"]},
+            ],
+        }
+        with fake_config(cfg):
+            order = pipeline_config.get_module_flow_order()
+        assert order == ["arm-1", "arm-2", "arm-3", "arm-4", "conv-2", "arm-5"]
+
+    def test_five_arms_only_conveyors(self):
+        cfg = {
+            "pipeline": {"mode": "dependency"},
+            "arms": _arms_cfg(5),
+            "assets": [
+                {"id": "conv-1", "type": "conveyor",
+                 "from": {"x": 0, "y": 0}, "to": {"x": 20, "y": 0},
+                 "slot_count": 4, "shift_interval": 1.2,
+                 "upstream": ["arm-2"], "downstream": ["arm-3"]},
+                {"id": "conv-2", "type": "conveyor",
+                 "from": {"x": 30, "y": 0}, "to": {"x": 50, "y": 0},
+                 "slot_count": 4, "shift_interval": 1.2,
+                 "upstream": ["arm-4"], "downstream": ["arm-5"]},
+            ],
+        }
+        with fake_config(cfg):
+            order = pipeline_config.get_module_flow_order()
+        assert order == [
+            "arm-1", "arm-2", "conv-1", "arm-3",
+            "arm-4", "conv-2", "arm-5",
+        ]
+
+    def test_asset_ordering_in_yaml_does_not_break_chain(self):
+        cfg = {
+            "pipeline": {"mode": "dependency"},
+            "arms": _arms_cfg(3),
+            "assets": [
+                # Intentionally reversed: downstream conveyor listed before vehicle.
+                {"id": "conv-1", "type": "conveyor",
+                 "from": {"x": 10, "y": 0}, "to": {"x": 30, "y": 0},
+                 "slot_count": 3, "shift_interval": 1.0,
+                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
+                {"id": "veh-a", "type": "vehicle",
+                 "speed": 100,
+                 "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
+                 "upstream": ["arm-2"], "downstream": ["conv-1"]},
+            ],
+        }
+        with fake_config(cfg):
+            order = pipeline_config.get_module_flow_order()
+        assert order == ["arm-1", "arm-2", "veh-a", "conv-1", "arm-3"]
+
+    def test_five_arm_topology_keeps_arm3_non_terminal(self):
+        cfg = {
+            "pipeline": {"mode": "dependency"},
+            "arms": _arms_cfg(5),
+            "assets": [
+                {"id": "veh-a", "type": "vehicle",
+                 "speed": 100,
+                 "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
+                 "upstream": ["arm-2"], "downstream": ["conv-1"]},
+                {"id": "conv-1", "type": "conveyor",
+                 "from": {"x": 10, "y": 0}, "to": {"x": 30, "y": 0},
+                 "slot_count": 3, "shift_interval": 1.0,
+                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
+                {"id": "veh-b", "type": "vehicle",
+                 "speed": 100,
+                 "waypoints": [{"x": 40, "y": 0}, {"x": 60, "y": 0}],
+                 "upstream": ["arm-3"], "downstream": ["conv-2"]},
+                {"id": "conv-2", "type": "conveyor",
+                 "from": {"x": 60, "y": 0}, "to": {"x": 80, "y": 0},
+                 "slot_count": 2, "shift_interval": 1.0,
+                 "upstream": ["veh-b"], "downstream": ["arm-4"]},
+            ],
+        }
+        with fake_config(cfg):
+            order = pipeline_config.get_module_flow_order()
+        assert order[-1] == "arm-5"
+        assert order.index("arm-3") < order.index("arm-4") < order.index("arm-5")
+
+
+class TestRunDemoTopologySync:
+    def test_run_demo_rejects_mismatched_flow_vs_loaded_arms(self, monkeypatch):
+        cfg = {
+            "pipeline": {"mode": "dependency"},
+            "arms": _arms_cfg(3),
+        }
+
+        class FakePipelineConfig:
+            _config = None
+
+            @staticmethod
+            def get_module_flow_order():
+                return ["arm-1", "arm-2", "arm-3", "arm-4"]
+
+            @staticmethod
+            def get_extra_assets():
+                return []
+
+            @staticmethod
+            def get_asset_host_ports():
+                return {}
+
+        monkeypatch.setattr(run_demo, "_pc", FakePipelineConfig())
+        monkeypatch.setattr(run_demo, "_ASSET_RUNTIME_AVAILABLE", False)
+
+        with pytest.raises(RuntimeError, match="flow references arm-4"):
+            run_demo._run_pipeline_core(
+                speed_factor=0,
+                num_products=1,
+                set_angle_fn=lambda *_args: None,
+                object_event_fn=lambda *_args, **_kwargs: None,
+                reset_objects_fn=lambda: None,
+                config=cfg,
+            )
 
 
 # ── Linear TP wiring (the heart of the new builder) ──────────────────
