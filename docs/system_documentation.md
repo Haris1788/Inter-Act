@@ -2,140 +2,112 @@
 
 ## Start here
 
-INTER.act is a browser simulation of a production line. Robotic arms move objects from intake to output, and the whole setup is driven by one config file: `pipeline.yaml`.
+INTER.act runs a topology-driven production-line simulation from `pipeline.yaml`. Arms and non-arm assets both participate in runtime flow, and object position in the UI is ownership-driven (`owner_type`, `owner_id`) from backend events.
 
 If you only read one section, read this:
 
-1. `pipeline.yaml` defines arms, dependencies, health policy, and optional frontend-only assets.
-2. The backend (`run.py`) is state + API + Socket.IO broadcasting.
-3. The pipeline logic runs in a separate demo-runner service (`scripts/demo_runner_server.py` + `scripts/run_demo.py`).
-4. The frontend (`app/static/js/main.js`) renders from `/config` and live events.
-
----
-
-## Who this doc is for
-
-- If you want to run or operate the system, jump to "Run and operate".
-- If you want to understand architecture and data flow, read in order.
-- If you need every route name, use "API surface".
-
-This document keeps the main path short on purpose. Deep rendering internals and tuning constants belong in dedicated technical notes, not in the primary system overview.
-
----
+1. `pipeline.yaml` defines the pipeline topology.
+2. `app/models/pipeline_config.py` is the single config layer used by backend, demo-runner, and compose generation.
+3. `scripts/run_demo.py` orchestrates arm flow and bridges to asset containers over HTTP.
+4. Asset containers run `scripts/asset_service.py` with real controller logic.
+5. Frontend renders object positions from ownership fields, not heuristics.
 
 ## System at a glance
 
 ```
-Browser UI
-  -> POST /demo/start
-Backend API (:5000)
-  -> proxy call to demo-runner (:6000)
-Demo-runner
-  -> executes pipeline steps via backend HTTP endpoints
-Backend
-  -> emits Socket.IO events
 Browser
-  -> animates arms/objects in real time
+  -> POST /demo/start
+Backend (:5000)
+  -> proxies to demo-runner (:6000)
+Demo-runner
+  -> drives arms + HTTP bridges
+Asset containers / arm containers
+  -> emit health and object events through backend routes
+Backend Socket.IO
+  -> state_update, object_update, arm_health, asset_health, log_message
+Browser
+  -> renders scene + ownership state
 ```
 
 Runtime services:
 
-- `backend` (`run.py`): Flask app, routes, in-memory state, Socket.IO broadcast, health monitor thread.
-- `demo-runner` (`scripts/demo_runner_server.py`): accepts start/stop/status, runs pipeline in background.
-- `arm-N` (`scripts/arm_server.py`): one microservice per arm for `/health`, `/move`, `/sequence`.
-- `frontend`: static app + canvas renderer.
+- `backend` (`run.py`): Flask API, in-memory runtime state, Socket.IO, health monitor.
+- `demo-runner` (`scripts/demo_runner_server.py`): start/stop/status wrapper around `scripts/run_demo.py`.
+- `arm-*` (`scripts/arm_server.py`): arm microservices.
+- asset services (`veh-*`, `conv-*`) (`scripts/asset_service.py`): vehicle/conveyor controller runtime.
+- `frontend`: static UI app.
 
----
+## Configuration source of truth
 
-## Single source of truth config
+`app/models/pipeline_config.py` owns:
 
-`app/models/pipeline_config.py` is the canonical configuration layer.
+- validated arm and asset topology
+- generated scene config (`/config`)
+- module flow order (`module_flow_order`)
+- deterministic asset host-port mapping
+- dependency graph checks
 
-It owns:
-
-- arm definitions and dependency graph
-- scene config returned by `/config`
-- valid object states (`intake`, `carried`, `handoff_1..N-1`, `output`)
-- failure policy lookup
-- health monitor settings
-
-Other modules should consume this module instead of recomputing config-derived values.
-
-### Config shape
-
-Core keys used by the system:
-
-- `arms`
-- `pipeline.mode`
-- `failure_policy`
-- `health`
-- `assets` (frontend-only non-arm assets)
-
-Notes:
-
-- `pipeline.mode` is actively used by `scripts/run_demo.py`.
-- `pipeline.products` and `pipeline.speed` may exist in YAML, but UI-triggered demo runs currently send fixed values from `app/static/js/ui/controls.js` (`products: 3`, `speed: "normal"`).
-
----
+The same file is consumed by backend routes, demo-runner fallback URL logic, and compose generation.
 
 ## Pipeline execution model
 
-`scripts/run_demo.py` drives arm actions and object movement using transfer buffers.
+`scripts/run_demo.py` builds arm modules and wires arm boundaries in two ways:
 
-Supported modes:
+- direct arm-to-arm boundary: in-process `TransferPoint` buffer (`capacity=1`)
+- arm-to-asset or asset-to-arm boundary: HTTP bridges (`HttpOutputBridge`, `HttpInputBridge`)
 
-- `sequential`: linear chain based on arm order.
-- `parallel`: independent arms.
-- `dependency`: dependency-driven order using `depends_on`.
+Modes:
 
-Important implementation caveat:
+- `sequential`
+- `parallel`
+- `dependency`
 
-- Dependency mode supports dependency graph validation and ordering, but runtime wiring is still effectively single-input/single-output per arm in key paths. Treat advanced branching DAG behavior as partial, not fully general.
+Current behavior is tuned for linear ownership flow with explicit transfer points between adjacent modules in `module_flow_order`.
 
----
+## Ownership and flow control
 
-## Failure and recovery behavior
+Object updates are validated in `app/routes/arm_routes.py`:
 
-There are two failure paths and they behave differently:
+- owner existence is validated against current topology
+- ownership transitions are checked (`intake -> arm -> transfer_point -> ... -> output`)
+- stale object events are ignored using `event_time`/`event_seq`
 
-1. Container-reported failure (`POST /arms/<id>/health` with `dead`)
-   - marks the failed arm as dead
-   - does not immediately hard-stop all downstream arms
-   - downstream drain/stop transitions happen through pipeline flow
+Backpressure rules are strict:
 
-2. Explicit stop (`POST /arms/<id>/stop`)
-   - cascades stop to downstream dependents immediately
+- modules do not pick or emit while failed/recovering/stopped
+- transfer points are passive single-slot buffers
+- blocked downstream moves modules to `draining`
 
-Health monitoring:
+## Failure and recovery
 
-- Backend health monitor thread (`app/services/health_monitor.py`) polls arm `/health`.
-- Missed checks move arms from `alive` to `unhealthy`, then to `dead`.
-- Recovery only auto-applies to `dead` and `stopped` when upstream dependencies are healthy.
-- `draining` is intentionally not auto-recovered by the monitor.
+Failure signals come from:
 
----
+- explicit endpoints (`/arms/<id>/stop`, `/assets/<id>/fail`)
+- service health monitor polling
+- container shutdown paths that report failure before exit
+
+Recovery flow:
+
+- recover endpoints transition module state to `recovering`
+- controllers stop processing while recovering
+- monitor and controller state converge back to `idle` when healthy
 
 ## Frontend model
 
-Frontend entry is `app/static/js/main.js`.
+Frontend entry: `app/static/js/main.js`.
 
-Main responsibilities:
+Main runtime modules:
 
-- fetch `/config`
-- keep local render state (`core/state.js`)
-- consume Socket.IO updates (`core/socket.js`)
-- run frame loop (`core/tick.js` + `core/render.js`)
+- `core/state.js`: asset graph + object store + event reconciliation
+- `core/socket.js`: Socket.IO subscription and bootstrap sync
+- `core/render.js`: canvas rendering
 
-Asset types:
+Object placement is ownership-driven:
 
-- `arm`: backend-driven
-- `vehicle` / `conveyor`: frontend-driven simulation layer from `assets` config
+- arm/asset/zone/transfer-point ownership maps directly to render positions
+- when target position is temporarily unresolved, renderer keeps last known position to prevent flicker/disappear behavior
 
-The backend remains authoritative for arm and object lifecycle states. The frontend can add local transit visuals for non-arm assets.
-
----
-
-## API surface
+## Core API groups
 
 Page and health:
 
@@ -143,7 +115,7 @@ Page and health:
 - `GET /health`
 - `GET /health/ollama`
 
-Arm and object state:
+State and objects:
 
 - `POST /set_angle`
 - `GET /state`
@@ -153,93 +125,67 @@ Arm and object state:
 - `POST /objects/reset`
 - `POST /log`
 
-Config and pipeline lifecycle:
+Pipeline config/runtime:
 
 - `GET /config`
-- `POST /reload_config` (reloads YAML in memory only)
-- `POST /restart_pipeline` (reinitializes runtime state only)
+- `POST /reload_config`
+- `POST /restart_pipeline`
 - `GET /pipeline/status`
 
-Health and control:
+Arm and asset control:
 
 - `GET /arms/health`
 - `POST /arms/<id>/health`
 - `POST /arms/<id>/stop`
+- `POST /arms/<id>/start`
 - `GET /arms/<id>/allowed`
+- `GET /assets/state`
+- `GET /assets/<asset_id>/state`
+- `POST /assets/<asset_id>/fail`
+- `POST /assets/<asset_id>/recover`
 
-Demo proxy routes:
+Demo routes (proxy to demo-runner):
 
 - `POST /demo/start`
 - `GET /demo/status`
 - `POST /demo/stop`
 
-Important caveat:
-
-- `/demo/stop` reflects demo-runner status but is not a guaranteed hard interrupt of all in-flight worker actions in the current implementation.
-
----
-
 ## Run and operate
 
-### Docker
-
-```bash
-docker compose up --build
-# open http://localhost:5000
-```
-
-### Local
-
-```bash
-pip install -r requirements.txt
-python run.py
-python scripts/run_demo.py --speed normal --products 3
-```
-
-### Update config safely
-
-```bash
-# 1) reload file into config cache
-curl -X POST http://localhost:5000/reload_config
-
-# 2) apply to runtime state
-curl -X POST http://localhost:5000/restart_pipeline
-```
-
-`/reload_config` and `/restart_pipeline` are intentionally separate operations.
-
-### Scale arm containers after config changes
+Docker:
 
 ```bash
 python scripts/generate_compose.py
 docker compose up --build
 ```
 
-### Test
+Local backend:
+
+```bash
+pip install -r requirements.txt
+python run.py
+```
+
+Apply config changes without full restart:
+
+```bash
+curl -X POST http://localhost:5000/reload_config
+curl -X POST http://localhost:5000/restart_pipeline
+```
+
+Test:
 
 ```bash
 pytest tests/ -v
 ```
 
----
-
-## Known constraints
-
-- Dependency-mode runtime behavior is not fully generalized for complex branching DAG execution paths.
-- Browser reconnect state is assembled from multiple endpoints, so snapshots are not fully atomic.
-- Socket updates are frequent and can be chatty under heavy movement.
-
----
-
 ## Related docs
 
 - `docs/api_reference.md`
-- `docs/failure_model.md`
-- `docs/frontend_assets.md`
-- `docs/troubleshooting.md`
-- `docs/docker_stack.md`
-- `docs/backend_runtime.md`
 - `docs/config_reference.md`
+- `docs/backend_runtime.md`
+- `docs/frontend_assets.md`
+- `docs/failure_model.md`
+- `docs/docker_stack.md`
+- `docs/troubleshooting.md`
 - `docs/development_workflow.md`
-
-Use this file as the architecture map, then jump into the focused docs as needed.

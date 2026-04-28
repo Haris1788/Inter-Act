@@ -7,10 +7,9 @@ This file documents how backend state is created, updated, and broadcast.
 Entry point is `run.py`:
 
 1. calls `create_app()` from `app/__init__.py`
-2. initializes Flask app + Socket.IO (`threading` async mode)
+2. initializes Flask app + Socket.IO (`threading` mode)
 3. registers route blueprints
-4. imports socket handlers (`connect`, `disconnect`)
-5. starts health monitor background thread
+4. starts health monitor background thread
 
 ## Core state owners
 
@@ -19,8 +18,8 @@ Two in-memory state stores are central:
 - `app/models/arm_state.py`  
   Arm angle/status and arm health map.
 
-- object state map inside `app/routes/arm_routes.py`  
-  Object position/state snapshots used by frontend sync.
+- object store inside `app/routes/arm_routes.py`  
+  Object state, version, owner, and event sequence for ownership-driven rendering.
 
 Both are lock-protected.
 
@@ -28,7 +27,7 @@ Both are lock-protected.
 
 Backend does four things:
 
-- validates and applies API writes (`/set_angle`, `/object_event`, etc.)
+- validates and applies API writes (`/set_angle`, `/object_event`, arm/asset control routes)
 - stores current runtime state
 - emits Socket.IO events
 - proxies demo lifecycle routes to demo-runner
@@ -43,6 +42,7 @@ Backend emits:
 - `object_update`
 - `objects_reset`
 - `arm_health`
+- `asset_health`
 - `log_message`
 
 Frontend treats these as live runtime signals and reconciles its local render state.
@@ -52,22 +52,33 @@ Frontend treats these as live runtime signals and reconciles its local render st
 `app/services/health_monitor.py` runs as a background thread:
 
 - pings each arm service `/health`
-- marks `unhealthy` on misses
-- marks `dead` on configured miss threshold
-- recovers `dead`/`stopped` to `alive` when arm responds and dependencies permit
+- pings each asset service `/health`
+- updates arm/asset liveness state
+- emits `arm_health`/`asset_health` and state log events
+- synchronizes asset registry state with container-reported state (`idle`, `busy`, `draining`, `recovering`, `failed`, `stopped`)
 
-It does not auto-recover `draining`.
+## Object-event pipeline behavior
 
-## Route behavior notes that matter
+`/object_event` in `app/routes/arm_routes.py` now enforces:
 
-- `/reload_config` only updates config cache in memory.
-- `/restart_pipeline` resets runtime state using already-loaded config.
-- `/demo/start|status|stop` are proxy routes to demo-runner.
-- `/arms/<id>/stop` is explicit downstream cascade control.
-- `/arms/<id>/health` is status reporting path from arm services and demo flow.
+- owner field presence (`owner_type`, `owner_id`)
+- owner existence in current topology
+- legal owner transitions
+- stale-event rejection using event timestamps and monotonic sequence
+
+This keeps backend object state consistent with ownership-driven frontend rendering.
+
+## Route behavior notes
+
+- `/reload_config` updates config cache only.
+- `/restart_pipeline` resets runtime state from already-loaded config.
+- `/demo/start|status|stop` proxy to demo-runner.
+- `/arms/<id>/stop` is explicit stop control.
+- `/arms/<id>/start` clears explicit stop state.
+- `/assets/<asset_id>/fail` and `/assets/<asset_id>/recover` control asset lifecycle in backend + container.
 
 ## Operational caveats
 
 - `/demo/stop` is best-effort in current implementation, not a guaranteed immediate hard interrupt.
-- Health status says liveness, not full production-flow readiness.
+- Health status is liveness-oriented, not a full end-to-end throughput guarantee.
 - Runtime state is in-memory, so process restarts clear state.

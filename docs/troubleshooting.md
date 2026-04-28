@@ -39,13 +39,14 @@ curl -X POST http://localhost:5000/set_angle -H "Content-Type: application/json"
 Checks:
 
 - arm service `/health` endpoint is reachable
+- asset service `/health` endpoint is reachable
 - monitor config in `pipeline.yaml` (`health.check_interval`, `timeout`, `max_missed`)
-- SIGTERM path from arm service is working when stopping containers
+- service restart path can reach backend control routes
 
 Remember:
 
 - monitor recovery is for liveness only
-- `draining` is not auto-recovered by monitor logic
+- `draining` means flow blocked, not dead container
 
 ## Config changed but UI still shows old layout
 
@@ -58,14 +59,22 @@ curl -X POST http://localhost:5000/restart_pipeline
 
 `reload_config` alone updates config cache but does not mutate active runtime state.
 
-## Dependency behavior looks wrong in complex graph
+If topology changed (arms/assets count or links), regenerate compose too:
 
-Reality check:
+```bash
+python scripts/generate_compose.py
+docker compose up --build
+```
 
-- config graph validation may pass
-- runtime dependency execution is still optimized for simpler chains in parts of the runner
+## Object disappears or teleports in UI
 
-For production-like branching tests, verify exact path behavior with controlled test cases before relying on it.
+Checks:
+
+- inspect `/objects` payload and confirm each object has valid `owner_type` and `owner_id`
+- verify owner exists in current topology (`/config`, `module_flow_order`)
+- confirm event ordering (`event_seq`, `event_time`) is monotonic
+
+If ownership is valid but position is missing briefly, renderer should hold last known position. If it does not, inspect `core/render.js` object-position fallback path.
 
 ## Demo stop does not halt everything instantly
 
@@ -75,6 +84,15 @@ Known behavior:
 - not all in-flight worker actions are hard-interrupted immediately
 
 If you need deterministic halt behavior right now, use targeted arm stop endpoints plus service-level controls.
+
+## Asset recovers but downstream arm does not resume
+
+Checks:
+
+- asset `/recover` endpoint is reachable
+- backend `/assets/<asset_id>/recover` returns successful state transition
+- arm input wait loop is still running (not terminated by drain-complete timeout)
+- transfer-point between modules is not permanently occupied
 
 ## High event volume or jitter
 

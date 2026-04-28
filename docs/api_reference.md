@@ -34,9 +34,16 @@ Base URL is usually `http://localhost:5000`.
 - `POST /object_event`  
   Body:
   ```json
-  { "object_id": "Obj1", "state": "carried", "carrier_arm": 1 }
+  {
+    "object_id": "Obj1",
+    "state": "carried",
+    "carrier_arm": 1,
+    "owner_type": "arm",
+    "owner_id": "arm-1",
+    "event_time": 1710000000000
+  }
   ```
-  Valid states are generated from config (`intake`, `carried`, `handoff_*`, `output`).
+  Backend validates owner existence and ownership transition legality against topology.
 
 - `GET /objects`  
   Returns tracked objects snapshot.
@@ -80,8 +87,18 @@ Base URL is usually `http://localhost:5000`.
 - `POST /arms/<id>/stop`  
   Explicitly stops an arm and cascades stop to downstream dependents.
 
+- `POST /arms/<id>/start`  
+  Clears explicit stop for that arm.
+
 - `GET /arms/<id>/allowed`  
   Returns whether an arm is allowed to execute under current dependency/health state.
+
+## Asset state and control
+
+- `GET /assets/state`
+- `GET /assets/<asset_id>/state`
+- `POST /assets/<asset_id>/fail`
+- `POST /assets/<asset_id>/recover`
 
 ## Demo proxy routes
 
@@ -102,4 +119,5 @@ Note: in the current implementation, stop updates status but is not a guaranteed
 - `object_update`
 - `objects_reset`
 - `arm_health`
+- `asset_health`
 - `log_message`

@@ -1,64 +1,58 @@
 # INTER.act failure and recovery model
 
-This document explains what happens when arms fail, stop, and recover.
+This document explains runtime behavior when modules fail, stop, drain, and recover.
 
-## Quick model
+## Runtime states
 
-There are two different stop paths:
+Arms and assets use these operational states:
 
-1. Reported failure (`POST /arms/<id>/health` with `health=dead`)
-2. Explicit stop (`POST /arms/<id>/stop`)
+- `idle`
+- `busy`
+- `draining`
+- `failed`
+- `recovering`
+- `stopped`
 
-They do not behave the same way.
+`draining` means the module is alive but blocked by downstream flow constraints.
 
-## Path A: reported failure (container/runtime failure)
+## Failure paths
 
-When an arm reports `dead`, the backend marks that arm as failed.  
-This path does not force an immediate downstream hard stop.
+### Explicit control path
 
-Downstream behavior is handled by pipeline flow:
+- `POST /arms/<id>/stop` sets an explicit arm stop.
+- `POST /assets/<asset_id>/fail` sets asset failure and updates container state.
 
-- downstream workers can drain buffered work
-- then move to stopped states through normal execution checks
+This path is deterministic and operator-controlled.
 
-This is why you may see a short period where upstream/downstream arms are still transitioning after one arm dies.
+### Health-monitor path
 
-## Path B: explicit stop (operator/API action)
+`app/services/health_monitor.py` polls arm and asset services:
 
-`POST /arms/<id>/stop` is an intentional control command.  
-This path cascades to all transitive downstream dependents.
+- missed checks transition modules into failure states
+- recovered container responses update backend status
+- asset state is synced to container-reported lifecycle (`idle`/`busy`/`draining`/`recovering`/`failed`/`stopped`)
 
-Use this when you want deterministic shutdown propagation through the dependency graph.
+## Recovery path
 
-## Health monitor behavior
+- `POST /arms/<id>/start` clears explicit stop for arms.
+- `POST /assets/<asset_id>/recover` starts the asset container and forwards `/recover` to the asset service when reachable.
+- module controllers hold processing while `recovering`, then return to `idle`.
 
-The backend health monitor (`app/services/health_monitor.py`) polls each arm service endpoint:
+## Flow-control behavior under failure
 
-- first missed checks move arm to `unhealthy`
-- repeated misses move arm to `dead`
+Flow is backpressure-driven:
 
-Recovery from monitor polling is conservative:
+- transfer points are single-slot buffers
+- modules do not process while `failed` or `recovering`
+- blocked downstream places/emit conditions move modules to `draining`
+- upstream modules can hold objects in passive buffers until downstream returns
 
-- monitor can recover `dead` and `stopped` arms
-- monitor requires upstream dependencies to be healthy
-- monitor does not auto-recover `draining`
+## Ownership integrity during failures
 
-## Immediate failure signals from arm service
-
-Arm microservices (`scripts/arm_server.py`) send a direct `dead` update on SIGTERM/SIGINT before exit when possible.  
-This cuts detection delay compared with poll-only detection.
-
-## Dependency validity
-
-Dependency graph checks are derived from config and include:
-
-- missing arm references
-- cycle detection
-
-If graph validation fails, pipeline behavior is not reliable until config is fixed.
+`/object_event` enforces ownership transition validity against live topology, so even during failure/recovery windows, object ownership stays consistent for UI and debugging.
 
 ## Operational guidance
 
-- Use `/arms/<id>/stop` for intentional cascaded stop behavior.
-- Use health monitor status for liveness, not for full pipeline run control.
-- After config edits: call `/reload_config`, then `/restart_pipeline`.
+- Use explicit stop/fail routes when you need predictable operator control.
+- Use health status as liveness signal, not as proof of full throughput.
+- After topology edits, run `/reload_config` and `/restart_pipeline`.

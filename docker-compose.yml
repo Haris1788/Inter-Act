@@ -149,22 +149,6 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-  arm-5:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.arm
-    container_name: interact-arm-5
-    ports:
-    - 8005:8000
-    environment:
-    - ARM_ID=5
-    - SERVER_HOST=http://backend:5000
-    - PIPELINE_CONFIG=/config/pipeline.yaml
-    volumes:
-    - ./pipeline.yaml:/config/pipeline.yaml:ro
-    depends_on:
-      backend:
-        condition: service_healthy
   veh-a:
     build:
       context: .

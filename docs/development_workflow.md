@@ -11,10 +11,10 @@ pip install -r requirements.txt
 python run.py
 ```
 
-Run demo pipeline from another terminal:
+Run demo-runner server from another terminal:
 
 ```bash
-python scripts/run_demo.py --speed normal --products 3
+python scripts/demo_runner_server.py
 ```
 
 ## Docker development
@@ -64,6 +64,7 @@ Backend state:
 ```bash
 curl http://localhost:5000/state
 curl http://localhost:5000/arms/health
+curl http://localhost:5000/assets/state
 curl http://localhost:5000/pipeline/status
 ```
 
@@ -89,6 +90,6 @@ curl -X POST http://localhost:5000/demo/stop
 ## Known dev-time traps
 
 - changing `pipeline.yaml` but forgetting reload/restart endpoints
-- changing arm count but not regenerating compose
+- changing topology but not regenerating compose
 - assuming `/demo/stop` is a hard immediate interrupt
-- debugging frontend visuals without checking backend object state first
+- debugging frontend visuals without checking `/objects` ownership fields first

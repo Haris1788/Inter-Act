@@ -23,7 +23,7 @@ Fields:
 Notes:
 
 - `mode` is used by pipeline execution logic.
-- In UI-triggered runs, frontend currently sends fixed start payload (`products: 3`, `speed: "normal"`), so YAML values here may not drive button-start behavior unless UI is changed.
+- UI-triggered runs currently send their own `products` and `speed` payload. YAML values still matter for non-UI and scripted runs.
 
 ## `failure_policy`
 
@@ -72,7 +72,7 @@ Behavior:
 - drives scene generation for arm geometry
 - drives compose generation for `arm-*` services
 
-## `assets` (frontend-only extension layer)
+## `assets`
 
 Supported `type` values currently:
 
@@ -99,16 +99,22 @@ Shared fields:
 Backend role:
 
 - passes normalized asset geometry in `/config`
-- does not run backend lifecycle logic for non-arm assets
+- stores asset state in `asset_state` registry
+- health monitor polls asset containers and syncs lifecycle status
+- asset services use this topology for runtime flow
 
 ## Validation behavior
 
-Dependency graph checks include:
+Validation checks include:
 
-- missing dependency references
+- missing references in arm dependencies
 - cycle detection
+- asset graph validity checks exposed via `/config` and `/pipeline/status`
 
-Topological order is exposed via backend status route.
+Derived order:
+
+- `module_flow_order` is generated and exposed in `/config`
+- demo-runner uses this order to wire transfer points and HTTP bridges
 
 ## Change application workflow
 
