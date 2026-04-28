@@ -44,6 +44,18 @@ arms:
     depends_on: [2]
     critical: true
 
+  - id: 4
+    label: "Arm 4"
+    color: "#e67e22"
+    depends_on: [3]
+    critical: true
+
+  - id: 5
+    label: "Arm 5"
+    color: "#1abc9c"
+    depends_on: [4]
+    critical: true
+
 # Optional: add vehicles and conveyors here. Frontend renders + ticks them;
 # backend ignores them (arms-only for lifecycle). Uncomment to enable.
 assets:
@@ -69,6 +81,18 @@ assets:
     shift_interval: 1.2
     upstream: [veh-a]
     downstream: [arm-3]
+
+  # - id: veh-b
+  #   type: vehicle
+  #   label: "Shuttle B"
+  #   color: "#8e44ad"
+  #   speed: 140
+  #   loop: false
+  #   waypoints:
+  #     - { x: 730, y: 300 }
+  #     - { x: 900, y: 300 }
+  #   upstream: [arm-3]
+  #   downstream: [output]
 
 # - id: conv-1
 #   type: conveyor
