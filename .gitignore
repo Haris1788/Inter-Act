@@ -13,3 +13,8 @@ build/
 *.swo
 .claude/
 planning/
+
+# Personal weekly tracking documents — kept locally, not pushed.
+documentation/PROJECT_PROGRESS.md
+documentation/PROJECT_FLOWCHART.md
+documentation/README.md
