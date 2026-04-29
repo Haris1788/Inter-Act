@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>INTER.act Simulation</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=13" />
+    <link rel="stylesheet" href="/static/css/style.css?v=18" />
   </head>
   <body>
     <h1>INTER.act</h1>
@@ -13,6 +13,45 @@
       <div id="status-dot"></div>
       <span id="status-text">Disconnected</span>
       <button id="demo-btn" onclick="toggleDemo()">Run Demo</button>
+      <label id="brain-toggle" title="Route every move through Qwen instead of hardcoded angles">
+        <input type="checkbox" id="use-brain-cb" />
+        Use Qwen brain
+      </label>
+    </div>
+
+    <div id="task-bar">
+      <label for="task-arm">Arm</label>
+      <select id="task-arm">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+      </select>
+      <label for="task-input">Task</label>
+      <input
+        id="task-input"
+        type="text"
+        placeholder="e.g. pick object from intake"
+        value="pick object from intake"
+      />
+      <button id="task-btn" onclick="sendTask()">Send Task (Qwen)</button>
+      <span id="task-status"></span>
+    </div>
+
+    <div id="role-bar">
+      <span class="role-label">Qwen picks a script for…</span>
+      <input
+        id="role-task"
+        type="text"
+        placeholder="task hint (e.g. 'do your relay')"
+        value="do your relay job"
+      />
+      <button class="role-btn" onclick="runRole(1)">Run Arm 1 Role</button>
+      <button class="role-btn" onclick="runRole(2)">Run Arm 2 Role</button>
+      <button class="role-btn" onclick="runRole(3)">Run Arm 3 Role</button>
+      <button class="role-btn role-all" onclick="runAllRoles()">Run All (1→2→3)</button>
+      <button class="role-btn role-util" onclick="spawnObject()">Spawn obj at intake</button>
+      <button class="role-btn role-reset" onclick="resetWorld()">Reset</button>
+      <span id="role-status"></span>
     </div>
 
     <div id="canvas-wrapper">
@@ -25,6 +64,6 @@
       window.BACKEND_URL = "";
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
-    <script src="/static/js/simulation.js?v=13"></script>
+    <script src="/static/js/simulation.js?v=18"></script>
   </body>
 </html>

@@ -130,6 +130,58 @@ socket.on("log_message", (data) => {
   appendLogEntry(data);
 });
 
+/* ── US #16: Qwen brain task events ────────────────────── */
+
+socket.on("task_status", (data) => {
+  // Backend emits this when a task starts (notify_processing).
+  // Mirror it into the log panel so the user sees ⏳ immediately.
+  appendLogEntry({
+    timestamp: data.timestamp,
+    source: `arm_${data.arm_id}`,
+    message: data.message || `⏳ Arm ${data.arm_id} is ${data.action}...`,
+  });
+  setTaskStatus("processing", data.message);
+});
+
+socket.on("brain_decision", (data) => {
+  // Surface Qwen's decision (action, target_angle, confidence) in the log
+  // even when the backend has not also sent a log_message for it.
+  const conf =
+    typeof data.confidence === "number"
+      ? ` (conf ${data.confidence.toFixed(2)})`
+      : "";
+  appendLogEntry({
+    timestamp: data.timestamp,
+    source: `arm_${data.arm_id}`,
+    message:
+      `🧠 ${data.action} @ ${data.target_angle}°${conf} — ${data.reasoning || ""}`,
+  });
+});
+
+socket.on("task_complete", (data) => {
+  setTaskStatus(data.status, data.message);
+});
+
+socket.on("task_result", (data) => {
+  // The /execute_task route also emits the full result object. We do not
+  // re-log it (notify_success/notify_failure already produced a log entry),
+  // but we update the small indicator next to the Send Task button.
+  setTaskStatus(data.status, data.message);
+});
+
+socket.on("script_chosen", (data) => {
+  // Qwen picked a named script for this arm — make it loud in the UI.
+  // If the deterministic safety net overrode Qwen, show it explicitly.
+  if (data.override_reason) {
+    setRoleStatus(
+      "processing",
+      `arm ${data.arm_id}: ${data.script} ⚖ overridden (Qwen→${data.qwen_suggested})`,
+    );
+  } else {
+    setRoleStatus("processing", `arm ${data.arm_id}: ${data.script}`);
+  }
+});
+
 /* ── State Management ──────────────────────────────────── */
 
 function applyStateUpdate(data) {
@@ -596,10 +648,16 @@ function toggleDemo() {
   btn.classList.add("running");
   btn.classList.remove("done");
 
+  // Read the "Use Qwen brain" checkbox so the operator can toggle whether
+  // the pipeline asks Qwen for every angle (slow, visible AI decisions in
+  // the log) or uses the hardcoded angles (fast visualisation).
+  const useBrainCb = document.getElementById("use-brain-cb");
+  const useBrain = !!(useBrainCb && useBrainCb.checked);
+
   fetch(BACKEND_URL + "/demo/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ products: 3, speed: "normal" }),
+    body: JSON.stringify({ products: 3, speed: "normal", use_brain: useBrain }),
   })
     .then((r) => r.json())
     .then(() => {
@@ -629,6 +687,164 @@ function checkDemoStatus() {
         }, 3000);
       }
     });
+}
+
+/* ── US #16: Send Task (Qwen brain) control ────────────── */
+
+function setTaskStatus(state, text) {
+  const el = document.getElementById("task-status");
+  if (!el) return;
+  el.className = state ? `state-${state}` : "";
+  el.textContent = text || "";
+}
+
+function sendTask() {
+  const btn = document.getElementById("task-btn");
+  const armSel = document.getElementById("task-arm");
+  const taskInput = document.getElementById("task-input");
+  if (!btn || !armSel || !taskInput) return;
+
+  const armId = parseInt(armSel.value, 10);
+  const task = (taskInput.value || "").trim();
+  if (!task) {
+    setTaskStatus("failed", "task is empty");
+    return;
+  }
+
+  btn.disabled = true;
+  setTaskStatus("processing", "asking Qwen...");
+
+  fetch(BACKEND_URL + "/execute_task", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ arm_id: armId, task: task }),
+  })
+    .then((r) => r.json().then((body) => ({ ok: r.ok, body })))
+    .then(({ ok, body }) => {
+      // task_result via WebSocket will normally beat us here, but if it
+      // hasn't arrived yet we still want to show something useful.
+      if (!ok) {
+        setTaskStatus("failed", body.message || body.reason || body.error || "failed");
+      }
+    })
+    .catch((err) => {
+      setTaskStatus("failed", "network error: " + err.message);
+    })
+    .finally(() => {
+      btn.disabled = false;
+    });
+}
+
+/* ── US 17: Run role (Qwen picks a script from per-arm menu) ─────── */
+
+function setRoleStatus(state, text) {
+  const el = document.getElementById("role-status");
+  if (!el) return;
+  el.className = state ? `state-${state}` : "";
+  el.textContent = text || "";
+}
+
+function runRole(armId) {
+  const taskInput = document.getElementById("role-task");
+  const task = ((taskInput && taskInput.value) || "do your relay job").trim();
+  setRoleStatus("processing", `Qwen picking script for arm ${armId}…`);
+
+  return fetch(BACKEND_URL + "/run_script", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ arm_id: armId, task: task }),
+  })
+    .then((r) => r.json().then((body) => ({ ok: r.ok, body })))
+    .then(({ ok, body }) => {
+      if (ok && body.status === "success") {
+        setRoleStatus(
+          "success",
+          `arm ${armId} done — ${body.chosen_script}`,
+        );
+        return body;
+      }
+      setRoleStatus(
+        "failed",
+        body.reason || body.error || "failed",
+      );
+      return null;
+    })
+    .catch((err) => {
+      setRoleStatus("failed", "network: " + err.message);
+      return null;
+    });
+}
+
+// Spawn a single object at intake so a relay has something to pick.
+function spawnObject() {
+  setRoleStatus("processing", "spawning object at intake…");
+  return fetch(BACKEND_URL + "/objects/spawn", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  })
+    .then((r) => r.json())
+    .then((d) => {
+      if (d && d.status === "ok") {
+        setRoleStatus("success", `spawned ${d.object.object_id} at intake`);
+        return d.object;
+      }
+      setRoleStatus("failed", "spawn failed");
+      return null;
+    })
+    .catch((err) => {
+      setRoleStatus("failed", "network: " + err.message);
+      return null;
+    });
+}
+
+// Reset the world: clear objects and park all arms at 90° rest.
+async function resetWorld() {
+  setRoleStatus("processing", "resetting…");
+  try {
+    await fetch(BACKEND_URL + "/objects/reset", { method: "POST" });
+    for (const id of [1, 2, 3]) {
+      await fetch(BACKEND_URL + "/set_angle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ arm_id: id, angle: 90 }),
+      });
+    }
+    setRoleStatus("success", "world reset (no objects, arms at 90°)");
+  } catch (err) {
+    setRoleStatus("failed", "reset failed: " + err.message);
+  }
+}
+
+// Run arm 1, then 2, then 3 sequentially with a brief pause so each arm sees
+// the previous arm's drop. Resets + spawns one object first so it's a complete
+// self-contained Qwen demo (no need to click Run Demo first).
+async function runAllRoles() {
+  setRoleStatus("processing", "preparing world…");
+  await fetch(BACKEND_URL + "/objects/reset", { method: "POST" });
+  for (const id of [1, 2, 3]) {
+    await fetch(BACKEND_URL + "/set_angle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arm_id: id, angle: 90 }),
+    });
+  }
+  await spawnObject();
+  // Tiny breath so the spawn event reaches the backend before arm 1's brain reads state.
+  await new Promise((r) => setTimeout(r, 200));
+
+  setRoleStatus("processing", "running pipeline arm 1 → 2 → 3…");
+  for (const id of [1, 2, 3]) {
+    const out = await runRole(id);
+    if (!out || out.result?.status === "no_object") {
+      setRoleStatus(
+        "failed",
+        `pipeline stopped at arm ${id} — ${out?.result?.status || "no result"}`,
+      );
+      return;
+    }
+  }
+  setRoleStatus("success", "pipeline complete (1→2→3) ✓");
 }
 
 // Start when DOM is ready

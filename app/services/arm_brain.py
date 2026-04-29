@@ -68,8 +68,10 @@ USAGE EXAMPLE:
 """
 
 import os
+import re
 import json
-from typing import Dict, Any
+import difflib
+from typing import Dict, Any, Optional
 
 # ═══════════════════════════════════════════════════════════════════════════
 # IMPORTS: What we're using from other files
@@ -78,6 +80,147 @@ from typing import Dict, Any
 # Import existing Qwen service (created in User Story #6)
 # This gives us access to the LLM (Large Language Model)
 from app.services.qwen_brain import get_qwen_brain
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CONSTANTS: Output validation
+# ═══════════════════════════════════════════════════════════════════════════
+# Qwen 2.5 0.5b is small enough that it occasionally hallucinates angles
+# outside [0, 180] or invents actions that aren't in our 4-verb vocabulary.
+# We clamp/whitelist the response before letting it reach the executor so
+# bad LLM output cannot drive the arm to an illegal pose.
+#
+# `noop` is the brain's way of refusing: "do not move the arm." The executor
+# treats it specially and never sends a /move command.
+
+VALID_ACTIONS = {"pick", "drop", "move", "rotate", "noop"}
+MIN_ANGLE = 0.0
+MAX_ANGLE = 180.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DETERMINISTIC PRE-FILTERS
+# ═══════════════════════════════════════════════════════════════════════════
+# Two task families that must NOT be left to a 0.5 B model:
+#
+# 1. "stop / don't move / halt / stay" — a small LLM gladly converts these
+#    into a "drop" or "move" because those are the only verbs it knows.
+#    Disastrous: the arm executes the opposite of what was asked.
+#
+# 2. "rotate to N degrees" / "move to N" — these are unambiguous and
+#    deterministic; sending them to Qwen wastes 2-8 s of CPU inference.
+#
+# We handle both before the LLM is consulted.
+
+_STOP_PATTERNS = re.compile(
+    r"\b(stop|halt|hold|stay|wait|freeze|don't\s*move|do\s*not\s*move|no[\s-]*op|abort|cancel)\b",
+    re.IGNORECASE,
+)
+_NUMERIC_PATTERNS = re.compile(
+    r"\b(?:rotate|move|go|turn|set)\s+(?:to\s+)?(-?\d+(?:\.\d+)?)\s*(?:deg(?:rees?)?|°)?",
+    re.IGNORECASE,
+)
+
+
+def _try_pre_filter(task: str) -> Optional[Dict[str, Any]]:
+    """Try to answer the task without calling Qwen.
+
+    Returns a fully-formed decision dict on a hit, or None to fall through
+    to the LLM. The dict is shaped exactly like a normal Qwen decision
+    (action + target_angle + confidence + reasoning + status), so the rest
+    of the pipeline doesn't care which path produced it.
+    """
+    if not task:
+        return None
+
+    if _STOP_PATTERNS.search(task):
+        # Hard refusal: do not move the arm regardless of what an LLM might say.
+        return {
+            "action": "noop",
+            "target_angle": None,
+            "confidence": 1.0,
+            "reasoning": "Task contains a stop/halt intent; arm will not move.",
+            "status": "success",
+            "source": "rule:stop",
+        }
+
+    m = _NUMERIC_PATTERNS.search(task)
+    if m:
+        try:
+            angle = float(m.group(1))
+        except (TypeError, ValueError):
+            return None
+        # Clamp here too; the validator would do it again but the reasoning
+        # is clearer when we say so explicitly.
+        clamped = max(MIN_ANGLE, min(MAX_ANGLE, angle))
+        out_of_range = clamped != angle
+        return {
+            "action": "rotate",
+            "target_angle": clamped,
+            "confidence": 1.0,
+            "reasoning": (
+                f"Literal angle {angle}° parsed from task"
+                + (f" (clamped to {clamped}° because {MIN_ANGLE}–{MAX_ANGLE}° is the safe range)" if out_of_range else "")
+            ),
+            "status": "success",
+            "source": "rule:numeric",
+        }
+
+    return None
+
+
+def _validate_decision(decision: Dict[str, Any]) -> Dict[str, Any]:
+    """Clamp/whitelist Qwen's raw output. Always returns a usable dict.
+
+    - target_angle is coerced to float and clamped to [0, 180]
+    - action is forced to one of {pick, drop, move, rotate}; unknown maps to "move"
+    - confidence is coerced to float in [0, 1]; missing/garbage becomes 0.5
+    - reasoning is coerced to a string
+    Sets `validated=True` so callers can tell a sanitised dict from a raw one.
+    Failure dicts (status="failed") pass through unchanged.
+    """
+    # qwen_brain.ask_decision uses three failure tags depending on the cause:
+    #   "failed"    — Ollama returned non-200 OR JSON could not be parsed
+    #   "timeout"   — request exceeded our 30 s budget
+    #   "exception" — connection error / DNS failure / misc.
+    # All three mean "no usable LLM output." We must preserve that failure
+    # signal — the validator's job is to clamp valid output, not to invent
+    # a default `move @ 90, conf 0.5` that would silently ship a fabricated
+    # decision to the arm. Normalise to "failed" for the executor.
+    if decision.get("status") in ("failed", "timeout", "exception"):
+        decision["status"] = "failed"
+        return decision
+
+    action = str(decision.get("action", "move")).strip().lower()
+    if action not in VALID_ACTIONS:
+        action = "move"
+
+    if action == "noop":
+        # noop has no target angle — the executor must not move the arm.
+        angle = None
+    else:
+        raw_angle = decision.get("target_angle")
+        try:
+            angle = float(raw_angle)
+        except (TypeError, ValueError):
+            angle = 90.0  # safe rest position
+        angle = max(MIN_ANGLE, min(MAX_ANGLE, angle))
+
+    raw_conf = decision.get("confidence")
+    try:
+        conf = float(raw_conf)
+    except (TypeError, ValueError):
+        conf = 0.5
+    conf = max(0.0, min(1.0, conf))
+
+    reasoning = str(decision.get("reasoning", ""))[:300]
+
+    decision["target_angle"] = angle
+    decision["action"] = action
+    decision["confidence"] = conf
+    decision["reasoning"] = reasoning
+    decision["validated"] = True
+    return decision
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -153,6 +296,16 @@ class ArmBrain:
         # STORE: Which arm does this brain control?
         # ═════════════════════════════════════════════════════════════════
         self.arm_id = arm_id
+
+        # ═════════════════════════════════════════════════════════════════
+        # CACHE: Memoise decisions per (task, angle-bucket)
+        # ═════════════════════════════════════════════════════════════════
+        # Qwen 0.5b on CPU takes 2–3 s per call. Repeats are common ("pick"
+        # at angle 0 → 180 happens every cycle). We bucket the current
+        # angle to 15° intervals so 47° and 53° share a cache slot.
+        # Capped at 64 entries — small enough that we never need eviction.
+        self._cache: Dict[Any, Dict[str, Any]] = {}
+        self._cache_max = 64
         """
         arm_id (int): Identifier for the arm this brain controls
 
@@ -267,11 +420,17 @@ Your job: Decide what action this arm should take based on the task and current 
 
 CONSTRAINTS YOU MUST FOLLOW:
 1. Analyze the task carefully
-2. Consider the current arm position and state
+2. Consider the current arm angle and status
 3. Decide the BEST action to take
 4. Calculate the TARGET ANGLE (0-180 degrees)
 5. Rate your confidence (0.0 = not sure, 1.0 = very sure)
 6. Explain your reasoning briefly
+
+STATION ANGLE REFERENCE (use these unless the task names a specific angle):
+- intake / pick station: 180°
+- handoff / carry zone:  90°
+- output / drop station:  0°
+- rest position:         90°
 
 CRITICAL: Output ONLY valid JSON. No explanation, no markdown, no comments.
 Invalid JSON will break the system!
@@ -285,14 +444,17 @@ OUTPUT FORMAT (MUST be exactly this):
 }}
 
 EXAMPLES OF GOOD DECISIONS:
-- Task: "pick object at intake" | Current: position=0°, empty
-  Output: {{"action": "pick", "target_angle": 45, "confidence": 0.95, "reasoning": "Intake station at 45°"}}
+- Task: "pick object from intake" | Current: angle=0, status=idle
+  Output: {{"action": "pick", "target_angle": 180, "confidence": 0.95, "reasoning": "Intake is at 180 degrees"}}
 
-- Task: "move to handoff zone" | Current: position=45°, holding object
-  Output: {{"action": "move", "target_angle": 90, "confidence": 0.88, "reasoning": "Handoff zone at 90°"}}
+- Task: "move to handoff zone" | Current: angle=180, status=idle
+  Output: {{"action": "move", "target_angle": 90, "confidence": 0.9, "reasoning": "Handoff zone at 90 degrees"}}
 
-- Task: "drop at output" | Current: position=90°, holding object
-  Output: {{"action": "drop", "target_angle": 0, "confidence": 0.92, "reasoning": "Output station at 0°"}}
+- Task: "drop at output" | Current: angle=90, status=idle
+  Output: {{"action": "drop", "target_angle": 0, "confidence": 0.92, "reasoning": "Output station at 0 degrees"}}
+
+- Task: "rotate to 45" | Current: angle=90, status=idle
+  Output: {{"action": "rotate", "target_angle": 45, "confidence": 1.0, "reasoning": "User requested 45 degrees"}}
 """
         # WHY THIS PROMPT:
         # - Tells Qwen it's an ARM'S BRAIN (gives role)
@@ -321,24 +483,81 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         # - Reminds Qwen to output JSON only (prevents chat responses)
 
         # ═════════════════════════════════════════════════════════════════
-        # STEP 3: ASK QWEN
+        # STEP 2.5: DETERMINISTIC PRE-FILTERS
+        # PURPOSE: Catch "stop/don't move" + literal angles BEFORE the LLM
+        # ═════════════════════════════════════════════════════════════════
+        # A 0.5 B model cannot reliably handle these — it converts "stop" into
+        # the closest verb in its vocabulary, which can move the arm in the
+        # opposite direction of what the user asked. Rules win here.
+        rule_decision = _try_pre_filter(task)
+        if rule_decision is not None:
+            print(f"[BRAIN] pre-filter hit ({rule_decision.get('source')}): "
+                  f"{rule_decision['action']} @ {rule_decision.get('target_angle')}")
+            decision = _validate_decision(dict(rule_decision))
+            decision["arm_id"] = self.arm_id
+            decision["cache_hit"] = False
+            return decision
+
+        # ═════════════════════════════════════════════════════════════════
+        # STEP 3: CACHE LOOKUP
+        # PURPOSE: Return previously-seen decision for this task+angle
+        # ═════════════════════════════════════════════════════════════════
+        # Bucket current angle to 15° so near-identical states share a slot.
+        try:
+            angle_now = float(current_state.get("angle", 90.0))
+        except (TypeError, ValueError):
+            angle_now = 90.0
+        angle_bucket = int(round(angle_now / 15.0) * 15)
+        cache_key = (self.arm_id, task.strip().lower(), angle_bucket)
+
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            print(f"[BRAIN] cache hit for {cache_key}")
+            # Return a fresh dict so callers can mutate it without poisoning the cache
+            decision = dict(cached)
+            decision["cache_hit"] = True
+            decision["arm_id"] = self.arm_id
+            return decision
+
+        # ═════════════════════════════════════════════════════════════════
+        # STEP 4: ASK QWEN
         # PURPOSE: Send prompt + message to Qwen LLM, get decision back
         # ═════════════════════════════════════════════════════════════════
 
-        decision = self.qwen.ask_decision(system_prompt, current_state)
+        decision = self.qwen.ask_decision(
+            system_prompt,
+            current_state,
+            user_message=user_message,
+        )
 
         # WHAT HAPPENS HERE:
         # - self.qwen.ask_decision() calls Ollama/Qwen
-        # - Qwen analyzes: system_prompt + user_message + current_state
+        # - Qwen analyzes: system_prompt + user_message (which includes the task)
         # - Qwen returns JSON response with decision
         # - We get back: {action, target_angle, confidence, reasoning, status}
 
         # ═════════════════════════════════════════════════════════════════
-        # STEP 4: ADD ARM ID TO RESPONSE
+        # STEP 5: VALIDATE OUTPUT
+        # PURPOSE: Clamp angle, whitelist action, default missing fields
+        # ═════════════════════════════════════════════════════════════════
+        decision = _validate_decision(decision)
+
+        # ═════════════════════════════════════════════════════════════════
+        # STEP 6: STORE IN CACHE (only successful, validated decisions)
+        # ═════════════════════════════════════════════════════════════════
+        if decision.get("status") != "failed":
+            if len(self._cache) >= self._cache_max:
+                # Trivial eviction: drop the first inserted key.
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[cache_key] = dict(decision)
+
+        # ═════════════════════════════════════════════════════════════════
+        # STEP 7: ADD ARM ID TO RESPONSE
         # PURPOSE: Mark which arm made this decision
         # ═════════════════════════════════════════════════════════════════
 
         decision["arm_id"] = self.arm_id
+        decision["cache_hit"] = False
 
         # WHY:
         # - Next service (Executor) needs to know which arm to command
@@ -361,6 +580,149 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         #     "status": "success",
         #     "arm_id": 1          ← WE ADDED THIS
         # }
+
+
+    # ════════════════════════════════════════════════════════════════════
+    # SCRIPT DISPATCHER — Qwen picks one named behaviour from a per-arm menu
+    # ════════════════════════════════════════════════════════════════════
+    # Different from `decide_action`. Instead of inventing an angle, Qwen
+    # is asked to classify the task into one of N (~3) script names. This
+    # is a much smaller cognitive load — a 0.5 B model can do it reliably.
+
+    def pick_script(self, task: str, scripts: list,
+                    object_summary: Dict[str, int] = None) -> Dict[str, Any]:
+        """
+        Ask Qwen to choose one script name from this arm's menu.
+
+        Args:
+            task: free-form English task ("pick from intake", "stop", …).
+            scripts: list of {name, desc} dicts (the per-arm menu).
+            object_summary: optional {state: count} dict so Qwen sees where
+                real objects currently sit. Used to pick `hold_*` instead
+                of `relay_*` when the source location is empty.
+
+        Returns:
+            {"script": "<chosen name>", "reasoning": "<why>", "confidence": <0-1>,
+             "status": "success" | "failed", "arm_id": <id>}
+        """
+        # Build a menu the model can rank against.
+        menu = "\n".join(f'- "{s["name"]}": {s["desc"]}' for s in scripts)
+        valid_names = {s["name"] for s in scripts}
+
+        # Per-arm geometry rules — gives the model the "intake"/"handoff_1"/"handoff_2"/"output"
+        # vocabulary the script names use, anchored to which arm is asking.
+        per_arm_facts = {
+            1: "You are arm 1 (left side). You can reach intake (180°) and handoff_1 (0°). "
+               "Your 'source' is intake; your 'destination' is handoff_1.",
+            2: "You are arm 2 (middle). You can reach handoff_1 (180°) and handoff_2 (0°). "
+               "Your 'source' is handoff_1; your 'destination' is handoff_2.",
+            3: "You are arm 3 (right side). You can reach handoff_2 (180°) and output (0°). "
+               "Your 'source' is handoff_2; your 'destination' is output.",
+        }.get(self.arm_id, "")
+
+        system_prompt = (
+            f"You are the dispatcher for Arm {self.arm_id}.\n"
+            f"{per_arm_facts}\n"
+            "You must choose exactly ONE script name from the menu below.\n"
+            "Rule: pick a relay_* script ONLY if there is a real object at YOUR source. "
+            "Otherwise prefer the hold_* script (wait) or return_to_rest.\n\n"
+            f"MENU:\n{menu}\n\n"
+            "Output ONLY valid JSON of the form:\n"
+            '{"script": "<name from the menu>", "reasoning": "<one short sentence>"}\n'
+            "Do not invent script names. Pick exactly one from the menu."
+        )
+
+        # Tell the model ONLY about its own source location (in plain English,
+        # not a structured count) — a 0.5 B model handles "yes/no" prose much
+        # better than "intake=1, handoff_1=0, …".
+        my_source = {1: "intake", 2: "handoff_1", 3: "handoff_2"}.get(self.arm_id, "")
+        source_count = (object_summary or {}).get(my_source, 0) if my_source else 0
+        if source_count >= 1:
+            availability = (
+                f"There IS an object available at YOUR source ({my_source}). "
+                "You must pick a relay_* script."
+            )
+        else:
+            availability = (
+                f"There is NO object at YOUR source ({my_source}). "
+                "You must NOT pick a relay_* script. Pick hold_* or return_to_rest."
+            )
+
+        user_message = (
+            f"TASK: {task}\n"
+            f"AVAILABILITY: {availability}\n"
+            "Output ONLY the JSON described above."
+        )
+
+        # Reuse the existing Qwen client.
+        raw = self.qwen.ask_decision(system_prompt, {}, user_message=user_message)
+
+        # Surface Qwen failure as failure (not as a fake success).
+        if raw.get("status") in ("failed", "timeout", "exception"):
+            return {"status": "failed",
+                    "error": raw.get("error", "LLM unavailable"),
+                    "arm_id": self.arm_id}
+
+        valid_list = list(valid_names)
+        qwen_raw = str(raw.get("script", "")).strip()
+        qwen_reasoning = str(raw.get("reasoning", ""))
+
+        # ── Step A: fuzzy-match Qwen's name against the menu ─────────────
+        # Handles common typos like `hold_at_handoff_2` → `hold_at_handoff2`
+        # and `relay_intake_to_handoff1` → `relay_intake_to_handoff_1`.
+        if qwen_raw in valid_names:
+            qwen_suggested = qwen_raw
+            typo_corrected = False
+        else:
+            matches = difflib.get_close_matches(qwen_raw, valid_list, n=1, cutoff=0.6)
+            if matches:
+                qwen_suggested = matches[0]
+                typo_corrected = True
+            else:
+                # No close match. Use a safe default and mark it.
+                qwen_suggested = "return_to_rest" if "return_to_rest" in valid_names else valid_list[0]
+                typo_corrected = True
+
+        # ── Step B: deterministic override based on source availability ──
+        # The 0.5 B model sometimes contradicts its own reasoning (saw an
+        # object available, then picked `return_to_rest`). The rule
+        # "relay iff source has an object" is unambiguous, so we enforce it.
+        relay_options = [n for n in valid_list if n.startswith("relay_")]
+        hold_options  = [n for n in valid_list if n.startswith("hold_")]
+        rest_option   = "return_to_rest" if "return_to_rest" in valid_names else None
+
+        final_choice = qwen_suggested
+        override_reason = None
+
+        if my_source and source_count >= 1:
+            # There IS work to do. Final choice MUST be a relay_*.
+            if not final_choice.startswith("relay_") and relay_options:
+                override_reason = (
+                    f"object present at {my_source}; relay_* is required"
+                )
+                final_choice = relay_options[0]
+        elif my_source and source_count == 0:
+            # NO work to do. Final choice MUST NOT be a relay_*.
+            if final_choice.startswith("relay_"):
+                if hold_options:
+                    override_reason = f"{my_source} is empty; hold instead of relay"
+                    final_choice = hold_options[0]
+                elif rest_option:
+                    override_reason = f"{my_source} is empty; return to rest"
+                    final_choice = rest_option
+
+        return {
+            "status": "success",
+            "script": final_choice,
+            "qwen_suggested": qwen_suggested,
+            "qwen_raw": qwen_raw,
+            "reasoning": qwen_reasoning,
+            "override_reason": override_reason,
+            "typo_corrected": typo_corrected,
+            "fallback": typo_corrected and qwen_raw not in valid_names and not difflib.get_close_matches(qwen_raw, valid_list, n=1, cutoff=0.6),
+            "confidence": 1.0,
+            "arm_id": self.arm_id,
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -24,12 +24,36 @@ from app import socketio
 # Import executor and notification services (created in STEP 2 and 3)
 from app.services.arm_execution import get_arm_executor
 from app.services.notifications import get_notification_service
+from app.services.arm_brain import get_arm_brain
+from app.services.arm_scripts import list_scripts, run_script, ARM_SCRIPTS
 
 arm_bp = Blueprint('arms', __name__)
 
 # In-memory object state for the pipeline visualization (lock-protected)
 _object_states = {}  # {"Obj1": {"object_id": "Obj1", "state": "intake", "carrier_arm": None}}
 _object_lock = threading.Lock()
+
+
+def get_object_states():
+    """Thread-safe snapshot of all currently tracked objects.
+
+    Used by arm_scripts.py to look up "is there a real object at intake?"
+    before a relay script tries to pick something that isn't there.
+    """
+    with _object_lock:
+        return [dict(o) for o in _object_states.values()]
+
+
+def find_object_at(state):
+    """Return the first object whose pipeline state matches, or None.
+
+    Args:
+        state: one of "intake" / "handoff_1" / "handoff_2" / "output" / "carried"
+    """
+    for obj in get_object_states():
+        if obj.get("state") == state:
+            return obj
+    return None
 
 
 @arm_bp.route('/set_angle', methods=['POST'])
@@ -281,6 +305,120 @@ def execute_task():
     return jsonify(result), status_code
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SCRIPT-DISPATCHER ENDPOINTS (US 17)
+# Qwen picks one named behaviour from a per-arm menu, then we execute it.
+# Different from /execute_task which asks Qwen to invent an angle.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@arm_bp.route('/scripts/<int:arm_id>', methods=['GET'])
+def get_arm_script_menu(arm_id):
+    """List the named behaviours available for one arm (the Qwen menu)."""
+    menu = list_scripts(arm_id)
+    if not menu:
+        return jsonify({"error": f"unknown arm_id {arm_id}"}), 400
+    return jsonify({"arm_id": arm_id, "scripts": menu})
+
+
+@arm_bp.route('/run_script', methods=['POST'])
+def run_script_endpoint():
+    """Ask Qwen to pick a script for this arm + task, then run it.
+
+    Request: {"arm_id": 1, "task": "pick from intake"}
+    Response: {"status": "success", "arm_id": 1,
+               "chosen_script": "relay_intake_to_handoff_1",
+               "reasoning": "...", "result": {...}}
+    """
+    data = request.get_json(silent=True) or {}
+    arm_id = data.get('arm_id')
+    task = data.get('task')
+
+    if not isinstance(arm_id, int) or arm_id not in ARM_SCRIPTS:
+        return jsonify({"error": f"arm_id must be one of {list(ARM_SCRIPTS.keys())}"}), 400
+    if not isinstance(task, str) or not task.strip():
+        return jsonify({"error": "task must be a non-empty string"}), 400
+
+    # 1. Tell the operator we're starting.
+    notif = get_notification_service()
+    notif.notify_processing(arm_id, "thinking")
+
+    # 2. Qwen chooses a script from the per-arm menu.
+    # We also pass a count of where real objects currently sit, so a 0.5 B
+    # model can pick `hold_*` instead of `relay_*` when the source is empty.
+    brain = get_arm_brain(arm_id)
+    menu = list_scripts(arm_id)
+    obj_summary = {"intake": 0, "handoff_1": 0, "handoff_2": 0, "output": 0, "carried": 0}
+    for o in get_object_states():
+        s = o.get("state")
+        if s in obj_summary:
+            obj_summary[s] += 1
+    pick = brain.pick_script(task, menu, object_summary=obj_summary)
+
+    if pick.get("status") != "success":
+        notif.notify_failure(arm_id, pick.get("error", "brain unavailable"), action="pick_script")
+        return jsonify({"status": "failed", "arm_id": arm_id,
+                        "reason": pick.get("error", "brain unavailable")}), 500
+
+    chosen = pick["script"]
+    qwen_suggested = pick.get("qwen_suggested", chosen)
+    override_reason = pick.get("override_reason")
+
+    # 3. Surface the choice — the most visible "Qwen is working" signal.
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    socketio.emit('script_chosen', {
+        "arm_id": arm_id,
+        "script": chosen,
+        "qwen_suggested": qwen_suggested,
+        "override_reason": override_reason,
+        "reasoning": pick.get("reasoning", ""),
+        "fallback": pick.get("fallback", False),
+        "timestamp": timestamp,
+    })
+    if override_reason:
+        # Qwen disagreed with the deterministic rule; show BOTH lines so
+        # the operator sees the AI suggestion AND the safety net's correction.
+        socketio.emit('log_message', {
+            "timestamp": timestamp,
+            "source": f"arm_{arm_id}",
+            "message": f"🤖 Qwen suggested: {qwen_suggested}  — {pick.get('reasoning', '')}",
+            "level": "info",
+        })
+        socketio.emit('log_message', {
+            "timestamp": timestamp,
+            "source": f"arm_{arm_id}",
+            "message": f"⚖️  Override → {chosen}  ({override_reason})",
+            "level": "warning",
+        })
+    else:
+        socketio.emit('log_message', {
+            "timestamp": timestamp,
+            "source": f"arm_{arm_id}",
+            "message": f"🎬 Qwen chose: {chosen}  — {pick.get('reasoning', '')}",
+            "level": "info",
+        })
+
+    # 4. Run the chosen script. Each step inside emits its own log lines.
+    try:
+        result = run_script(arm_id, chosen)
+    except Exception as e:
+        notif.notify_failure(arm_id, str(e), action=chosen)
+        return jsonify({"status": "failed", "arm_id": arm_id,
+                        "chosen_script": chosen, "reason": str(e)}), 500
+
+    # 5. Done — final success notification.
+    notif.notify_success(arm_id, chosen, confidence=pick.get("confidence", 1.0))
+
+    return jsonify({
+        "status": "success",
+        "arm_id": arm_id,
+        "chosen_script": chosen,
+        "reasoning": pick.get("reasoning", ""),
+        "fallback": pick.get("fallback", False),
+        "result": result,
+    })
+
+
 @arm_bp.route('/state', methods=['GET'])
 def get_state():
     """Get the current state of all arms.
@@ -364,6 +502,29 @@ def reset_objects():
         _object_states.clear()
     socketio.emit('objects_reset', {})
     return jsonify({"status": "ok"})
+
+
+@arm_bp.route('/objects/spawn', methods=['POST'])
+def spawn_object():
+    """Spawn one object at intake so the script-driven pipeline has work to do.
+
+    Body (optional): {"object_id": "Obj1"}
+    Auto-numbers Obj1, Obj2, Obj3, ... if no id is supplied.
+    """
+    data = request.get_json(silent=True) or {}
+    explicit_id = data.get('object_id')
+    with _object_lock:
+        if explicit_id:
+            object_id = str(explicit_id)
+        else:
+            n = 1
+            while f"Obj{n}" in _object_states:
+                n += 1
+            object_id = f"Obj{n}"
+        obj = {"object_id": object_id, "state": "intake", "carrier_arm": None}
+        _object_states[object_id] = obj
+    socketio.emit('object_update', obj)
+    return jsonify({"status": "ok", "object": obj})
 
 
 @arm_bp.route('/config', methods=['GET'])
