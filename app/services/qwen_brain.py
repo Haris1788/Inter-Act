@@ -18,19 +18,29 @@ class QwenBrain:
         self.timeout = 30  # Increased for CPU inference (Qwen 0.5b is slow)
         self.temperature = 0.1  # Deterministic decisions
 
-    def ask_decision(self, system_prompt: str, package_state: Dict[str, Any]) -> Dict[str, Any]:
+    def ask_decision(
+        self,
+        system_prompt: str,
+        package_state: Dict[str, Any],
+        user_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Ask Qwen to decide: what should this arm do with this package?
 
         Args:
             system_prompt: Behavior rules (knowledge, constraints, format instructions)
             package_state: Current package info {weight, destination, fragile, ...}
+            user_message: Optional pre-built user message. When provided, it is sent
+                verbatim and `package_state` is treated as already embedded in it.
+                When omitted, falls back to the legacy "Current package state: ..."
+                template so existing US #6 callers keep working.
 
         Returns:
             Decision dict: {decision, target_angle, next_arm, reasoning, confidence}
         """
 
-        user_message = f"""Current package state:
+        if user_message is None:
+            user_message = f"""Current package state:
 {json.dumps(package_state, indent=2)}
 
 Analyze and reply with ONLY valid JSON. No explanation, no markdown."""

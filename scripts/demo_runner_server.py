@@ -27,14 +27,14 @@ _status = {"running": False, "error": None}
 _thread = None
 
 
-def _run_demo(num_products, speed_factor):
+def _run_demo(num_products, speed_factor, use_brain=False):
     """Execute the pipeline in a background thread via HTTP."""
     global _status
     host = DEFAULT_HOST  # From SERVER_HOST env var
     try:
-        _status = {"running": True, "error": None}
-        print(f'Demo started: {num_products} products, speed={speed_factor}x, host={host}')
-        run_pipeline(host, speed_factor, num_products)
+        _status = {"running": True, "error": None, "use_brain": use_brain}
+        print(f'Demo started: {num_products} products, speed={speed_factor}x, host={host}, brain={use_brain}')
+        run_pipeline(host, speed_factor, num_products, use_brain=use_brain)
         _status = {"running": False, "error": None}
         print('Demo completed successfully')
     except Exception as e:
@@ -64,10 +64,15 @@ def run():
     num_products = data.get('products', 3)
     speed_name = data.get('speed', 'normal')
     speed_factor = SPEED_FACTORS.get(speed_name, 1.0)
+    # Body flag wins; otherwise honour USE_QWEN_BRAIN env var.
+    if 'use_brain' in data:
+        use_brain = bool(data.get('use_brain'))
+    else:
+        use_brain = os.environ.get('USE_QWEN_BRAIN', '').lower() in ('1', 'true', 'yes')
 
     _thread = threading.Thread(
         target=_run_demo,
-        args=(num_products, speed_factor),
+        args=(num_products, speed_factor, use_brain),
         daemon=True,
     )
     _thread.start()
@@ -76,6 +81,7 @@ def run():
         "status": "started",
         "products": num_products,
         "speed": speed_name,
+        "use_brain": use_brain,
     })
 
 

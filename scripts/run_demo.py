@@ -20,7 +20,8 @@ import sys
 import yaml
 
 from utils import (send_command, send_object_event, send_log, reset_objects,
-                    send_health, send_stop_arm, is_arm_allowed_http, DEFAULT_HOST)
+                    send_health, send_stop_arm, is_arm_allowed_http,
+                    send_brain_task, DEFAULT_HOST)
 
 # ── Configuration ──────────────────────────────────────────
 
@@ -127,7 +128,8 @@ class ArmController:
                  num_products, log_fn, handoff_place=None,
                  set_angle_fn=None, object_event_fn=None,
                  failure_policy=None,
-                 is_allowed_fn=None, on_started_fn=None, on_failed_fn=None):
+                 is_allowed_fn=None, on_started_fn=None, on_failed_fn=None,
+                 use_brain=False):
         self.arm_id = arm_id
         self.host = host
         self.speed = speed_factor
@@ -145,12 +147,38 @@ class ArmController:
         self._is_allowed = is_allowed_fn    # () -> bool: can this arm execute?
         self._on_started = on_started_fn    # () -> None: mark arm as alive
         self._on_failed = on_failed_fn      # (error) -> None: mark arm as dead, propagate
+        # When True, asks Qwen via /execute_task instead of using hardcoded angles.
+        self.use_brain = use_brain
 
-    def move_to(self, angle):
-        if self._set_angle:
-            self._set_angle(self.arm_id, angle)
+    def move_to(self, angle, task=None):
+        """Move the arm. When use_brain is on AND a task string is provided,
+        the angle argument is ignored and Qwen decides the angle via
+        /execute_task. Otherwise the hardcoded angle is used (legacy path)."""
+        if self.use_brain and task and self.host:
+            result = send_brain_task(self.host, self.arm_id, task)
+            if result is None:
+                # Brain refused / errored — fall back to the hardcoded angle so
+                # the demo doesn't deadlock the pipeline. The frontend will
+                # already have a notify_failure for the operator.
+                if self.log:
+                    self.log(self.arm_id, f"brain failed for '{task}', using angle {angle}")
+                if self._set_angle:
+                    self._set_angle(self.arm_id, angle)
+                else:
+                    send_command(self.host, self.arm_id, angle)
+            else:
+                # /execute_task already drove the arm. Log what Qwen chose.
+                if self.log:
+                    self.log(
+                        self.arm_id,
+                        f"brain '{task}' → {result.get('action')}@{result.get('target_angle')}° "
+                        f"(conf {result.get('confidence')})",
+                    )
         else:
-            send_command(self.host, self.arm_id, angle)
+            if self._set_angle:
+                self._set_angle(self.arm_id, angle)
+            else:
+                send_command(self.host, self.arm_id, angle)
         time.sleep(MOVE_DURATION * self.speed)
 
     def emit_object(self, obj_id, state, carrier_arm=None):
@@ -200,17 +228,17 @@ class ArmController:
 
         # Pick: rotate to pick position
         self.log(self.arm_id, f"Picking {obj_id}: moving to {PICK_ANGLE}°")
-        self.move_to(PICK_ANGLE)
+        self.move_to(PICK_ANGLE, task="pick object from intake")
         self.emit_object(obj_id, "carried", self.arm_id)
         time.sleep(ACTION_DURATION * self.speed)
 
         # Carry: move to handoff/output position
         if self.output_tp is not None:
             self.log(self.arm_id, f"Carrying {obj_id}: moving to handoff at {PLACE_ANGLE}°")
-            self.move_to(PLACE_ANGLE)
+            self.move_to(PLACE_ANGLE, task="move to handoff zone")
         else:
             self.log(self.arm_id, f"Carrying {obj_id}: moving to output at {PLACE_ANGLE}°")
-            self.move_to(PLACE_ANGLE)
+            self.move_to(PLACE_ANGLE, task="drop at output")
 
         # Place: signal downstream and retract
         if self.output_tp is not None:
@@ -219,12 +247,12 @@ class ArmController:
             self.emit_object(obj_id, self.handoff_place)
             self.output_tp.place(obj_id)
             self.log(self.arm_id, f"Retracting to rest at {REST_ANGLE}°")
-            self.move_to(REST_ANGLE)
+            self.move_to(REST_ANGLE, task="return to rest")
         else:
             self.log(self.arm_id, f"Delivered {obj_id} to output!")
             self.emit_object(obj_id, "output")
             self.log(self.arm_id, f"Retracting to rest at {REST_ANGLE}°")
-            self.move_to(REST_ANGLE)
+            self.move_to(REST_ANGLE, task="return to rest")
 
         time.sleep(ACTION_DURATION * self.speed)
         return obj_id
@@ -313,13 +341,20 @@ def _get_arm_failure_policy(arm_cfg, global_policy):
 def _run_pipeline_core(speed_factor, num_products,
                        set_angle_fn, object_event_fn, reset_objects_fn,
                        log_fn=None, config=None,
-                       is_allowed_fn=None, on_health_fn=None, on_failed_fn=None):
+                       is_allowed_fn=None, on_health_fn=None, on_failed_fn=None,
+                       host=None, use_brain=False):
     """Build and run an N-arm pipeline from config.
 
     Health callbacks:
         is_allowed_fn(arm_id) -> bool: check if arm can execute
         on_health_fn(arm_id, status): report health change
         on_failed_fn(arm_id, error): report failure, propagates to dependents
+
+    Brain integration:
+        use_brain=True routes every move through POST /execute_task so Qwen
+        decides the angle instead of the hardcoded PICK/PLACE/REST constants.
+        host must be set (the URL the demo posts to). Falls back to hardcoded
+        angles if Qwen errors, so the pipeline never deadlocks on LLM failure.
     """
     global _browser_log_fn
     _browser_log_fn = log_fn
@@ -335,7 +370,7 @@ def _run_pipeline_core(speed_factor, num_products,
     arm_ids = [arm["id"] for arm in arms_cfg]
 
     print(f"=== INTER.act Pipeline Demo ===")
-    print(f"Arms: {n} | Mode: {mode} | Products: {num_products} | Speed: {speed_factor}x")
+    print(f"Arms: {n} | Mode: {mode} | Products: {num_products} | Speed: {speed_factor}x | Brain: {use_brain}")
     print()
 
     # Reset all arms
@@ -381,7 +416,7 @@ def _run_pipeline_core(speed_factor, num_products,
 
             ctrl = ArmController(
                 arm_id=arm_cfg["id"],
-                host=None,
+                host=host,
                 speed_factor=speed_factor,
                 input_tp=input_tp,
                 output_tp=output_tp,
@@ -394,6 +429,7 @@ def _run_pipeline_core(speed_factor, num_products,
                 is_allowed_fn=make_is_allowed(arm_cfg["id"]),
                 on_started_fn=make_on_started(arm_cfg["id"]),
                 on_failed_fn=make_on_failed(arm_cfg["id"]),
+                use_brain=use_brain,
             )
             controllers.append(ctrl)
 
@@ -449,7 +485,7 @@ def _run_pipeline_core(speed_factor, num_products,
 
             ctrl = ArmController(
                 arm_id=arm_cfg["id"],
-                host=None,
+                host=host,
                 speed_factor=speed_factor,
                 input_tp=input_tp,
                 output_tp=output_tp,
@@ -462,6 +498,7 @@ def _run_pipeline_core(speed_factor, num_products,
                 is_allowed_fn=make_is_allowed(arm_cfg["id"]),
                 on_started_fn=make_on_started(arm_cfg["id"]),
                 on_failed_fn=make_on_failed(arm_cfg["id"]),
+                use_brain=use_brain,
             )
             controllers.append(ctrl)
 
@@ -469,7 +506,7 @@ def _run_pipeline_core(speed_factor, num_products,
         for arm_cfg in arms_cfg:
             ctrl = ArmController(
                 arm_id=arm_cfg["id"],
-                host=None,
+                host=host,
                 speed_factor=speed_factor,
                 input_tp=None,
                 output_tp=None,
@@ -481,6 +518,7 @@ def _run_pipeline_core(speed_factor, num_products,
                 is_allowed_fn=make_is_allowed(arm_cfg["id"]),
                 on_started_fn=make_on_started(arm_cfg["id"]),
                 on_failed_fn=make_on_failed(arm_cfg["id"]),
+                use_brain=use_brain,
             )
             controllers.append(ctrl)
 
@@ -517,7 +555,7 @@ def _run_pipeline_core(speed_factor, num_products,
     print("All arms returned to rest.")
 
 
-def run_pipeline(host, speed_factor, num_products):
+def run_pipeline(host, speed_factor, num_products, use_brain=False):
     """HTTP mode — used by CLI and demo-runner container."""
     def http_set_angle(arm_id, angle):
         send_command(host, arm_id, angle)
@@ -545,7 +583,8 @@ def run_pipeline(host, speed_factor, num_products):
                        log_fn=http_log,
                        is_allowed_fn=http_is_allowed,
                        on_health_fn=http_on_health,
-                       on_failed_fn=http_on_failed)
+                       on_failed_fn=http_on_failed,
+                       host=host, use_brain=use_brain)
 
 
 def run_pipeline_with_callbacks(set_angle_fn, object_event_fn,
@@ -594,6 +633,11 @@ def main():
     parser.add_argument("--speed", choices=["fast", "normal", "slow"], default="normal")
     parser.add_argument("--products", type=int, default=DEFAULT_PRODUCTS)
     parser.add_argument("--dry-run", action="store_true")
+    # USE_QWEN_BRAIN=1 in the env (or --use-brain on CLI) routes every move
+    # through Qwen instead of the hardcoded angles.
+    parser.add_argument("--use-brain", action="store_true",
+                        default=os.environ.get("USE_QWEN_BRAIN", "").lower() in ("1", "true", "yes"),
+                        help="Ask Qwen for each angle via /execute_task instead of using hardcoded PICK/PLACE/REST.")
 
     args = parser.parse_args()
     speed_factor = SPEED_FACTORS[args.speed]
@@ -603,7 +647,7 @@ def main():
         return
 
     try:
-        run_pipeline(args.host, speed_factor, args.products)
+        run_pipeline(args.host, speed_factor, args.products, use_brain=args.use_brain)
     except KeyboardInterrupt:
         config = load_pipeline_config()
         arm_ids = [a["id"] for a in config["arms"]]

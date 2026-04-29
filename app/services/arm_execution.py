@@ -394,6 +394,26 @@ class ArmExecutor:
                 "message": f"❌ Arm {self.arm_id} FAILED: Brain error"
             }
 
+        # ────────────────────────────────────────────────────────────────
+        # NOOP: Brain explicitly refused to move the arm.
+        # ────────────────────────────────────────────────────────────────
+        # The pre-filter returns this for tasks like "stop", "don't move",
+        # "halt". We honour it: no /move call, no state change, no error.
+        # The frontend gets a success-with-noop so the operator sees that
+        # the system understood the request.
+        if decision.get("action") == "noop":
+            print(f"🚫 Brain returned noop — not moving arm {self.arm_id}")
+            return {
+                "status": "success",
+                "arm_id": self.arm_id,
+                "action": "noop",
+                "target_angle": current_state.get("angle"),
+                "confidence": decision.get("confidence", 1.0),
+                "reasoning": decision.get("reasoning", "no movement requested"),
+                "timestamp": datetime.now().isoformat(),
+                "message": f"🚫 Arm {self.arm_id} stayed still (noop)",
+            }
+
         # ========================================================================
         # STEP 3: SEND DECISION TO ARM SERVER
         # PURPOSE: Actually execute the decision on the physical arm
@@ -500,31 +520,16 @@ class ArmExecutor:
             response_data = {}
 
         # ========================================================================
-        # STEP 5: UPDATE ARM STATE
-        # PURPOSE: Remember the new arm position for next task
+        # STEP 5: ARM STATE IS ALREADY UP-TO-DATE
+        # PURPOSE: No-op — kept for documentation
         # ========================================================================
-        # Arm has executed the movement and responded.
-        # Now we need to update our internal state to match the new reality.
-        #
-        # Why this matters:
-        # - Next task needs to know where arm is now
-        # - Multiple tasks in sequence: each builds on last one
-        # - Without updating, executor would think arm is at old position
-        #
-        # Example:
-        # Task 1: "Pick object" → Move to 45° → Update: arm now at 45°
-        # Task 2: "Move to handoff" → Brain sees "I'm at 45°" → Moves to 90°
-        # Without Step 5: Brain would think arm is still at 0° (wrong!)
-
-        print(f"\n📊 Updating arm state...")
-        try:
-            # Update our records: this arm is now at target_angle
-            arm_state.set_angle(self.arm_id, target_angle)
-            print(f"✅ Arm state updated: position = {target_angle}°")
-        except Exception as e:
-            # If we can't update state, log warning but continue
-            # Arm moved successfully, but we couldn't record it
-            print(f"⚠️  Warning: Could not update arm state: {e}")
+        # The arm container's /move handler proxies to backend's /set_angle,
+        # which has already written `arm_state` AND emitted `state_update`
+        # over WebSocket by the time `requests.post(arm_server/move)` returned
+        # successfully above. Writing again here would (a) duplicate the
+        # `state_update` event, making the canvas re-trigger its easing
+        # animation, and (b) waste a lock acquisition. So we skip it.
+        print(f"\n📊 Arm state already updated by proxy chain (single source of truth).")
 
         # ========================================================================
         # STEP 6: RETURN SUCCESS RESULT
