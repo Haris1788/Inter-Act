@@ -132,7 +132,7 @@ export function getSocket() {
 }
 
 export function emitObjectEvent(body) {
-    // Best-effort POST to keep backend log/object tracking in sync for arm-initiated handoffs.
+    // Best-effort POST to keep backend log/object tracking in sync for arm-initiated handovers.
     fetch(backendUrl + '/object_event', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

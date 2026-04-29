@@ -14,7 +14,7 @@ Assets are positioned sequentially by topology:
 
 1. build module order
 2. place arms and non-arm assets from left to right
-3. derive handoff boundaries from adjacent modules
+3. derive handover boundaries from adjacent modules
 4. compute canvas dimensions from final span
 
 ### Automatic geometry adjustment
@@ -40,8 +40,8 @@ The frontend reads `/config` and builds:
 - `state.connections`
 - transfer-point mapping derived from connections
 
-### Handoff zone rendering
-`core/render.js` draws zones from `state.connections`. Labels are topology-based (`fromId -> toId`) so ordering is stable and independent of transient index ordering.
+### Handover zone rendering
+`core/render.js` draws zones from `state.connections`. Labels show "Handover N" by default, or "fromId → toId" when debug mode is active.
 
 ### No frontend position recompute
 Frontend does not invent topology or ownership positions. It renders backend-provided geometry and ownership state.
@@ -58,5 +58,5 @@ Frontend does not invent topology or ownership positions. It renders backend-pro
   - `buildAssets()`: Asset normalization
   
 - `app/static/js/core/render.js`: Visual rendering
-  - `drawHandoffZone()`
-  - `computeHandoffPosition()`
+  - `drawHandoverZone()`
+  - `computeHandoverPosition()`

@@ -3,7 +3,7 @@
  * All asset state — vehicle position, conveyor slot occupancy, asset status —
  * is driven exclusively by backend SocketIO events (`object_update`,
  * `state_update`, `arm_health`, `asset_health`). This file used to host
- * `tickVehicle` / `tickConveyor` / `driveTransits` / `checkProximityHandoffs`;
+ * `tickVehicle` / `tickConveyor` / `driveTransits` / `checkProximityHandovers`;
  * those have been removed because they introduced frontend-side guesses about
  * pipeline progress, violating the "frontend is a pure reflection" rule.
  *

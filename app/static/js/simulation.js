@@ -241,8 +241,8 @@ function createBackgroundCanvas() {
         bgCtx.setLineDash([]);
     });
 
-    // Handoff zones
-    config.handoff_zones.forEach(zone => {
+    // Handover zones
+    config.handover_zones.forEach(zone => {
         bgCtx.fillStyle = hexToRgba(zone.color, 0.15);
         bgCtx.fillRect(zone.x, zone.y, zone.width, zone.height);
         bgCtx.setLineDash([6, 3]);
@@ -447,11 +447,11 @@ function getObjectPosition(obj, armTips) {
         const bottomY = iz.y + iz.height - padding - OBJ_HEIGHT / 2;
         return { x: iz.entry_x, y: bottomY - (total - 1 - idx) * spacing };
     }
-    // Dynamic handoff matching: "handoff_1" -> index 0, "handoff_2" -> index 1, etc.
-    if (obj.state.startsWith('handoff_')) {
-        const idx = parseInt(obj.state.split('_')[1]) - 1;
-        if (idx >= 0 && idx < config.handoff_zones.length) {
-            const hz = config.handoff_zones[idx];
+    // Dynamic handover matching: "handover_1" -> index 0, "handover_2" -> index 1, etc.
+    if (obj.state.startsWith('handover_')) {
+        const idx = parseInt(obj.state.split('_')[1], 10) - 1;
+        if (idx >= 0 && idx < config.handover_zones.length) {
+            const hz = config.handover_zones[idx];
             const pivotY = config.arms[0] ? config.arms[0].pivot_y : 300;
             return { x: hz.x + hz.width / 2, y: pivotY };
         }

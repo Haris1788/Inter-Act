@@ -46,7 +46,7 @@ export function setupCanvasResolution() {
     if (logPanel) logPanel.style.width = `${displayWidth}px`;
 }
 
-/* Build the static background layer (reach zones, handoff zones, intake/output, arm pivots). */
+/* Build the static background layer (reach zones, handover zones, intake/output, arm pivots). */
 export function createBackgroundCanvas() {
     const cfg = state.config;
     if (!cfg) return;
@@ -73,8 +73,9 @@ export function createBackgroundCanvas() {
         bg.setLineDash([]);
     });
 
-    // Handoff zones - draw for all connections between different assets
+    // Handover zones - draw for all connections between different assets
     // Skip only if an asset somehow connects to itself (should never happen)
+    let handoverIndex = 1;
     state.connections.forEach((conn) => {
         const fromAsset = state.assets.get(conn.from);
         const toAsset = state.assets.get(conn.to);
@@ -86,7 +87,8 @@ export function createBackgroundCanvas() {
         
         if (!fromAsset || !toAsset) return;
         
-        drawHandoffZone(bg, conn.from, conn.to);
+        drawHandoverZone(bg, conn.from, conn.to, handoverIndex);
+        handoverIndex++;
     });
 
     // Intake
@@ -152,12 +154,12 @@ export function createBackgroundCanvas() {
     }
 }
 
-function drawHandoffZone(bg, fromId, toId) {
+function drawHandoverZone(bg, fromId, toId, index) {
     const from = state.assets.get(fromId);
     const to = state.assets.get(toId);
     if (!from || !to) return;
 
-    const pos = computeHandoffPosition(from, to);
+    const pos = computeHandoverPosition(from, to);
     if (!pos) return;
 
     drawRoundedRect(
@@ -176,13 +178,17 @@ function drawHandoffZone(bg, fromId, toId) {
     bg.stroke();
     bg.setLineDash([]);
 
+    const label = state.debugOverlay
+        ? `${fromId} \u2192 ${toId}`
+        : `Handover ${index}`;
+
     bg.fillStyle = LABEL_COLOR;
     bg.font = '11px sans-serif';
     bg.textAlign = 'center';
-    bg.fillText(`${fromId} -> ${toId}`, pos.x, pos.y - HZ_HEIGHT / 2 - 4);
+    bg.fillText(label, pos.x, pos.y - HZ_HEIGHT / 2 - 4);
 }
 
-function computeHandoffPosition(from, to) {
+function computeHandoverPosition(from, to) {
     if (from.type === 'arm' && to.type === 'arm') {
         const fromAnchor = armBoundaryToward(from, to.geometry.pivot);
         const toAnchor = armBoundaryToward(to, from.geometry.pivot);
@@ -356,7 +362,7 @@ function resolveTransferPointPosition(tpOwnerId) {
     const fromAsset = state.assets.get(fromId);
     const toAsset = state.assets.get(toId);
     if (!fromAsset || !toAsset) return null;
-    return computeHandoffPosition(fromAsset, toAsset);
+    return computeHandoverPosition(fromAsset, toAsset);
 }
 
 /* Render tracked objects + objects currently occupying conveyor slots (not in trackedObjects). */
@@ -481,7 +487,7 @@ function drawDebugOverlay() {
     ctx.restore();
 }
 
-/* Small neutral dots at junction points replacing the hidden handoff boxes. */
+/* Small neutral dots at junction points replacing the hidden handover boxes. */
 function drawConnectionAnchors() {
     const points = [];
     for (const a of state.assets.values()) {

@@ -1,5 +1,5 @@
 """
-INTER.act Pipeline Demo — config-driven multi-arm handoff simulation.
+INTER.act Pipeline Demo — config-driven multi-arm handover simulation.
 
 Reads arm count and pipeline settings from pipeline.yaml.
 Supports N arms in sequential (chain) or parallel (independent) mode.
@@ -85,7 +85,7 @@ def load_pipeline_config(force_reload=False):
 class TransferPoint:
     """Passive buffer between two adjacent arms (single-slot).
 
-    Models a physical handoff zone that can hold exactly one product.
+    Models a physical handover zone that can hold exactly one product.
     Upstream places product → product sits until downstream picks it.
     The buffer is passive: placement does not require downstream to be alive.
 
@@ -168,7 +168,7 @@ class TransferPoint:
 class _DrainComplete(Exception):
     """Raised when an arm stops because upstream/downstream is dead and no products remain.
 
-    This is NOT a failure — it's a graceful stop after draining the handoff zone.
+    This is NOT a failure — it's a graceful stop after draining the handover zone.
     Caught separately from real errors to avoid triggering failure cascades.
     """
     pass
@@ -194,7 +194,7 @@ class ArmController(_ArmModuleBase):
     module_type = "arm"
 
     def __init__(self, arm_id, host, speed_factor, input_tp, output_tp,
-                 num_products, log_fn, handoff_place=None,
+                 num_products, log_fn, handover_place=None,
                  set_angle_fn=None, object_event_fn=None,
                  failure_policy=None,
                  is_allowed_fn=None, on_started_fn=None, on_failed_fn=None,
@@ -213,7 +213,7 @@ class ArmController(_ArmModuleBase):
         self.log = log_fn
         self.log_fn = log_fn
         self.processed = 0
-        self.handoff_place = handoff_place
+        self.handover_place = handover_place
         self.error = None
         self._set_angle = set_angle_fn
         self._object_event = object_event_fn
@@ -230,7 +230,7 @@ class ArmController(_ArmModuleBase):
         self._is_terminal = is_terminal_fn or (lambda: False)
 
     def is_ready_for_input(self):
-        """True when an upstream handoff may feed this arm."""
+        """True when an upstream handover may feed this arm."""
         if self.state == "draining":
             return False
         if not self.is_module_alive():
@@ -405,7 +405,7 @@ class ArmController(_ArmModuleBase):
     def _process_one_product(self, obj_id):
         """Process a single product through this arm's cycle.
 
-        Raises _DrainComplete if upstream is dead and handoff is empty,
+        Raises _DrainComplete if upstream is dead and handover is empty,
         or if downstream is dead and product can't be placed.
         """
         wait_logged = False
@@ -441,7 +441,7 @@ class ArmController(_ArmModuleBase):
                 )
                 if picked_id is not None:
                     break
-                # Upstream dead + handoff empty → drain complete (graceful stop)
+                # Upstream dead + handover empty → drain complete (graceful stop)
                 if self._upstream_alive and not self._upstream_alive():
                     if self._wait_for_upstream_recovery(timeout_s=30.0):
                         continue
@@ -503,8 +503,8 @@ class ArmController(_ArmModuleBase):
             if not tp_owner_id and hasattr(self.output_tp, "asset_id"):
                 tp_owner_id = f"TP arm-{self.arm_id}->{self.output_tp.asset_id}"
             self.emit_object(
-                obj_id, self.handoff_place or "transfer_point",
-                owner_id=tp_owner_id or self.handoff_place,
+                obj_id, self.handover_place or "transfer_point",
+                owner_id=tp_owner_id or self.handover_place,
                 owner_type="transfer_point",
             )
             self.log(self.arm_id, f"Retracting...")
@@ -876,7 +876,7 @@ def _run_pipeline_core(speed_factor, num_products,
         on_failed_fn(arm_id, error): report failure, propagates to dependents
 
     Drain behavior: when an arm dies, downstream arms continue processing
-    any products already in handoff zones, then stop gracefully.
+    any products already in handover zones, then stop gracefully.
     """
     global _browser_log_fn
     _browser_log_fn = log_fn
@@ -1012,7 +1012,7 @@ def _run_pipeline_core(speed_factor, num_products,
                 f"topology mismatch: built arm modules {built}, expected {expected}"
             )
 
-        # Link consecutive arm modules. handoff_place is the physical transfer
+        # Link consecutive arm modules. handover_place is the physical transfer
         # index between arm N and arm N+1. Do not compress out asset-bridged
         # gaps, or arm-3→arm-4 renders at arm-2→arm-3's zone.
         for k in range(len(modules) - 1):
@@ -1028,7 +1028,7 @@ def _run_pipeline_core(speed_factor, num_products,
                 tp = TransferPoint(f"TP {src_arm.id}->{dst_arm.id}")
                 src_arm.output_tp = tp
                 dst_arm.input_tp = tp
-                src_arm.handoff_place = f"handoff_{k + 1}"
+                src_arm.handover_place = f"handover_{k + 1}"
                 print(f"[LINK] {src_arm.id} -> {dst_arm.id}: transfer-point")
             else:
                 if any(aid.startswith("arm-") for aid in between):
@@ -1042,9 +1042,9 @@ def _run_pipeline_core(speed_factor, num_products,
                     first_asset, log_fn=thread_safe_log_asset)
                 dst_arm.input_tp = HttpInputBridge(
                     last_asset, log_fn=thread_safe_log_asset)
-                # No handoff_N — placement event for an asset boundary is
+                # No handover_N — placement event for an asset boundary is
                 # owned by the asset container; suppress arm-side emission.
-                src_arm.handoff_place = None
+                src_arm.handover_place = None
                 print(
                     f"[LINK] {src_arm.id} -> {dst_arm.id}: http assets={between}"
                 )
@@ -1230,7 +1230,7 @@ def dry_run(speed_factor, num_products):
         print(f"Flow: {flow}")
     else:
         for a in arms_cfg:
-            print(f"  Arm {a['id']}: independent (no handoffs)")
+            print(f"  Arm {a['id']}: independent (no handovers)")
 
     print(f"Estimated total: ~{est_total:.0f}s")
 

@@ -153,7 +153,7 @@ class TestSceneConfigShape:
         with fake_config(_arms_only_cfg()):
             scene = pipeline_config.generate_scene_config()
         for k in ("canvas_width", "canvas_height", "arms", "assets",
-                  "reach_zones", "handoff_zones", "intake_zone",
+                  "reach_zones", "handover_zones", "intake_zone",
                   "output_zone", "labels", "min_angle", "max_angle",
                   "default_angle"):
             assert k in scene, f"existing key missing: {k}"

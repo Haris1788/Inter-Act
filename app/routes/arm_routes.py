@@ -244,8 +244,8 @@ def object_event():
 
     Request body (JSON):
         object_id (str): Object identifier (e.g. "Obj1")
-        state (str): "intake", "carried", "handoff_1"..."handoff_{N-1}", or "output".
-                     Valid names are generated dynamically from pipeline_config.get_valid_handoff_states().
+        state (str): "intake", "carried", "handover_1"..."handover_{N-1}", or "output".
+                     Valid names are generated dynamically from pipeline_config.get_valid_handover_states().
         carrier_arm (int|null): Arm ID when state is "carried", null otherwise
 
     Returns:
@@ -263,7 +263,7 @@ def object_event():
 
     # Phase 2: also accept asset-mediated states like 'on_<asset_id>',
     # 'at_<asset_id>_exit', and 'carried' with carrier_asset payload.
-    valid_states = set(pipeline_config.get_valid_handoff_states())
+    valid_states = set(pipeline_config.get_valid_handover_states())
     valid_states.add("transfer_point")
     is_asset_state = (
         state.startswith("on_")
@@ -292,7 +292,7 @@ def object_event():
         elif data.get("carrier_arm") is not None:
             owner_id = f"arm-{data.get('carrier_arm')}"
             owner_type = owner_type or "arm"
-        elif isinstance(state, str) and state.startswith("handoff_"):
+        elif isinstance(state, str) and state.startswith("handover_"):
             owner_id = state
             owner_type = owner_type or "transfer_point"
         elif state in ("intake", "output"):
@@ -460,7 +460,7 @@ def set_arm_health(arm_id):
     """Set health status for an arm (called by arm containers and demo-runner).
 
     When health is 'dead', marks only this arm — downstream arms are NOT
-    cascade-stopped. They drain remaining products from handoff zones, then
+    cascade-stopped. They drain remaining products from handover zones, then
     individually report as 'stopped' via this same endpoint.
     """
     data = request.get_json(silent=True) or {}

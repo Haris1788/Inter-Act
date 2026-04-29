@@ -178,7 +178,7 @@ class TestArmBackpressure:
         def on_event(obj_id, state, carrier_arm=None, **extra):
             events.append((obj_id, state, carrier_arm, extra))
 
-        # Non-terminal arm: must emit handoff, never output.
+        # Non-terminal arm: must emit handover, never output.
         tp_in = TransferPoint("TP arm-2->arm-3")
         tp_out = TransferPoint("TP arm-3->arm-4")
         arm3 = ArmController(
@@ -189,7 +189,7 @@ class TestArmBackpressure:
             output_tp=tp_out,
             num_products=1,
             log_fn=lambda *_args: None,
-            handoff_place="handoff_3",
+            handover_place="handover_3",
             set_angle_fn=lambda *_args: None,
             object_event_fn=on_event,
             downstream_alive_fn=lambda: True,
@@ -198,7 +198,7 @@ class TestArmBackpressure:
         arm3._process_one_product("ObjA")
 
         arm3_states = [state for obj, state, *_ in events if obj == "ObjA"]
-        assert "handoff_3" in arm3_states
+        assert "handover_3" in arm3_states
         assert "output" not in arm3_states
 
         # Terminal arm: output_tp=None means true sink, emits output.

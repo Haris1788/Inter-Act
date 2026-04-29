@@ -3,8 +3,8 @@
 This module is the SOLE AUTHORITY for:
     - arm count, IDs, and labels
     - dependency graph / topology
-    - handoff zone positions and names
-    - valid object states (intake, carried, handoff_1..N-1, output)
+    - handover zone positions and names
+    - valid object states (intake, carried, handover_1..N-1, output)
     - scene layout (canvas size, arm geometry, zone rects)
     - failure policies and health check settings
 
@@ -12,13 +12,13 @@ All other modules MUST consume from this module — never recompute
 or hardcode these values independently:
     - app/models/scene_config.py         → delegates to generate_scene_config()
     - app/models/arm_state.py            → initializes from generate_arm_state()
-    - app/routes/arm_routes.py           → validates against get_valid_handoff_states()
+    - app/routes/arm_routes.py           → validates against get_valid_handover_states()
     - scripts/run_demo.py                → builds controllers from get_arms()
     - scripts/generate_compose.py        → reads arm list from pipeline.yaml
     - app/static/js/simulation.js        → fetches /config (populated from here)
 
 Changing pipeline.yaml + calling reload() is the ONLY way to change
-the above values at runtime. Adding a hardcoded arm count or handoff
+the above values at runtime. Adding a hardcoded arm count or handover
 name elsewhere is a violation of this contract.
 """
 
@@ -109,7 +109,7 @@ def generate_scene_config():
     The layout engine:
     1. Builds a flow order from the asset graph
     2. Assigns each asset a visual block with computed positions
-    3. Derives handoff zones from connection gaps
+    3. Derives handover zones from connection gaps
     4. Computes canvas dimensions from total layout width
     
     This single algorithm handles all cases: arms-only, arms+vehicle,
@@ -127,7 +127,7 @@ def generate_scene_config():
         "arms": layout["arms"],
         "assets": layout["assets"],
         "reach_zones": layout["reach_zones"],
-        "handoff_zones": layout["handoff_zones"],
+        "handover_zones": layout["handover_zones"],
         "intake_zone": layout["intake_zone"],
         "output_zone": layout["output_zone"],
         "labels": layout["labels"],
@@ -140,7 +140,7 @@ def generate_scene_config():
 def _compute_graph_layout(arms_cfg, extra_assets):
     """Graph-driven layout engine.
     
-    Computes positions, handoff zones, and canvas size from the asset graph
+    Computes positions, handover zones, and canvas size from the asset graph
     without conditional logic based on asset counts.
     """
     # Layout constants
@@ -206,7 +206,7 @@ def _compute_graph_layout(arms_cfg, extra_assets):
             # Arm-to-arm: circles should touch exactly (no gap)
             if prev_asset['type'] == 'arm' and asset['type'] == 'arm':
                 gap = 0
-            # Non-arm assets need spacing for handoff zones
+            # Non-arm assets need spacing for handover zones
             else:
                 gap = MIN_GAP
         else:
@@ -319,14 +319,14 @@ def _compute_graph_layout(arms_cfg, extra_assets):
         for arm in arms
     ]
     
-    # Derive handoff zones from connections (frontend will draw these dynamically)
-    # Legacy backend expects arm-to-arm handoff zones only
-    handoff_zones = []
+    # Derive handover zones from connections (frontend will draw these dynamically)
+    # Legacy backend expects arm-to-arm handover zones only
+    handover_zones = []
     for i in range(len(arms) - 1):
         mid_x = (arms[i]['pivot_x'] + arms[i + 1]['pivot_x']) / 2
-        handoff_zones.append({
-            'id': f"handoff_{i + 1}",
-            'label': f"Handoff {i + 1}",
+        handover_zones.append({
+            'id': f"handover_{i + 1}",
+            'label': f"Handover {i + 1}",
             'x': int(mid_x - 90 // 2),
             'y': CENTER_Y - 190 // 2,
             'width': 90,
@@ -390,7 +390,7 @@ def _compute_graph_layout(arms_cfg, extra_assets):
         'arms': normalized_arms,
         'assets': assets,
         'reach_zones': reach_zones,
-        'handoff_zones': handoff_zones,
+        'handover_zones': handover_zones,
         'intake_zone': intake_zone,
         'output_zone': output_zone,
         'labels': labels,
@@ -406,7 +406,7 @@ _orig_generate_scene_config = generate_scene_config
 def generate_scene_config():  # noqa: F811 — intentional override
     """Augment the scene config with `asset_graph` for backend consumers.
 
-    Existing keys (`arms`, `assets`, `reach_zones`, `handoff_zones`,
+    Existing keys (`arms`, `assets`, `reach_zones`, `handover_zones`,
     `intake_zone`, `output_zone`, `labels`, `canvas_*`, `min_angle`,
     `max_angle`, `default_angle`) are preserved verbatim. New top-level
     `asset_graph` key carries the unified registry from `get_all_assets()`.
@@ -414,7 +414,7 @@ def generate_scene_config():  # noqa: F811 — intentional override
     base = _orig_generate_scene_config()
     base['asset_graph'] = get_all_assets()
     # Canonical linear topology used by runtime ownership/transfer semantics.
-    # Frontend should build handoff zones from adjacent pairs in this list,
+    # Frontend should build handover zones from adjacent pairs in this list,
     # not from dependency edges embedded in asset_graph.
     base['module_flow_order'] = get_module_flow_order()
     valid, errors = validate_asset_graph()
@@ -633,23 +633,23 @@ def generate_arm_state():
     }
 
 
-def get_valid_handoff_states():
+def get_valid_handover_states():
     """Return tuple of valid object states based on arm count.
 
-    For 3 arms: ('intake', 'carried', 'handoff_1', 'handoff_2', 'output')
-    For 4 arms: ('intake', 'carried', 'handoff_1', 'handoff_2', 'handoff_3', 'output')
+    For 3 arms: ('intake', 'carried', 'handover_1', 'handover_2', 'output')
+    For 4 arms: ('intake', 'carried', 'handover_1', 'handover_2', 'handover_3', 'output')
     """
     n = get_arm_count()
-    handoffs = tuple(f"handoff_{i}" for i in range(1, n))
-    return ('intake', 'carried') + handoffs + ('output',)
+    handover_states = tuple(f"handover_{i}" for i in range(1, n))
+    return ('intake', 'carried') + handover_states + ('output',)
 
 
-def get_handoff_name(index):
-    """Return handoff state name for the transfer point at index (0-based).
+def get_handover_name(index):
+    """Return handover state name for the transfer point at index (0-based).
 
-    Index 0 = between arm 1 and arm 2 = 'handoff_1'
+    Index 0 = between arm 1 and arm 2 = 'handover_1'
     """
-    return f"handoff_{index + 1}"
+    return f"handover_{index + 1}"
 
 
 def get_dependencies(arm_id):

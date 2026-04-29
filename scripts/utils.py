@@ -104,7 +104,7 @@ def send_object_event(host, object_id, state, carrier_arm=None,
     Args:
         host: Server URL.
         object_id: Object identifier (e.g. "Obj1").
-        state: "intake", "carried", "handoff_1"..."handoff_{N-1}", "output",
+        state: "intake", "carried", "handover_1"..."handover_{N-1}", "output",
                or asset-mediated states like "on_<asset_id>" / "at_<asset_id>_exit".
         carrier_arm: Arm ID when state is "carried" by an arm.
         carrier_asset: Asset id when carrier is a vehicle/conveyor (Phase 2).

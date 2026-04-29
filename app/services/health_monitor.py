@@ -175,7 +175,7 @@ def _monitor_loop():
                     _emit_log("pipeline",
                               f"Arm {arm_id} FAILED: container stopped responding")
                     # Downstream arms are NOT stopped immediately — they drain
-                    # remaining products from handoff zones, then stop naturally
+                    # remaining products from handover zones, then stop naturally
 
                 elif missed[arm_id] >= 1:
                     error_msg = f"missed {missed[arm_id]} health check(s)"

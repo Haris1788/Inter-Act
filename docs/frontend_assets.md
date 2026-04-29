@@ -13,7 +13,7 @@ Backend remains authoritative for:
 
 Frontend is responsible for:
 
-- drawing scene and handoff zones
+- drawing scene and handover zones
 - mapping ownership to positions
 - client-side animation/transitions
 - UI controls for fail/recover/demo actions
@@ -50,9 +50,9 @@ For reconnect and out-of-order events:
 - stale object updates are ignored using `event_seq`/`event_time`
 - when target position is temporarily missing, renderer holds last position to avoid flicker/disappear
 
-## Connection and handoff zone ordering
+## Connection and handover zone ordering
 
-Connection building in `core/state.js` prefers `module_flow_order` from backend, then falls back to graph links. This keeps handoff zones stable and ordered by topology.
+Connection building in `core/state.js` prefers `module_flow_order` from backend, then falls back to graph links. This keeps handover zones stable and ordered by topology.
 
 ## UI controls
 

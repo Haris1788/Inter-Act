@@ -93,7 +93,7 @@ class TestGetConfig:
         assert "canvas_height" in data
         assert "arms" in data
         assert "reach_zones" in data
-        assert "handoff_zones" in data
+        assert "handover_zones" in data
         assert "intake_zone" in data
         assert "output_zone" in data
         assert "labels" in data
@@ -105,11 +105,11 @@ class TestGetConfig:
         data = resp.get_json()
         assert len(data["arms"]) == get_arm_count()
 
-    def test_get_config_handoff_zones_match_arms(self, client):
-        """Handoff zones should be N-1 for N arms."""
+    def test_get_config_handover_zones_match_arms(self, client):
+        """Handover zones should be N-1 for N arms."""
         resp = client.get('/config')
         data = resp.get_json()
-        assert len(data["handoff_zones"]) == len(data["arms"]) - 1
+        assert len(data["handover_zones"]) == len(data["arms"]) - 1
 
 
 class TestReloadRestartSeparation:

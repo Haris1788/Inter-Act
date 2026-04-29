@@ -103,9 +103,9 @@ def mark_arm_stopped(arm_id, reason="manually stopped"):
 def mark_arm_failed(arm_id, error_msg):
     """Mark arm as dead. Downstream arms are NOT cascade-stopped.
 
-    Downstream arms drain remaining products from handoff zones naturally.
+    Downstream arms drain remaining products from handover zones naturally.
     The demo runner detects upstream death and stops each arm individually
-    once its input handoff zone is empty.
+    once its input handover zone is empty.
     """
     global _pipeline_stopped
     critical = is_critical(arm_id)

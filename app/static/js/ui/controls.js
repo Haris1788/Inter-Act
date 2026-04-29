@@ -1,6 +1,7 @@
 /* Minimal UI controls: demo button + per-asset kill/recover + debug overlay. */
 
 import { state, setDebugOverlay } from '../core/state.js';
+import { createBackgroundCanvas } from '../core/render.js';
 import { logLocal } from '../core/log.js';
 import { addNotification } from '../core/notif.js';
 
@@ -129,6 +130,8 @@ function renderDebugToggle() {
         setDebugOverlay(next);
         btn.textContent = next ? 'Debug: on' : 'Debug: off';
         btn.classList.toggle('is-active', next);
+        // Redraw background so handover zone labels update
+        createBackgroundCanvas();
     });
     panel.appendChild(btn);
 }
