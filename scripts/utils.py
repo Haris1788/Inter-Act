@@ -8,6 +8,7 @@ and arm_3_script.py to avoid code duplication.
 
 import os
 import sys
+import time
 import requests
 
 
@@ -129,21 +130,41 @@ def send_log(host, source, message):
         pass  # Non-critical
 
 
-def send_object_event(host, object_id, state, carrier_arm=None):
+def send_object_event(host, object_id, state, carrier_arm=None,
+                      carrier_asset=None, slot=None,
+                      start_time=None, duration_ms=None, event_time=None,
+                      owner_id=None, owner_type=None):
     """Notify the server about an object's position in the pipeline.
 
     Args:
         host: Server URL.
         object_id: Object identifier (e.g. "Obj1").
-        state: One of "intake", "carried", "handoff_a", "handoff_b", "output".
-        carrier_arm: Arm ID when state is "carried", None otherwise.
+        state: "intake", "carried", "handover_1"..."handover_{N-1}", "output",
+               or asset-mediated states like "on_<asset_id>" / "at_<asset_id>_exit".
+        carrier_arm: Arm ID when state is "carried" by an arm.
+        carrier_asset: Asset id when carrier is a vehicle/conveyor (Phase 2).
+        slot: Optional slot index for conveyor states.
     """
+    payload = {
+        'object_id': object_id,
+        'state': state,
+        'carrier_arm': carrier_arm,
+    }
+    if carrier_asset is not None:
+        payload['carrier_asset'] = carrier_asset
+    if slot is not None:
+        payload['slot'] = slot
+    if start_time is not None:
+        payload['start_time'] = start_time
+    if duration_ms is not None:
+        payload['duration_ms'] = duration_ms
+    payload['event_time'] = int(event_time if event_time is not None else time.time() * 1000)
+    if owner_id is not None:
+        payload['owner_id'] = owner_id
+    if owner_type is not None:
+        payload['owner_type'] = owner_type
     try:
-        requests.post(f'{host}/object_event', json={
-            'object_id': object_id,
-            'state': state,
-            'carrier_arm': carrier_arm,
-        }, timeout=5)
+        requests.post(f'{host}/object_event', json=payload, timeout=5)
     except Exception:
         pass  # Non-critical — don't break the pipeline if event fails
 

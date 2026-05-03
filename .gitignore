@@ -13,6 +13,7 @@ build/
 *.swo
 .claude/
 planning/
+.cursor/rules/humanized-docs.mdc
 
 # Personal weekly tracking documents — kept locally, not pushed.
 documentation/PROJECT_PROGRESS.md

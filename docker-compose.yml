@@ -2,39 +2,46 @@ services:
   ollama:
     image: ollama/ollama:latest
     ports:
-      - ${OLLAMA_HOST_PORT:-11434}:11434
+    - ${OLLAMA_HOST_PORT:-11434}:11434
     volumes:
-      - ollama_data:/root/.ollama
+    - ollama_data:/root/.ollama
     environment:
-      - OLLAMA_KEEP_ALIVE=24h
+    - OLLAMA_KEEP_ALIVE=24h
     healthcheck:
       test:
-        - CMD
-        - ollama
-        - list
+      - CMD
+      - ollama
+      - list
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 20s
   backend:
     build: .
+    container_name: interact-backend
     ports:
-      - ${BACKEND_HOST_PORT:-5000}:5000
+    - ${BACKEND_HOST_PORT:-5000}:5000
     environment:
-      - SERVER_HOST=http://backend:5000
-      - DEMO_RUNNER_HOST=http://demo-runner:6000
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:0.5b
-      - FLASK_ENV=production
-      - FLASK_DEBUG=0
-      - PYTHONUNBUFFERED=1
+    - SERVER_HOST=http://backend:5000
+    - DEMO_RUNNER_HOST=http://demo-runner:6000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - OLLAMA_MODEL=qwen2.5:0.5b
+    - PIPELINE_CONFIG=/config/pipeline.yaml
+    - FLASK_ENV=production
+    - FLASK_DEBUG=0
+    - PYTHONUNBUFFERED=1
+    - CONTAINER_CONTROL=on
+    - COMPOSE_CONTAINER_PREFIX=interact
+    volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - ./pipeline.yaml:/config/pipeline.yaml:ro
     healthcheck:
       test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request; urllib.request.urlopen('http://localhost:5000/health',
-          timeout=3).read()
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:5000/health',
+        timeout=3).read()
       interval: 5s
       timeout: 3s
       retries: 20
@@ -47,7 +54,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.frontend
     ports:
-      - 8080:80
+    - 8080:80
     depends_on:
       backend:
         condition: service_healthy
@@ -55,18 +62,22 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.demo-runner
+    container_name: interact-demo-runner
     ports:
-      - ${DEMO_RUNNER_HOST_PORT:-6000}:6000
+    - ${DEMO_RUNNER_HOST_PORT:-6000}:6000
     environment:
-      - SERVER_HOST=http://backend:5000
-      - PYTHONUNBUFFERED=1
+    - SERVER_HOST=http://backend:5000
+    - PIPELINE_CONFIG=/config/pipeline.yaml
+    - PYTHONUNBUFFERED=1
+    volumes:
+    - ./pipeline.yaml:/config/pipeline.yaml:ro
     healthcheck:
       test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request; urllib.request.urlopen('http://localhost:6000/health',
-          timeout=3).read()
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:6000/health',
+        timeout=3).read()
       interval: 5s
       timeout: 3s
       retries: 10
@@ -78,11 +89,15 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.arm
+    container_name: interact-arm-1
     ports:
-      - 8001:8000
+    - 8001:8000
     environment:
-      - ARM_ID=1
-      - SERVER_HOST=http://backend:5000
+    - ARM_ID=1
+    - SERVER_HOST=http://backend:5000
+    - PIPELINE_CONFIG=/config/pipeline.yaml
+    volumes:
+    - ./pipeline.yaml:/config/pipeline.yaml:ro
     depends_on:
       backend:
         condition: service_healthy
@@ -90,11 +105,15 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.arm
+    container_name: interact-arm-2
     ports:
-      - 8002:8000
+    - 8002:8000
     environment:
-      - ARM_ID=2
-      - SERVER_HOST=http://backend:5000
+    - ARM_ID=2
+    - SERVER_HOST=http://backend:5000
+    - PIPELINE_CONFIG=/config/pipeline.yaml
+    volumes:
+    - ./pipeline.yaml:/config/pipeline.yaml:ro
     depends_on:
       backend:
         condition: service_healthy
@@ -102,14 +121,78 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.arm
+    container_name: interact-arm-3
     ports:
-      - 8003:8000
+    - 8003:8000
     environment:
-      - ARM_ID=3
-      - SERVER_HOST=http://backend:5000
+    - ARM_ID=3
+    - SERVER_HOST=http://backend:5000
+    - PIPELINE_CONFIG=/config/pipeline.yaml
+    volumes:
+    - ./pipeline.yaml:/config/pipeline.yaml:ro
     depends_on:
       backend:
         condition: service_healthy
-
+  arm-4:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.arm
+    container_name: interact-arm-4
+    ports:
+    - 8004:8000
+    environment:
+    - ARM_ID=4
+    - SERVER_HOST=http://backend:5000
+    - PIPELINE_CONFIG=/config/pipeline.yaml
+    volumes:
+    - ./pipeline.yaml:/config/pipeline.yaml:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+  veh-a:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.asset
+    container_name: interact-veh-a
+    ports:
+    - 8010:8000
+    environment:
+    - ASSET_TYPE=vehicle
+    - ASSET_ID=veh-a
+    - ASSET_LABEL=Shuttle A
+    - SERVER_HOST=http://backend:5000
+    - PIPELINE_CONFIG=/config/pipeline.yaml
+    - SPEED_FACTOR=1.0
+    - UPSTREAM_URL=http://arm-2:8000
+    - DOWNSTREAM_URL=http://conv-1:8000
+    - TRAVEL_TIME=1.214
+    volumes:
+    - ./pipeline.yaml:/config/pipeline.yaml:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+  conv-1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.asset
+    container_name: interact-conv-1
+    ports:
+    - 8020:8000
+    environment:
+    - ASSET_TYPE=conveyor
+    - ASSET_ID=conv-1
+    - ASSET_LABEL=Belt 1
+    - SERVER_HOST=http://backend:5000
+    - PIPELINE_CONFIG=/config/pipeline.yaml
+    - SPEED_FACTOR=1.0
+    - UPSTREAM_URL=http://veh-a:8000
+    - DOWNSTREAM_URL=http://arm-3:8000
+    - SLOT_COUNT=4
+    - SHIFT_INTERVAL=1.2
+    volumes:
+    - ./pipeline.yaml:/config/pipeline.yaml:ro
+    depends_on:
+      backend:
+        condition: service_healthy
 volumes:
-  ollama_data:
+  ollama_data: {}

@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+WORKDIR /asset
+
+# Asset service needs flask, requests, pyyaml, plus flask-socketio because
+# importing app/ pulls socketio at module load time (harmless in this process).
+RUN pip install --no-cache-dir flask flask-socketio simple-websocket requests pyyaml
+
+# Copy scripts (asset_service.py + utils.py) and the backend `app/` package
+# so that `from app.services.asset_controllers import ...` and the Module
+# base class resolve inside this container.
+COPY scripts/ ./scripts/
+COPY app/ ./app/
+COPY pipeline.yaml ./pipeline.yaml
+
+ENV PYTHONPATH=/asset:/asset/scripts \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+
+CMD ["python", "scripts/asset_service.py"]
