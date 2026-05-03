@@ -582,6 +582,61 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         # }
 
 
+    def _dead_intermediates(self):
+        """Return non-arm assets surrounding this arm that are not alive.
+
+        Two slices matter:
+
+        - Upstream chain: assets between the previous arm and this arm. If
+          any is dead, the object can't have legitimately reached this arm's
+          input zone (e.g. arm-3 must not pick from handover_2 if veh-a or
+          conv-1 are failed — the object got there only because they used to
+          be alive, and re-relaying would break the demo's physical story).
+
+        - Immediate downstream actor: if this arm is about to drop onto an
+          asset (e.g. arm-2 → veh-a), and that asset is dead, the object
+          would pile up there with no way forward.
+
+        Both lists are merged so the safety-net override has a single
+        "intermediate not alive" condition to react to.
+        """
+        try:
+            from app.models import pipeline_config
+            from app.models import asset_state
+        except Exception:
+            return []
+        try:
+            flow = pipeline_config.get_module_flow_order()
+        except Exception:
+            return []
+        my_id = f"arm-{self.arm_id}"
+        if my_id not in flow:
+            return []
+        i_self = flow.index(my_id)
+        dead = []
+
+        # Upstream intermediates (between previous arm and me).
+        if self.arm_id > 1:
+            prev_id = f"arm-{self.arm_id - 1}"
+            if prev_id in flow:
+                i_prev = flow.index(prev_id)
+                if i_self > i_prev + 1:
+                    upstream_between = flow[i_prev + 1 : i_self]
+                    dead.extend(
+                        aid for aid in upstream_between
+                        if not aid.startswith("arm-") and not asset_state.is_alive(aid)
+                    )
+
+        # Immediate downstream actor — if it's an asset and dead, hold.
+        if i_self + 1 < len(flow):
+            nxt = flow[i_self + 1]
+            if not nxt.startswith("arm-") and not asset_state.is_alive(nxt):
+                dead.append(nxt)
+
+        # Dedup while preserving order.
+        seen = set()
+        return [a for a in dead if not (a in seen or seen.add(a))]
+
     # ════════════════════════════════════════════════════════════════════
     # SCRIPT DISPATCHER — Qwen picks one named behaviour from a per-arm menu
     # ════════════════════════════════════════════════════════════════════
@@ -608,17 +663,73 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         # Build a menu the model can rank against.
         menu = "\n".join(f'- "{s["name"]}": {s["desc"]}' for s in scripts)
         valid_names = {s["name"] for s in scripts}
+        valid_list = list(valid_names)
+        relay_options = [n for n in valid_list if n.startswith("relay_")]
+        hold_options = [n for n in valid_list if n.startswith("hold_")]
+        rest_option = "return_to_rest" if "return_to_rest" in valid_names else None
 
-        # Per-arm geometry rules — gives the model the "intake"/"handoff_1"/"handoff_2"/"output"
-        # vocabulary the script names use, anchored to which arm is asking.
-        per_arm_facts = {
-            1: "You are arm 1 (left side). You can reach intake (180°) and handoff_1 (0°). "
-               "Your 'source' is intake; your 'destination' is handoff_1.",
-            2: "You are arm 2 (middle). You can reach handoff_1 (180°) and handoff_2 (0°). "
-               "Your 'source' is handoff_1; your 'destination' is handoff_2.",
-            3: "You are arm 3 (right side). You can reach handoff_2 (180°) and output (0°). "
-               "Your 'source' is handoff_2; your 'destination' is output.",
-        }.get(self.arm_id, "")
+        # Per-arm geometry derived from pipeline.yaml — works for any arm count.
+        # Each arm always picks at 180° (its upstream reach) and drops at 0°
+        # (its downstream reach). The zone names ("intake", "handover_<i>",
+        # "on_<asset>", "output") come from pipeline_config so the same code
+        # handles any pipeline shape without changes.
+        from app.services.arm_scripts import _actor_zones  # local import avoids cycle
+        zones = _actor_zones(self.arm_id)
+        my_source = zones["upstream"]
+        my_dest = zones["downstream"]
+        per_arm_facts = (
+            f"You are arm {self.arm_id}. You can reach {my_source} (180°) "
+            f"and {my_dest} (0°). Your 'source' is {my_source}; your "
+            f"'destination' is {my_dest}."
+        )
+
+        source_count_pre = (object_summary or {}).get(my_source, 0) if my_source else 0
+        dead_intermediates_pre = self._dead_intermediates()
+
+        # ── Fast-path: skip Qwen when the answer is forced ─────────────
+        # In a continuous-loop demo, every actor polls a few times per
+        # second. Calling Qwen for an obvious "nothing to do / can't do
+        # it" answer wastes 5–30 s of CPU inference per cycle. When the
+        # safety-net rule would override anyway, return the override
+        # answer directly without consulting the LLM. The script_chosen
+        # event still fires, so the operator sees the (synthetic)
+        # decision in the log panel.
+        if dead_intermediates_pre:
+            forced = (hold_options[0] if hold_options
+                      else (rest_option or (valid_list[0] if valid_list else "")))
+            return {
+                "status": "success",
+                "script": forced,
+                "qwen_suggested": "(skipped — LLM not consulted)",
+                "qwen_raw": "",
+                "reasoning": (
+                    f"intermediate asset(s) not alive: "
+                    f"{', '.join(dead_intermediates_pre)}"
+                ),
+                "override_reason": (
+                    f"intermediate asset(s) not alive: "
+                    f"{', '.join(dead_intermediates_pre)}; hold until recovered"
+                ),
+                "typo_corrected": False,
+                "fallback": False,
+                "confidence": 1.0,
+                "arm_id": self.arm_id,
+            }
+        if my_source and source_count_pre == 0:
+            forced = (hold_options[0] if hold_options
+                      else (rest_option or (valid_list[0] if valid_list else "")))
+            return {
+                "status": "success",
+                "script": forced,
+                "qwen_suggested": "(skipped — LLM not consulted)",
+                "qwen_raw": "",
+                "reasoning": f"{my_source} is empty; nothing to relay",
+                "override_reason": None,
+                "typo_corrected": False,
+                "fallback": False,
+                "confidence": 1.0,
+                "arm_id": self.arm_id,
+            }
 
         system_prompt = (
             f"You are the dispatcher for Arm {self.arm_id}.\n"
@@ -634,8 +745,7 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
 
         # Tell the model ONLY about its own source location (in plain English,
         # not a structured count) — a 0.5 B model handles "yes/no" prose much
-        # better than "intake=1, handoff_1=0, …".
-        my_source = {1: "intake", 2: "handoff_1", 3: "handoff_2"}.get(self.arm_id, "")
+        # better than "intake=1, handover_1=0, …".
         source_count = (object_summary or {}).get(my_source, 0) if my_source else 0
         if source_count >= 1:
             availability = (
@@ -663,7 +773,6 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
                     "error": raw.get("error", "LLM unavailable"),
                     "arm_id": self.arm_id}
 
-        valid_list = list(valid_names)
         qwen_raw = str(raw.get("script", "")).strip()
         qwen_reasoning = str(raw.get("reasoning", ""))
 
@@ -687,29 +796,22 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         # The 0.5 B model sometimes contradicts its own reasoning (saw an
         # object available, then picked `return_to_rest`). The rule
         # "relay iff source has an object" is unambiguous, so we enforce it.
-        relay_options = [n for n in valid_list if n.startswith("relay_")]
-        hold_options  = [n for n in valid_list if n.startswith("hold_")]
-        rest_option   = "return_to_rest" if "return_to_rest" in valid_names else None
+        # `relay_options` / `hold_options` / `rest_option` were computed at
+        # the top of this method (before the fast-paths) so they are
+        # already available here.
 
         final_choice = qwen_suggested
         override_reason = None
 
-        if my_source and source_count >= 1:
-            # There IS work to do. Final choice MUST be a relay_*.
-            if not final_choice.startswith("relay_") and relay_options:
-                override_reason = (
-                    f"object present at {my_source}; relay_* is required"
-                )
-                final_choice = relay_options[0]
-        elif my_source and source_count == 0:
-            # NO work to do. Final choice MUST NOT be a relay_*.
-            if final_choice.startswith("relay_"):
-                if hold_options:
-                    override_reason = f"{my_source} is empty; hold instead of relay"
-                    final_choice = hold_options[0]
-                elif rest_option:
-                    override_reason = f"{my_source} is empty; return to rest"
-                    final_choice = rest_option
+        # We only get here when there IS work to do (the fast-paths above
+        # return early when source is empty or intermediates are dead).
+        # Enforce: the final choice MUST be a relay_*. If Qwen tried to
+        # hold or rest while the source has an object, override.
+        if not final_choice.startswith("relay_") and relay_options:
+            override_reason = (
+                f"object present at {my_source}; relay_* is required"
+            )
+            final_choice = relay_options[0]
 
         return {
             "status": "success",

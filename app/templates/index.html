@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>INTER.act Simulation</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=21" />
+    <link rel="stylesheet" href="/static/css/style.css?v=24" />
   </head>
   <body>
     <h1>INTER.act</h1>
@@ -13,6 +13,15 @@
       <div id="status-dot"></div>
       <span id="status-text">Disconnected</span>
       <button id="demo-btn">Run Demo</button>
+    </div>
+
+    <div id="ai-bar">
+      <span class="ai-bar-label">AI:</span>
+      <button id="ai-reset-btn" class="control-btn control-btn-ghost">Reset</button>
+      <button id="ai-spawn-btn" class="control-btn control-btn-ghost">Spawn obj</button>
+      <button id="ai-run-all-btn" class="control-btn">Run All (Qwen)</button>
+      <span id="ai-actor-buttons"></span>
+      <span id="ai-status" class="ai-status"></span>
     </div>
 
     <div id="canvas-wrapper">
@@ -25,6 +34,6 @@
       window.BACKEND_URL = "";
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
-    <script type="module" src="/static/js/main.js?v=23"></script>
+    <script type="module" src="/static/js/main.js?v=28"></script>
   </body>
 </html>

@@ -126,6 +126,32 @@ h1 {
     outline-offset: 2px;
 }
 
+/* AI bar — Qwen-driven script dispatch */
+#ai-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+    align-items: center;
+    width: min(100%, 980px);
+    padding: 6px 10px 6px;
+    margin-top: 4px;
+    border-top: 1px dashed rgba(149, 165, 166, 0.35);
+}
+#ai-bar .ai-bar-label {
+    font-weight: 600;
+    color: #34495e;
+    margin-right: 4px;
+}
+#ai-bar .ai-status {
+    margin-left: 8px;
+    font-size: 0.85rem;
+    color: #7f8c8d;
+    min-width: 200px;
+}
+#ai-bar .ai-status-ok { color: #27ae60; }
+#ai-bar .ai-status-err { color: #c0392b; }
+
 /* Asset controls */
 #asset-controls {
     display: flex;

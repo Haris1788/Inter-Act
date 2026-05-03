@@ -40,6 +40,31 @@ export function initSocket({ backendUrl: url, statusDot: dotEl, statusText: text
         notifyAssetHealthChange(data, prev);
     });
     socket.on('log_message', appendLogEntry);
+
+    // AI dispatcher: render Qwen's (or asset-brain's) choice + any
+    // safety-net override as log lines. Backend already emits per-step
+    // log_message events for the script body itself, so this handler
+    // only writes the header line.
+    socket.on('script_chosen', (data) => {
+        const ts = data.timestamp || new Date().toLocaleTimeString();
+        const actor = (data.actor_id != null) ? data.actor_id : data.arm_id;
+        const src = (typeof actor === 'number') ? `arm_${actor}` : String(actor);
+        if (data.override_reason) {
+            appendLogEntry({
+                timestamp: ts, source: src, level: 'info',
+                message: `🤖 suggested: ${data.qwen_suggested} — ${data.reasoning || ''}`,
+            });
+            appendLogEntry({
+                timestamp: ts, source: src, level: 'warning',
+                message: `⚖️ Override → ${data.script} (${data.override_reason})`,
+            });
+        } else {
+            appendLogEntry({
+                timestamp: ts, source: src, level: 'info',
+                message: `🎬 chose: ${data.script} — ${data.reasoning || ''}`,
+            });
+        }
+    });
 }
 
 function onConnect() {

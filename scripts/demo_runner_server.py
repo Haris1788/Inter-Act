@@ -28,13 +28,17 @@ _thread = None
 
 
 def _run_demo(num_products, speed_factor, use_brain=False):
-    """Execute the pipeline in a background thread via HTTP."""
+    """Execute the pipeline in a background thread via HTTP.
+
+    `use_brain` is parked here for Phase 4 — once the brain is generalised
+    across actor types it gets re-wired in. Phase 1 just runs the pipeline.
+    """
     global _status
     host = DEFAULT_HOST  # From SERVER_HOST env var
     try:
         _status = {"running": True, "error": None, "use_brain": use_brain}
         print(f'Demo started: {num_products} products, speed={speed_factor}x, host={host}, brain={use_brain}')
-        run_pipeline(host, speed_factor, num_products, use_brain=use_brain)
+        run_pipeline(host, speed_factor, num_products)
         _status = {"running": False, "error": None}
         print('Demo completed successfully')
     except Exception as e:
