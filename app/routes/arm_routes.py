@@ -20,6 +20,15 @@ from app.models import pipeline_config
 from app.services import container_manager
 from app import socketio
 
+# ═══════════════════════════════════════════════════════════════════════════
+# IMPORTS FOR STEP 4: Execute task with Qwen brain
+# ═══════════════════════════════════════════════════════════════════════════
+# Import executor and notification services (created in STEP 2 and 3)
+from app.services.arm_execution import get_arm_executor
+from app.services.notifications import get_notification_service
+from app.services.arm_brain import get_arm_brain
+from app.services.arm_scripts import list_scripts, run_script
+
 arm_bp = Blueprint('arms', __name__)
 
 # In-memory object state for the pipeline visualization (lock-protected)
@@ -162,6 +171,28 @@ def _valid_transition(topo, prev_owner_type, prev_owner_id, next_owner_type, nex
     return False, "invalid owner transition"
 
 
+def get_object_states():
+    """Thread-safe snapshot of all currently tracked objects.
+
+    Used by arm_scripts.py to look up "is there a real object at intake?"
+    before a relay script tries to pick something that isn't there.
+    """
+    with _object_lock:
+        return [dict(o) for o in _object_states.values()]
+
+
+def find_object_at(state):
+    """Return the first object whose pipeline state matches, or None.
+
+    Args:
+        state: one of "intake" / "handoff_1" / "handoff_2" / "output" / "carried"
+    """
+    for obj in get_object_states():
+        if obj.get("state") == state:
+            return obj
+    return None
+
+
 @arm_bp.route('/set_angle', methods=['POST'])
 def set_angle():
     """Set the target angle for a specific arm.
@@ -209,6 +240,430 @@ def set_angle():
     })
 
     return jsonify({"status": "ok", "arm_id": arm_id, "angle": float(angle)})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STEP 4: EXECUTE TASK WITH QWEN BRAIN
+# FILE: app/routes/arm_routes.py (NEW ENDPOINT)
+# PURPOSE: Backend API endpoint to receive tasks and execute via Qwen brain
+# ═══════════════════════════════════════════════════════════════════════════
+
+@arm_bp.route('/execute_task', methods=['POST'])
+def execute_task():
+    """
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  EXECUTE_TASK: Execute task on arm using Qwen brain                 │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    WHAT THIS ENDPOINT DOES:
+    ========================
+    Central entry point for task execution with AI decision-making.
+
+    Complete flow:
+    1. Receive task request from frontend/demo
+    2. Validate input (arm_id, task)
+    3. Send "processing" notification to frontend
+    4. Get executor for the arm
+    5. Execute task (1. get state → 2. ask brain → 3. execute → 4. feedback)
+    6. Send notification based on result (success or failure)
+    7. Return result to caller
+
+    REQUEST BODY (JSON):
+    ====================
+    {
+        "arm_id": 1,                          # Which arm? (1, 2, or 3)
+        "task": "pick object from intake"     # What to do? (task description)
+    }
+
+    SUCCESS RESPONSE (200):
+    =======================
+    {
+        "status": "success",
+        "arm_id": 1,
+        "action": "pick",                     # What did brain decide?
+        "target_angle": 45,                   # Where did it move?
+        "confidence": 0.95,                   # How sure was Qwen?
+        "reasoning": "Object at intake...",   # Why this decision?
+        "timestamp": "2026-04-22T14:32:15",  # When?
+        "message": "✅ Arm 1 completed 'pick' successfully"
+    }
+
+    FAILURE RESPONSE (400 or 500):
+    ==============================
+    {
+        "status": "failed",
+        "arm_id": 1,
+        "action": "pick",                     # What was it trying?
+        "reason": "Arm server timeout",       # Why did it fail?
+        "message": "❌ Arm 1 FAILED: Server timeout"
+    }
+
+    WHY THIS ENDPOINT EXISTS:
+    =========================
+    Without this endpoint:
+      Frontend → ??? → No way to execute tasks with AI
+      Task execution is manual (user has to calculate angles)
+
+    With this endpoint:
+      Frontend → /execute_task → Executor → Brain → Qwen → Arm moves
+      Task execution is automatic (AI decides angles)
+
+    ARCHITECTURE:
+    ==============
+    Frontend (UI sends task request)
+         ↓
+    Backend (/execute_task endpoint - THIS FILE)
+         ↓
+    Executor (app/services/arm_execution.py - STEP 2)
+         ↓
+    Brain (app/services/arm_brain.py - STEP 1)
+         ↓
+    Qwen LLM (via Ollama)
+         ↓
+    Arm Server (app/services/arm_brain.py - executes movement)
+
+    EXAMPLE CURL COMMAND:
+    =====================
+    curl -X POST http://localhost:5000/execute_task \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "arm_id": 1,
+        "task": "pick object from intake"
+      }'
+
+    REAL-TIME NOTIFICATIONS:
+    ========================
+    This endpoint sends 3 notifications to browser via WebSocket:
+
+    1. PROCESSING: When task starts
+       ⏳ Arm 1 is picking...
+
+    2. DECISION: When brain decides (optional, for transparency)
+       🧠 Arm 1 brain decided: pick at 45° (confidence: 0.95)
+
+    3. RESULT: When task completes
+       ✅ Arm 1 completed 'pick' successfully
+       ❌ Arm 1 FAILED: Motor timeout
+    """
+
+    # ====================================================================
+    # STEP 4.1: VALIDATE REQUEST
+    # PURPOSE: Check request has valid JSON and required fields
+    # ====================================================================
+
+    # Get JSON from request body
+    data = request.get_json(silent=True)
+    if not data:
+        # No JSON body provided
+        return jsonify({"error": "JSON required"}), 400
+
+    # Extract fields
+    arm_id = data.get('arm_id')
+    task = data.get('task')
+
+    # Validate: Both fields must be present
+    if not arm_id or not task:
+        return jsonify({"error": "Missing arm_id or task"}), 400
+
+    # Validate: arm_id must be integer
+    if not isinstance(arm_id, int):
+        return jsonify({"error": "arm_id must be integer (1, 2, or 3)"}), 400
+
+    # Validate: task must be string
+    if not isinstance(task, str) or len(task.strip()) == 0:
+        return jsonify({"error": "task must be non-empty string"}), 400
+
+    # ====================================================================
+    # STEP 4.2: SEND PROCESSING NOTIFICATION
+    # PURPOSE: Tell frontend "We're starting to execute this task"
+    # ====================================================================
+    # Frontend shows: ⏳ Arm 1 is picking...
+    # User sees task is in progress, not stuck
+
+    notif = get_notification_service()
+    notif.notify_processing(arm_id, task)
+
+    # ====================================================================
+    # STEP 4.3: GET EXECUTOR FOR THIS ARM
+    # PURPOSE: Get the executor that will run the task
+    # ====================================================================
+    # Executor is singleton (if already exists, reuse it)
+    # Each arm has its own executor with its own brain
+
+    executor = get_arm_executor(arm_id)
+
+    # ====================================================================
+    # STEP 4.4: EXECUTE TASK ON ARM
+    # PURPOSE: Call executor.execute_task() to run complete flow
+    # ====================================================================
+    # Executor will:
+    # 1. Get current arm state
+    # 2. Ask brain: "What should I do with this task?"
+    # 3. Send decision to arm server
+    # 4. Collect feedback
+    # 5. Update arm state
+    # 6. Return result
+
+    result = executor.execute_task(task)
+
+    # ====================================================================
+    # STEP 4.5: SEND RESULT NOTIFICATION TO FRONTEND
+    # PURPOSE: Tell frontend how task ended (success or failure)
+    # ====================================================================
+
+    if result["status"] == "success":
+        # Task succeeded! Send success notification
+        notif.notify_success(
+            arm_id,
+            result.get("action", "execute"),
+            result.get("confidence", 1.0)
+        )
+        # Frontend shows: ✅ Arm 1 completed 'pick' successfully
+    else:
+        # Task failed! Send failure notification
+        notif.notify_failure(
+            arm_id,
+            result.get("reason", "Unknown error"),
+            result.get("action", "unknown")
+        )
+        # Frontend shows: ❌ Arm 1 FAILED: Motor timeout
+
+    # ====================================================================
+    # STEP 4.6: EMIT RESULT TO FRONTEND AND RETURN
+    # PURPOSE: Send task result to browser via WebSocket + HTTP response
+    # ====================================================================
+
+    # Emit via WebSocket (real-time to browser)
+    socketio.emit('task_result', result)
+
+    # Return via HTTP (to caller of REST API)
+    # Status code: 200 if success, 400+ if failed
+    status_code = 200 if result["status"] == "success" else 500
+    return jsonify(result), status_code
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SCRIPT-DISPATCHER ENDPOINTS (US 17)
+# Qwen picks one named behaviour from a per-arm menu, then we execute it.
+# Different from /execute_task which asks Qwen to invent an angle.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@arm_bp.route('/topology', methods=['GET'])
+def get_topology():
+    """Return the actor flow order so the UI can walk the pipeline."""
+    return jsonify({"flow": pipeline_config.get_module_flow_order()})
+
+
+@arm_bp.route('/scripts/<int:arm_id>', methods=['GET'])
+def get_arm_script_menu(arm_id):
+    """List the named behaviours available for one arm (the Qwen menu)."""
+    menu = list_scripts(arm_id)
+    if not menu:
+        return jsonify({"error": f"unknown arm_id {arm_id}"}), 400
+    return jsonify({"arm_id": arm_id, "scripts": menu})
+
+
+@arm_bp.route('/actor_scripts/<actor_id>', methods=['GET'])
+def get_actor_script_menu(actor_id):
+    """List menus for any actor — arms (numeric) or assets (string id)."""
+    try:
+        resolved = int(actor_id)
+    except (TypeError, ValueError):
+        resolved = actor_id
+    menu = list_scripts(resolved)
+    if not menu:
+        return jsonify({"error": f"unknown actor_id {actor_id}"}), 400
+    return jsonify({"actor_id": resolved, "scripts": menu})
+
+
+# Track each actor's last chosen script — used to suppress log spam when
+# an idle actor keeps polling and the answer is the same hold every time.
+_actor_last_decision = {}
+
+
+def _pick_for_asset(asset_id, task, menu, obj_summary):
+    """Lightweight asset-side brain: same closed-menu shape as the arm brain.
+
+    Assets only have 2 menu options (relay / hold) so we skip Qwen entirely
+    and pick deterministically from the world state — which makes the
+    asset's decision visible in the log without paying the 5–30 s LLM
+    latency. If the asset is failed/draining/stopped, force hold.
+    """
+    from app.services.arm_scripts import _actor_zones
+    rec = asset_state.get(asset_id)
+    is_alive = (rec is None) or (rec.get("status") not in ("failed", "draining", "stopped"))
+    zones = _actor_zones(asset_id)
+    upstream = zones["upstream"]
+    relay_options = [s["name"] for s in menu if s["name"].startswith("relay_")]
+    hold_options = [s["name"] for s in menu if s["name"].startswith("hold_")]
+    source_count = obj_summary.get(upstream, 0)
+    if not is_alive:
+        return {
+            "status": "success",
+            "script": hold_options[0] if hold_options else "",
+            "qwen_suggested": "hold (asset not alive)",
+            "reasoning": f"{asset_id} is {rec.get('status') if rec else 'unknown'}; cannot relay",
+            "override_reason": f"{asset_id} not alive",
+            "confidence": 1.0,
+        }
+    if source_count >= 1 and relay_options:
+        return {
+            "status": "success",
+            "script": relay_options[0],
+            "qwen_suggested": relay_options[0],
+            "reasoning": f"object present at {upstream}; advancing",
+            "override_reason": None,
+            "confidence": 1.0,
+        }
+    return {
+        "status": "success",
+        "script": hold_options[0] if hold_options else "",
+        "qwen_suggested": hold_options[0] if hold_options else "",
+        "reasoning": f"no object at {upstream}; nothing to relay",
+        "override_reason": None,
+        "confidence": 1.0,
+    }
+
+
+@arm_bp.route('/run_script', methods=['POST'])
+def run_script_endpoint():
+    """Ask Qwen (arms) or the deterministic asset-brain (shuttle/conveyor)
+    to pick a script for this actor + task, then run it.
+
+    Request:
+        {"arm_id": 1, "task": "do your relay"}
+        {"actor_id": "veh-a", "task": "do your relay"}   ← asset form
+    Response:
+        {"status": "success", "arm_id": 1, "chosen_script": "...", ...}
+    """
+    data = request.get_json(silent=True) or {}
+    raw_actor = data.get('actor_id', data.get('arm_id'))
+    task = data.get('task')
+
+    if not isinstance(task, str) or not task.strip():
+        return jsonify({"error": "task must be a non-empty string"}), 400
+
+    # Resolve actor_id — int means arm, string means asset.
+    if isinstance(raw_actor, int):
+        actor_id = raw_actor
+        is_arm = True
+    elif isinstance(raw_actor, str) and raw_actor.strip():
+        actor_id = raw_actor.strip()
+        is_arm = False
+    else:
+        return jsonify({"error": "actor_id (str) or arm_id (int) required"}), 400
+
+    if is_arm:
+        valid_arm_ids = pipeline_config.get_arm_ids()
+        if actor_id not in valid_arm_ids:
+            return jsonify({"error": f"arm_id must be one of {valid_arm_ids}"}), 400
+    else:
+        valid_asset_ids = [a["id"] for a in pipeline_config.get_extra_assets()]
+        if actor_id not in valid_asset_ids:
+            return jsonify({"error": f"actor_id must be one of {valid_asset_ids}"}), 400
+
+    notif = get_notification_service()
+
+    # Build the per-actor menu and a count summary of where objects currently
+    # sit (upstream zones for arms + assets — covers handover_<i>, intake,
+    # output, on_<asset>, carried).
+    menu = list_scripts(actor_id)
+    obj_summary = {s: 0 for s in pipeline_config.get_valid_handover_states()}
+    # also count asset zones
+    for a in pipeline_config.get_extra_assets():
+        obj_summary[f"on_{a['id']}"] = 0
+    for o in get_object_states():
+        s = o.get("state")
+        if s in obj_summary:
+            obj_summary[s] += 1
+
+    if is_arm:
+        brain = get_arm_brain(actor_id)
+        pick = brain.pick_script(task, menu, object_summary=obj_summary)
+    else:
+        pick = _pick_for_asset(actor_id, task, menu, obj_summary)
+
+    if pick.get("status") != "success":
+        if is_arm:
+            notif.notify_failure(actor_id, pick.get("error", "brain unavailable"), action="pick_script")
+        return jsonify({"status": "failed", "actor_id": actor_id,
+                        "reason": pick.get("error", "brain unavailable")}), 500
+
+    chosen = pick["script"]
+    qwen_suggested = pick.get("qwen_suggested", chosen)
+    override_reason = pick.get("override_reason")
+
+    # ── Idle de-dupe ────────────────────────────────────────────────
+    # If this is the SAME hold script as the previous decision for this
+    # actor, the world has not changed for them — go silent. Skip the
+    # script_chosen event, skip the script body's log lines (quiet=True),
+    # skip the Task-completed notification. Only relays and *first* holds
+    # of an idle streak surface to the operator. This is what makes
+    # "nothing to do" actually look like nothing in the UI.
+    last = _actor_last_decision.get(actor_id)
+    is_repeat_idle = (
+        chosen.startswith("hold_") or chosen == "return_to_rest"
+    ) and (last == chosen)
+    _actor_last_decision[actor_id] = chosen
+
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    src_label = f"arm_{actor_id}" if is_arm else str(actor_id)
+
+    if not is_repeat_idle:
+        if is_arm:
+            notif.notify_processing(actor_id, "thinking")
+        payload = {
+            "actor_id": actor_id,
+            "script": chosen,
+            "qwen_suggested": qwen_suggested,
+            "override_reason": override_reason,
+            "reasoning": pick.get("reasoning", ""),
+            "fallback": pick.get("fallback", False),
+            "timestamp": timestamp,
+        }
+        if is_arm:
+            payload["arm_id"] = actor_id
+        socketio.emit('script_chosen', payload)
+        if override_reason:
+            socketio.emit('log_message', {
+                "timestamp": timestamp, "source": src_label, "level": "info",
+                "message": f"🤖 suggested: {qwen_suggested}  — {pick.get('reasoning', '')}",
+            })
+            socketio.emit('log_message', {
+                "timestamp": timestamp, "source": src_label, "level": "warning",
+                "message": f"⚖️  Override → {chosen}  ({override_reason})",
+            })
+        else:
+            # Distinguish Qwen-driven (work to do) from rule fast-path (idle).
+            label = "🛌 idle" if (chosen.startswith("hold_") or chosen == "return_to_rest") else (
+                "🎬 Qwen chose" if is_arm else "🎬 AI chose"
+            )
+            socketio.emit('log_message', {
+                "timestamp": timestamp, "source": src_label, "level": "info",
+                "message": f"{label}: {chosen}  — {pick.get('reasoning', '')}",
+            })
+
+    try:
+        result = run_script(actor_id, chosen, quiet=is_repeat_idle)
+    except Exception as e:
+        if is_arm:
+            notif.notify_failure(actor_id, str(e), action=chosen)
+        return jsonify({"status": "failed", "actor_id": actor_id,
+                        "chosen_script": chosen, "reason": str(e)}), 500
+
+    if is_arm and not is_repeat_idle:
+        notif.notify_success(actor_id, chosen, confidence=pick.get("confidence", 1.0))
+
+    return jsonify({
+        "status": "success",
+        "actor_id": actor_id,
+        "arm_id": actor_id if is_arm else None,
+        "chosen_script": chosen,
+        "reasoning": pick.get("reasoning", ""),
+        "fallback": pick.get("fallback", False),
+        "result": result,
+    })
 
 
 @arm_bp.route('/state', methods=['GET'])
@@ -390,8 +845,45 @@ def reset_objects():
         _object_states.clear()
         _object_versions.clear()
         _object_owners.clear()
+    # Forget per-actor last-decision history so the next call after a
+    # reset emits its log line even if the answer happens to repeat.
+    _actor_last_decision.clear()
     socketio.emit('objects_reset', {})
     return jsonify({"status": "ok"})
+
+
+@arm_bp.route('/objects/spawn', methods=['POST'])
+def spawn_object():
+    """Spawn one object at intake so the script-driven pipeline has work to do.
+
+    Body (optional): {"object_id": "Obj1"}
+    Auto-numbers Obj1, Obj2, Obj3, ... if no id is supplied.
+    """
+    data = request.get_json(silent=True) or {}
+    explicit_id = data.get('object_id')
+    with _object_lock:
+        if explicit_id:
+            object_id = str(explicit_id)
+        else:
+            n = 1
+            while f"Obj{n}" in _object_states:
+                n += 1
+            object_id = f"Obj{n}"
+        # Emit ownership in the new namespace so the frontend can position
+        # the object at the intake zone (it ignores updates without
+        # owner_type / owner_id).
+        obj = {
+            "object_id": object_id,
+            "state": "intake",
+            "carrier_arm": None,
+            "owner_type": "zone",
+            "owner_id": "intake-zone",
+            "event_time": int(datetime.now().timestamp() * 1000),
+        }
+        _object_states[object_id] = obj
+        _object_owners[object_id] = "intake-zone"
+    socketio.emit('object_update', obj)
+    return jsonify({"status": "ok", "object": obj})
 
 
 @arm_bp.route('/config', methods=['GET'])

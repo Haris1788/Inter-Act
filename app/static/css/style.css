@@ -126,6 +126,32 @@ h1 {
     outline-offset: 2px;
 }
 
+/* AI bar — Qwen-driven script dispatch */
+#ai-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+    align-items: center;
+    width: min(100%, 980px);
+    padding: 6px 10px 6px;
+    margin-top: 4px;
+    border-top: 1px dashed rgba(149, 165, 166, 0.35);
+}
+#ai-bar .ai-bar-label {
+    font-weight: 600;
+    color: #34495e;
+    margin-right: 4px;
+}
+#ai-bar .ai-status {
+    margin-left: 8px;
+    font-size: 0.85rem;
+    color: #7f8c8d;
+    min-width: 200px;
+}
+#ai-bar .ai-status-ok { color: #27ae60; }
+#ai-bar .ai-status-err { color: #c0392b; }
+
 /* Asset controls */
 #asset-controls {
     display: flex;
@@ -191,6 +217,175 @@ h1 {
     border-color: #dce3e5;
     cursor: not-allowed;
     opacity: 0.75;
+}
+
+#brain-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 8px;
+    font-size: 12px;
+    color: #2c3e50;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+#brain-toggle input {
+    cursor: pointer;
+}
+
+/* US #16 — Send Task (Qwen brain) bar */
+#task-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: #2c3e50;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+#task-bar label {
+    color: #7f8c8d;
+    font-weight: 600;
+}
+
+#task-bar select,
+#task-bar input[type="text"] {
+    padding: 4px 8px;
+    font-size: 13px;
+    border: 1px solid #dcdde1;
+    border-radius: 4px;
+    background: #fff;
+}
+
+#task-bar input[type="text"] {
+    width: 280px;
+}
+
+#task-btn {
+    padding: 5px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    background: #8e44ad;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+#task-btn:hover {
+    background: #71368a;
+}
+
+#task-btn:disabled {
+    background: #b39ec5;
+    cursor: not-allowed;
+}
+
+#task-status {
+    font-size: 12px;
+    color: #7f8c8d;
+    min-width: 12ch;
+}
+
+#task-status.state-processing {
+    color: #e67e22;
+}
+
+#task-status.state-success {
+    color: #27ae60;
+}
+
+#task-status.state-failed {
+    color: #e74c3c;
+}
+
+/* US 17 — Role bar (Qwen picks a script per arm) */
+#role-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: #2c3e50;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+#role-bar .role-label {
+    color: #7f8c8d;
+    font-weight: 600;
+}
+
+#role-bar input[type="text"] {
+    padding: 4px 8px;
+    font-size: 13px;
+    border: 1px solid #dcdde1;
+    border-radius: 4px;
+    background: #fff;
+    width: 220px;
+}
+
+#role-bar .role-btn {
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    background: #16a085;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+#role-bar .role-btn:hover {
+    background: #117a65;
+}
+
+#role-bar .role-btn.role-all {
+    background: #e67e22;
+}
+
+#role-bar .role-btn.role-all:hover {
+    background: #b9651a;
+}
+
+#role-bar .role-btn.role-util {
+    background: #2980b9;
+}
+
+#role-bar .role-btn.role-util:hover {
+    background: #1f6391;
+}
+
+#role-bar .role-btn.role-reset {
+    background: #7f8c8d;
+}
+
+#role-bar .role-btn.role-reset:hover {
+    background: #566162;
+}
+
+#role-status {
+    font-size: 12px;
+    color: #7f8c8d;
+    min-width: 14ch;
+}
+
+#role-status.state-processing {
+    color: #e67e22;
+}
+
+#role-status.state-success {
+    color: #27ae60;
+}
+
+#role-status.state-failed {
+    color: #e74c3c;
 }
 
 /* Canvas wrapper */

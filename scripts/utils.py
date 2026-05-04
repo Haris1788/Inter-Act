@@ -46,6 +46,41 @@ def send_command(host, arm_id, angle):
         return None
 
 
+def send_brain_task(host, arm_id, task, timeout=45):
+    """Ask the backend's Qwen brain to decide and execute a task.
+
+    Sends to POST /execute_task. The backend will:
+      1. Get current arm state
+      2. Ask the per-arm Qwen brain for a decision
+      3. Move the arm to the brain-decided angle
+      4. Return {status, action, target_angle, confidence, reasoning}
+
+    Args:
+        host: Server URL.
+        arm_id: Integer arm identifier.
+        task: Free-form task string (e.g. "pick object from intake").
+        timeout: Seconds to wait. Must exceed Ollama inference + arm-move
+                 time (default 45s leaves headroom on CPU).
+
+    Returns:
+        Result dict on success, or None on failure / non-success status.
+    """
+    url = f'{host}/execute_task'
+    try:
+        resp = requests.post(url, json={'arm_id': arm_id, 'task': task}, timeout=timeout)
+        data = resp.json()
+        if resp.status_code == 200 and data.get('status') == 'success':
+            return data
+        print(f'ERROR (brain): {data.get("reason") or data.get("error") or data}', file=sys.stderr)
+        return None
+    except requests.exceptions.Timeout:
+        print(f'ERROR (brain): timeout after {timeout}s', file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f'ERROR (brain): {e}', file=sys.stderr)
+        return None
+
+
 def send_health(host, arm_id, health, error=None):
     """Report arm health to the backend."""
     try:
