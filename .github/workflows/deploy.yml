@@ -3,7 +3,7 @@ name: Deploy INTER.act
 on:
   push:
     branches:
-      - main
+      - dev
 
 jobs:
   deploy:
