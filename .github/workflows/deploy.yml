@@ -1,0 +1,46 @@
+name: Deploy INTER.act
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy via SSH
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to server
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'ENDSSH'
+            set -e
+            cd ${{ secrets.SERVER_DEPLOY_PATH }}
+            git pull origin main
+            python3 scripts/generate_compose.py
+            docker compose down
+            docker compose up --build -d
+            sleep 5
+            docker compose ps
+            echo "✅ Deployment complete!"
+          ENDSSH
+
+      - name: Smoke test
+        run: |
+          sleep 15
+          curl --fail --silent http://${{ secrets.SERVER_IP }}:80 \
+            && echo "✅ App is healthy!" \
+            || echo "⚠️ Check server logs"
