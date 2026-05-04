@@ -101,24 +101,42 @@ def mark_arm_stopped(arm_id, reason="manually stopped"):
 
 
 def mark_arm_failed(arm_id, error_msg):
-    """Mark arm as dead and propagate to dependents."""
+    """Mark arm as dead. Downstream arms are NOT cascade-stopped.
+
+    Downstream arms drain remaining products from handover zones naturally.
+    The demo runner detects upstream death and stops each arm individually
+    once its input handover zone is empty.
+    """
     global _pipeline_stopped
-    downstream = get_all_downstream(arm_id)
     critical = is_critical(arm_id)
     with _lock:
         if arm_id in _health:
             _health[arm_id]["health"] = "dead"
             _health[arm_id]["error"] = error_msg
-        for dep_id in downstream:
-            if dep_id in _health and _health[dep_id]["health"] not in ("dead", "stopped"):
-                _health[dep_id]["health"] = "stopped"
-                _health[dep_id]["error"] = f"upstream arm {arm_id} failed: {error_msg}"
         if critical:
             _pipeline_stopped = True
 
 
 def is_pipeline_stopped():
     return _pipeline_stopped
+
+
+def check_pipeline_recovery():
+    """Clear pipeline-stopped flag if all critical arms are healthy again.
+
+    A critical arm in 'draining' state still counts as not-recovered:
+    the pipeline is winding down, not ready for new work.
+    """
+    global _pipeline_stopped
+    if not _pipeline_stopped:
+        return
+    # is_critical reads from config (no lock needed for config)
+    critical_ids = [aid for aid in _state if is_critical(aid)]
+    with _lock:
+        for aid in critical_ids:
+            if _health.get(aid, {}).get("health") in ("dead", "stopped", "draining"):
+                return  # still have a degraded critical arm
+        _pipeline_stopped = False
 
 
 def is_arm_allowed(arm_id):

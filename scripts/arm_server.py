@@ -12,6 +12,7 @@ Usage:
 
 import os
 import sys
+import signal
 import time
 import argparse
 import threading
@@ -20,7 +21,7 @@ from flask import Flask, request, jsonify
 
 # Add scripts dir to path for utils import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from utils import send_command, DEFAULT_HOST
+from utils import send_command, send_health, DEFAULT_HOST
 
 ARM_ID = int(os.environ.get('ARM_ID', '1'))
 
@@ -81,6 +82,24 @@ def sequence():
         "arm_id": ARM_ID,
         "steps": len(angles),
     })
+
+
+def _handle_shutdown(signum, frame):
+    """Immediately notify backend that this arm is shutting down, then exit.
+
+    Docker sends SIGTERM on 'docker stop'. This handler fires instantly,
+    so the browser gets a notification in ~50ms instead of waiting 6 seconds
+    for the health monitor to detect missed pings.
+    """
+    sig_name = 'SIGTERM' if signum == signal.SIGTERM else 'SIGINT'
+    print(f'[Arm {ARM_ID}] {sig_name} received — notifying backend...')
+    send_health(DEFAULT_HOST, ARM_ID, 'dead', 'container shutting down')
+    sys.exit(0)
+
+
+# Install handlers at module level so they're active as soon as the process starts
+signal.signal(signal.SIGTERM, _handle_shutdown)
+signal.signal(signal.SIGINT, _handle_shutdown)
 
 
 if __name__ == '__main__':
