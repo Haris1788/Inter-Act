@@ -24,11 +24,10 @@ import requests as _http
 from utils import (send_command, send_object_event, send_log, reset_objects,
                     send_health, send_stop_arm, is_arm_allowed_http, DEFAULT_HOST)
 
-# Phase 8: asset controllers (vehicle/conveyor) live ONLY inside their
-# respective Docker containers. The demo-runner no longer instantiates
-# VehicleController / ConveyorController in-process. We still import the
-# asset_state registry + pipeline_config helper so the runner can detect
-# asset chains and route through HTTP bridges.
+# Phase 8: asset controllers (vehicle) live ONLY inside their respective
+# Docker containers. The demo-runner no longer instantiates VehicleController
+# in-process. We still import the asset_state registry + pipeline_config
+# helper so the runner can detect asset chains and route through HTTP bridges.
 try:
     from app.models import asset_state, pipeline_config as _pc
     _ASSET_RUNTIME_AVAILABLE = True
@@ -187,7 +186,7 @@ class ArmController(_ArmModuleBase):
     """Controls one arm in the pipeline. Checks dependencies before each cycle.
 
     Phase 4: inherits from `app.core.module.Module` so the pipeline builder
-    can treat arms identically to vehicles and conveyors. Internal behaviour
+    can treat arms identically to vehicles. Internal behaviour
     (drain-and-halt, retry policy, dependency awareness) is unchanged.
     """
 
@@ -636,7 +635,7 @@ def thread_safe_log(arm_id, message):
 
 
 def thread_safe_log_asset(asset_id, message):
-    """Log helper for non-arm assets (vehicle, conveyor)."""
+    """Log helper for non-arm assets (vehicle)."""
     with _log_lock:
         timestamp = time.strftime("%H:%M:%S")
         print(f"[{timestamp}] {asset_id}: {message}")
@@ -746,7 +745,7 @@ class HttpOutputBridge:
         """Returns True when the downstream asset is idle (slot free, ready to accept).
 
         Uses /health state == 'idle' rather than downstream_ready — so an arm
-        can place into a vehicle/conveyor buffer even while that asset's own
+        can place into a vehicle buffer even while that asset's own
         downstream is blocked.
         """
         deadline = time.time() + timeout
@@ -831,7 +830,7 @@ def _build_arm_module(arm_cfg, num_products, speed_factor,
                       is_terminal_fn=None):
     """Construct an ArmController as a Module.
 
-    Phase 4: arms expose the same interface as vehicles/conveyors. Internal
+    Phase 4: arms expose the same interface as vehicles. Internal
     behaviour (drain logic, retry, dependency awareness) is preserved.
     Neighbour-alive callbacks are wired by the caller after TP linking.
     """
@@ -937,9 +936,9 @@ def _run_pipeline_core(speed_factor, num_products,
         return None
 
     # ── Phase 4: unified module-based pipeline builder. ─────────────
-    # Every component (arm, vehicle, conveyor, future types) implements the
-    # `Module` interface. The builder reads the flow order from config and
-    # connects modules linearly via TransferPoints. There is no type-specific
+    # Every component (arm, vehicle, future types) implements the `Module`
+    # interface. The builder reads the flow order from config and connects
+    # modules linearly via TransferPoints. There is no type-specific
     # branching here — adding a new module type requires zero changes in
     # this function, only a class implementing `Module`.
     if _ASSET_RUNTIME_AVAILABLE:
@@ -973,9 +972,9 @@ def _run_pipeline_core(speed_factor, num_products,
     else:
         # ── Phase 8: arm-only module list. Asset chains live in containers. ──
         # Build only ArmController instances. Detect whether each arm-arm
-        # boundary has a non-arm chain in between (vehicle/conveyor) and
-        # connect via HTTP bridges in that case; otherwise use a real
-        # in-process TransferPoint (arm↔arm flow stays unchanged).
+        # boundary has a non-arm chain in between (vehicle) and connect via
+        # HTTP bridges in that case; otherwise use a real in-process
+        # TransferPoint (arm↔arm flow stays unchanged).
         flow_ids = (
             _pc.get_module_flow_order()
             if _pc is not None

@@ -3,7 +3,7 @@
 The output compose file includes:
   - core services (ollama, backend, frontend, demo-runner)
   - one service per configured arm
-  - one service per configured non-arm asset (vehicle/conveyor)
+  - one service per configured non-arm asset (vehicle)
 
 Any topology change in pipeline.yaml should only require:
   1) python scripts/generate_compose.py
@@ -53,7 +53,14 @@ def _vehicle_travel_time(asset):
 
 
 def _non_arm_assets(cfg):
-    return [a for a in (cfg.get("assets") or []) if a.get("type") in {"vehicle", "conveyor"}]
+    raw = cfg.get("assets") or []
+    for a in raw:
+        if a.get("type") == "conveyor":
+            raise ValueError(
+                f"Asset {a.get('id')!r}: unsupported asset type 'conveyor' — "
+                f"conveyor support has been removed from pipeline.yaml"
+            )
+    return [a for a in raw if a.get("type") == "vehicle"]
 
 
 def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
@@ -171,9 +178,6 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
         ]
         if asset["type"] == "vehicle":
             env.append(f"TRAVEL_TIME={_vehicle_travel_time(asset)}")
-        elif asset["type"] == "conveyor":
-            env.append(f"SLOT_COUNT={int(asset.get('slot_count', 4))}")
-            env.append(f"SHIFT_INTERVAL={float(asset.get('shift_interval', 1.2))}")
 
         services[aid] = {
             "build": {"context": ".", "dockerfile": "docker/Dockerfile.asset"},

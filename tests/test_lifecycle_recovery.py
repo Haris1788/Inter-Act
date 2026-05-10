@@ -23,7 +23,7 @@ import pytest
 
 from app.core.module import Module
 from app.models import asset_state
-from app.services.asset_controllers import VehicleController, ConveyorController
+from app.services.asset_controllers import VehicleController
 
 
 class StubTP:
@@ -148,39 +148,6 @@ class TestRecoveryHaltsProcessing:
             veh.join(timeout=3.0)
         finally:
             Module.RECOVERY_GRACE_S = original_grace
-
-
-# ── Conveyor freezes its tick during recovery ─────────────────────────
-
-class TestConveyorFreezesDuringRecovery:
-    def test_conveyor_does_not_shift_or_emit_while_recovering(self):
-        in_tp = StubTP()
-        out_tp = StubTP()
-        conv = ConveyorController(
-            asset_id="conv-r", label="C", input_tp=in_tp, output_tp=out_tp,
-            speed_factor=1.0, num_products=5,
-            slot_count=4, shift_interval=0.05, keep_alive=True,
-        )
-        conv.start()
-
-        # Pre-load slot 0 with an object then immediately fail+recover.
-        in_tp.place("Obj1")
-        time.sleep(0.15)        # let belt accept
-        before_slots = list(conv.slots)
-        assert "Obj1" in before_slots
-
-        conv.fail("test")
-        conv.recover()
-        assert conv.state == "recovering"
-
-        # During recovering, slots must NOT change.
-        snapshot1 = list(conv.slots)
-        time.sleep(0.05)
-        snapshot2 = list(conv.slots)
-        assert snapshot1 == snapshot2, "belt must freeze during recovery"
-
-        conv.stop_module()
-        conv.join(timeout=3.0)
 
 
 # ── Recovery from idle vs failed ──────────────────────────────────────

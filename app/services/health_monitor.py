@@ -52,7 +52,7 @@ def _check_arm(arm_id, timeout):
 def _get_asset_url(asset_id):
     """Build the health URL for a non-arm asset container.
 
-    Docker Compose service name == asset id (`veh-a`, `conv-1`). Outside
+    Docker Compose service name == asset id (`veh-a`). Outside
     Docker we don't auto-monitor (ports vary), so this returns None.
     """
     if _DOCKER_MODE:
@@ -182,7 +182,7 @@ def _monitor_loop():
                     arm_state.set_health(arm_id, "unhealthy", error=error_msg)
                     _emit_health(arm_id, "unhealthy", error_msg)
 
-        # ── Phase 6: poll non-arm asset containers (vehicle, conveyor) ──
+        # ── Phase 6: poll non-arm asset containers (vehicle) ──
         # Asset registry is populated either by /assets/<id>/register from
         # asset containers themselves, or — in this phase — implicitly by
         # the demo runner / config helpers. We iterate whatever is registered.

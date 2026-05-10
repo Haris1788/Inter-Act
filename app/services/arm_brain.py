@@ -589,9 +589,9 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
 
         - Upstream chain: assets between the previous arm and this arm. If
           any is dead, the object can't have legitimately reached this arm's
-          input zone (e.g. arm-3 must not pick from handover_2 if veh-a or
-          conv-1 are failed — the object got there only because they used to
-          be alive, and re-relaying would break the demo's physical story).
+          input zone (e.g. arm-3 must not pick from handover_2 if veh-a is
+          failed — the object got there only because it used to be alive,
+          and re-relaying would break the demo's physical story).
 
         - Immediate downstream actor: if this arm is about to drop onto an
           asset (e.g. arm-2 → veh-a), and that asset is dead, the object

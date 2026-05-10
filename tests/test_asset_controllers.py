@@ -1,10 +1,9 @@
-"""Tests for Phase 2 asset controllers (vehicle, conveyor) + lifecycle.
+"""Tests for Phase 2 asset controllers (vehicle) + lifecycle.
 
 Covers:
 - arm -> vehicle -> arm (single asset chain)
-- arm -> vehicle -> conveyor -> arm (full chain)
+- arm -> vehicle -> vehicle -> arm (multi-vehicle chain)
 - vehicle failure blocks downstream
-- conveyor failure blocks downstream
 - recover() resumes processing
 - asset_state registry transitions
 
@@ -21,7 +20,7 @@ import time
 import pytest
 
 from app.models import asset_state
-from app.services.asset_controllers import VehicleController, ConveyorController
+from app.services.asset_controllers import VehicleController
 
 
 # ── Test doubles ──────────────────────────────────────────────────────
@@ -131,66 +130,56 @@ class TestArmVehicleArmFlow:
         _drain([veh], timeout=5.0)
 
         states = [s for s, _ in ev.states_for("Obj1")]
-        # Phase 5: vehicle emits "carried" on accept; downstream pickup event
-        # is no longer emitted by the source asset (consumer's first event
-        # owns the next position). So we only assert the entry event here.
+        # Vehicle emits "carried" on accept.
         assert "carried" in states
         rec = asset_state.get("veh-a")
         assert rec["status"] in ("idle", "stopped")  # final state varies on timing
         assert rec["carried_object"] is None
 
 
-# ── arm -> vehicle -> conveyor -> arm ────────────────────────────────
+# ── arm -> vehicle -> vehicle -> arm ─────────────────────────────────
 
-class TestFullChainFlow:
-    def test_vehicle_then_conveyor_then_arm(self):
-        a1_to_v = StubTP("arm1->veh")
-        v_to_c = StubTP("veh->conv")
-        c_to_a2 = StubTP("conv->arm2")
+class TestMultiVehicleChain:
+    def test_two_vehicles_in_series(self):
+        a1_to_v1 = StubTP("arm1->v1")
+        v1_to_v2 = StubTP("v1->v2")
+        v2_to_a2 = StubTP("v2->arm2")
         ev = EventLog()
 
-        veh = VehicleController(
-            asset_id="veh-a", label="Shuttle",
-            input_tp=a1_to_v, output_tp=v_to_c,
+        v1 = VehicleController(
+            asset_id="veh-a", label="Shuttle A",
+            input_tp=a1_to_v1, output_tp=v1_to_v2,
             speed_factor=0.05,
             object_event_fn=ev,
             num_products=1,
             travel_time=0.2,
         )
-        conv = ConveyorController(
-            asset_id="conv-1", label="Belt",
-            input_tp=v_to_c, output_tp=c_to_a2,
+        v2 = VehicleController(
+            asset_id="veh-b", label="Shuttle B",
+            input_tp=v1_to_v2, output_tp=v2_to_a2,
             speed_factor=0.05,
             object_event_fn=ev,
             num_products=1,
-            slot_count=3,
-            shift_interval=0.2,
+            travel_time=0.2,
         )
 
-        veh.start()
-        conv.start()
-        a1_to_v.place("Obj1")
+        v1.start()
+        v2.start()
+        a1_to_v1.place("Obj1")
 
-        # Stand-in arm2 picks from c_to_a2.
         result = []
 
         def arm2_consumer():
-            obj = c_to_a2.wait_and_pick(timeout=5.0)
+            obj = v2_to_a2.wait_and_pick(timeout=5.0)
             if obj:
                 result.append(obj)
 
         t = threading.Thread(target=arm2_consumer, daemon=True)
         t.start()
-        _drain([veh, conv], timeout=10.0)
+        _drain([v1, v2], timeout=10.0)
         t.join(timeout=2.0)
 
         assert result == ["Obj1"]
-        states = [s for s, _ in ev.states_for("Obj1")]
-        # Vehicle then conveyor should have emitted these.
-        # Phase 5: conveyor emits per-slot `on_conv-1` events as the object
-        # shifts; the redundant `at_conv-1_exit` event was removed (caused a
-        # frontend detach race that visually snapped the object back to slot 0).
-        assert any(s.startswith("on_conv-1") for s in states)
 
 
 # ── Failure handling ─────────────────────────────────────────────────
@@ -281,33 +270,6 @@ class TestVehicleBackpressure:
         veh.join(timeout=3.0)
 
 
-class TestConveyorFailure:
-    def test_fail_blocks_belt(self):
-        in_tp = StubTP("in")
-        out_tp = StubTP("out")
-        ev = EventLog()
-
-        conv = ConveyorController(
-            asset_id="conv-1", label="Belt",
-            input_tp=in_tp, output_tp=out_tp,
-            speed_factor=1.0,
-            object_event_fn=ev,
-            num_products=1,
-            slot_count=8,                 # many slots so fail catches mid-belt
-            shift_interval=2.0,           # slow enough that fail interrupts
-        )
-        conv.start()
-
-        in_tp.place("Obj1")
-        time.sleep(0.2)                   # let it pick + enter shift loop
-        conv.fail("belt jammed")
-        _drain([conv], timeout=5.0)
-
-        rec = asset_state.get("conv-1")
-        assert rec["status"] in ("failed", "stopped")
-        assert out_tp.is_empty()
-
-
 # ── Recovery ─────────────────────────────────────────────────────────
 
 class TestRecovery:
@@ -353,6 +315,6 @@ class TestAssetStateRegistry:
         assert asset_state.is_alive("never-registered") is True
 
     def test_is_alive_after_fail(self):
-        asset_state.register("conv-1", "conveyor")
-        asset_state.fail("conv-1", "broken")
-        assert asset_state.is_alive("conv-1") is False
+        asset_state.register("veh-q", "vehicle")
+        asset_state.fail("veh-q", "broken")
+        assert asset_state.is_alive("veh-q") is False

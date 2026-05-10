@@ -5,8 +5,7 @@
  * comes from a SocketIO event (`state_update`, `arm_health`, `asset_health`,
  * `object_update`). When backend emits `carried` for a vehicle, it includes
  * `start_time` + `duration_ms`; the frontend interpolates between the
- * vehicle's first and last waypoint based on those timestamps. When backend
- * emits `on_<conv>#<slot>`, the frontend snaps the object to that slot.
+ * vehicle's first and last waypoint based on those timestamps.
  */
 
 import { polylineInterp } from './geometry.js';
@@ -100,7 +99,6 @@ function getAssetFlowX(asset) {
         const w = asset.geometry.waypoints || [];
         return w[0] ? w[0].x : 0;
     }
-    if (asset.type === 'conveyor') return asset.geometry.from.x;
     return 0;
 }
 
@@ -195,36 +193,8 @@ function normalizeAsset(raw) {
                 dynamic: { t: 0, frozenAt: null },
             };
         }
-        case 'conveyor': {
-            const g = raw.geometry || {};
-            const slotCount = g.slot_count ?? 3;
-            const slotPositions = g.slot_positions || computeSlotPositions(g.from, g.to, slotCount);
-            return {
-                ...base,
-                geometry: {
-                    from: g.from || { x: 0, y: 0 },
-                    to: g.to || { x: 0, y: 0 },
-                    slotCount,
-                    slotPositions,
-                    shiftInterval: g.shift_interval ?? 1.0,
-                },
-                // slots are filled by backend object_update events with `slot` field.
-                dynamic: { slots: new Array(slotCount).fill(null) },
-            };
-        }
     }
     return null;
-}
-
-function computeSlotPositions(from, to, n) {
-    if (!from || !to || n <= 0) return [];
-    if (n === 1) return [{ x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 }];
-    const out = [];
-    for (let i = 0; i < n; i++) {
-        const t = i / (n - 1);
-        out.push({ x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t });
-    }
-    return out;
 }
 
 function wireAssetGraph(assets) {
@@ -325,10 +295,6 @@ export function applyObjectUpdate(data) {
         const prev = prevCarrierId ? state.assets.get(prevCarrierId) : null;
         if (prev) {
             if (prev.carriedObject === id) prev.carriedObject = null;
-            if (prev.type === 'conveyor') {
-                const idx = prev.dynamic.slots.indexOf(id);
-                if (idx >= 0) prev.dynamic.slots[idx] = null;
-            }
             // Vehicle returns to its start waypoint after handing the object
             // off, so it is positioned for the next pickup. Backend does not
             // emit a return-trip — this is a deterministic visual reset.
@@ -351,18 +317,11 @@ export function applyObjectUpdate(data) {
                 // UI-only reconciliation: ownership proves active work.
                 carrier.status = 'busy';
             }
-        } else if (carrier.type === 'conveyor' && typeof data.slot === 'number') {
-            const slots = carrier.dynamic.slots;
-            // Clear any other slot still holding this object (shift case).
-            for (let i = 0; i < slots.length; i++) {
-                if (slots[i] === id && i !== data.slot) slots[i] = null;
-            }
-            slots[data.slot] = id;
         }
     }
 
     // 'carried' / 'on_X' / 'at_X' states hard-lock to the carrier tip.
-    // All other ownership changes (TP, zone, conveyor) animate from last pos.
+    // All other ownership changes (TP, zone) animate from last pos.
     const stateStr = data.state;
     const snapNow = stateStr === 'carried'
         || (typeof stateStr === 'string' && (stateStr.startsWith('on_') || stateStr.startsWith('at_')));
@@ -384,7 +343,6 @@ export function resetObjects() {
     state.objectTransitions = {};
     for (const a of state.assets.values()) {
         a.carriedObject = null;
-        if (a.type === 'conveyor') a.dynamic.slots.fill(null);
         if (a.type === 'vehicle') { a.dynamic.t = 0; a.dynamic.frozenAt = null; }
     }
 }
@@ -414,12 +372,6 @@ export function getAssetAttachPoint(assetId, slotHint) {
             // Single-segment lerp from first to last waypoint.
             const start = wp[0], end = wp[wp.length - 1];
             return { x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t };
-        }
-        case 'conveyor': {
-            const slots = a.geometry.slotPositions;
-            if (slotHint != null && slots[slotHint]) return { ...slots[slotHint] };
-            const occ = a.dynamic.slots.findIndex(s => s != null);
-            return { ...(slots[occ >= 0 ? occ : 0] || { x: 0, y: 0 }) };
         }
     }
     return null;
@@ -454,10 +406,6 @@ function vehicleProgress(asset) {
     }
     asset.dynamic.t = t;
     return t;
-}
-
-export function firstOccupiedSlot(asset) {
-    return asset.dynamic.slots.findIndex(s => s != null);
 }
 
 export function getAssetsByType(type) {

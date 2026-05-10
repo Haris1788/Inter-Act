@@ -2,8 +2,8 @@
 Named actor behaviours — generic, config-driven, for arms AND assets.
 
 A "script" here is a small Python function that performs a complete physical
-behaviour for one actor (an arm, a shuttle, or a conveyor). It is the unit
-Qwen picks (instead of inventing single angles or shifts).
+behaviour for one actor (an arm or a shuttle). It is the unit Qwen picks
+(instead of inventing single angles or shifts).
 
 Why this exists
 ---------------
@@ -55,7 +55,6 @@ PICK_ANGLE = 180.0
 DROP_ANGLE = 0.0
 STEP_PAUSE = 1.2
 SHUTTLE_TRAVEL_MS = 2000   # shuttle animation duration
-CONV_SHIFT_PAUSE = 0.5     # pause between conveyor slot shifts
 
 
 ActorId = Union[int, str]   # arm = int, asset = str
@@ -324,70 +323,6 @@ def _hold_vehicle(asset_id: str, quiet: bool = False, **_kwargs) -> Dict[str, An
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Generic script bodies — conveyor
-# ────────────────────────────────────────────────────────────────────────────
-
-
-def _conveyor_slot_count(asset_id: str) -> int:
-    rec = pipeline_config.get_asset(asset_id) or {}
-    return int(rec.get("slot_count", 4))
-
-
-def _relay_conveyor(asset_id: str, **_kwargs) -> Dict[str, Any]:
-    """Shift an object across all slots of the conveyor, then emit downstream."""
-    zones = _actor_zones(asset_id)
-    upstream, downstream = zones["upstream"], zones["downstream"]
-    script_name = f"relay_{upstream}_to_{downstream}"
-
-    obj = _find_object_at(upstream)
-    if obj is None:
-        _log(asset_id, f"✋ no object at {_pretty(upstream)} — nothing to relay", level="warning")
-        return {"script": script_name, "object_id": None, "status": "no_object"}
-    object_id = obj["object_id"]
-
-    _log(asset_id, f"▶ START {script_name} (object={object_id})")
-
-    # Pickup at slot 0.
-    asset_state.set_carried(asset_id, object_id)
-    socketio.emit("asset_health", asset_state.get(asset_id) or {})
-    n = _conveyor_slot_count(asset_id)
-    for slot in range(n):
-        _emit_object(
-            object_id,
-            upstream,
-            carrier_asset=asset_id,
-            extra_fields={"slot": slot},
-        )
-        _log(asset_id, f"  • slot {slot}")
-        time.sleep(CONV_SHIFT_PAUSE)
-
-    # Drop at downstream (handover_<n> or another asset).
-    if downstream.startswith("on_"):
-        next_asset = downstream[3:]
-        _emit_object(object_id, downstream, carrier_asset=next_asset)
-    else:
-        _emit_object(object_id, downstream)
-    asset_state.set_carried(asset_id, None)
-    socketio.emit("asset_health", asset_state.get(asset_id) or {})
-    _log(asset_id, f"  • dropped {object_id} at {_pretty(downstream)}")
-
-    _log(asset_id, f"■ DONE {script_name}", level="success")
-    return {"script": script_name, "object_id": object_id, "status": "done"}
-
-
-def _hold_conveyor(asset_id: str, quiet: bool = False, **_kwargs) -> Dict[str, Any]:
-    zones = _actor_zones(asset_id)
-    upstream = zones["upstream"]
-    script_name = f"hold_at_{upstream}"
-    if quiet:
-        return {"script": script_name, "status": "done", "quiet": True}
-    _log(asset_id, f"▶ START {script_name}")
-    time.sleep(0.4)
-    _log(asset_id, f"■ DONE {script_name}", level="success")
-    return {"script": script_name, "status": "done"}
-
-
-# ────────────────────────────────────────────────────────────────────────────
 # Registry — one menu per actor, built from pipeline.yaml
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -417,9 +352,6 @@ def _build_asset_menu(asset_id: str, asset_type: str) -> Dict[str, Dict[str, Any
     if asset_type == "vehicle":
         relay_fn, hold_fn = _relay_vehicle, _hold_vehicle
         rest_desc = "ferry-ride from start waypoint to end waypoint"
-    elif asset_type == "conveyor":
-        relay_fn, hold_fn = _relay_conveyor, _hold_conveyor
-        rest_desc = "shift through every slot"
     else:
         return {}
     return {

@@ -113,7 +113,7 @@ def generate_scene_config():
     4. Computes canvas dimensions from total layout width
     
     This single algorithm handles all cases: arms-only, arms+vehicle,
-    arms+vehicle+conveyor, without conditional branching.
+    multiple vehicles in series, without conditional branching.
     """
     cfg = get_config()
     arms_cfg = cfg["arms"]
@@ -172,7 +172,7 @@ def _compute_graph_layout(arms_cfg, extra_assets):
         all_assets.append(asset)
         asset_by_id[arm_id] = asset
     
-    # Add extra assets (vehicles, conveyors)
+    # Add extra assets (vehicles)
     for ea in extra_assets:
         asset = {
             'id': ea['id'],
@@ -262,41 +262,7 @@ def _compute_graph_layout(arms_cfg, extra_assets):
                 })
                 
                 x = start_x + path_length
-        
-        elif asset['type'] == 'conveyor':
-            geom = asset['config']['geometry']
-            frm = geom['from']
-            to = geom['to']
-            belt_length = abs(to['x'] - frm['x'])
-            start_x = x + gap
-            
-            # Rewrite conveyor endpoints to fit current layout position
-            offset = start_x - frm['x']
-            adjusted_from = {'x': frm['x'] + offset, 'y': frm.get('y', CENTER_Y)}
-            adjusted_to = {'x': to['x'] + offset, 'y': to.get('y', CENTER_Y)}
-            
-            # Recompute slot positions
-            slot_count = geom['slot_count']
-            slot_positions = _compute_slot_positions(adjusted_from, adjusted_to, slot_count)
-            
-            positioned.append({
-                'type': 'conveyor',
-                'id': asset['id'],
-                'label': asset['config']['label'],
-                'color': asset['config']['color'],
-                'upstream': asset['upstream'],
-                'downstream': asset['downstream'],
-                'geometry': {
-                    'from': adjusted_from,
-                    'to': adjusted_to,
-                    'slot_count': slot_count,
-                    'slot_positions': slot_positions,
-                    'shift_interval': geom['shift_interval'],
-                },
-            })
-            
-            x = start_x + belt_length
-        
+
         prev_asset = asset
     
     canvas_width = x + RIGHT_PADDING
@@ -425,9 +391,9 @@ def generate_scene_config():  # noqa: F811 — intentional override
 
 def _build_flow_order(all_assets, asset_by_id):
     """Build visual flow order from asset graph using topological sort.
-    
-    Preserves stable arm ordering while inserting vehicles/conveyors
-    at their logical connection points.
+
+    Preserves stable arm ordering while inserting vehicles at their
+    logical connection points.
     """
     # Separate arms and non-arms
     arms = [a for a in all_assets if a['type'] == 'arm']
@@ -525,7 +491,7 @@ def get_module_flow_order():
     builder so it can wire modules linearly without any type-specific
     branching.
 
-    Example: ['arm-1', 'arm-2', 'veh-a', 'conv-1', 'arm-3', 'arm-4', 'veh-b', 'arm-5'].
+    Example: ['arm-1', 'arm-2', 'veh-a', 'arm-3', 'arm-4', 'veh-b', 'arm-5'].
     """
     arms_cfg = get_config().get("arms") or []
     extras = get_extra_assets()
@@ -566,12 +532,11 @@ def get_module_flow_order():
 
 
 def get_extra_assets():
-    """Return pass-through `assets:` entries for non-arm types (vehicle, conveyor).
+    """Return pass-through `assets:` entries for non-arm types (vehicle).
 
     Arms remain defined under `arms:` and are consumed by the backend. This
     helper only surfaces additional asset types for the frontend scene config.
-    Entries are returned with geometry normalized (conveyor slot_positions
-    precomputed); no runtime state is attached.
+    Conveyor entries are rejected — see `validate_asset_graph`.
     """
     cfg = get_config()
     raw = cfg.get("assets") or []
@@ -580,26 +545,19 @@ def get_extra_assets():
         t = entry.get("type")
         if t == "arm":
             continue  # Arms are defined under `arms:` — skip duplicates.
+        if t == "conveyor":
+            raise ValueError(
+                f"Asset {entry.get('id')!r}: type 'conveyor' is no longer supported. "
+                f"Remove it from pipeline.yaml."
+            )
         if t == "vehicle":
             g = {
                 "waypoints": entry.get("waypoints", []),
                 "loop": bool(entry.get("loop", False)),
                 "speed": float(entry.get("speed", 100)),
             }
-        elif t == "conveyor":
-            frm = entry.get("from") or {"x": 0, "y": 0}
-            to = entry.get("to") or {"x": 0, "y": 0}
-            n = int(entry.get("slot_count", 3))
-            slot_positions = _compute_slot_positions(frm, to, n)
-            g = {
-                "from": frm,
-                "to": to,
-                "slot_count": n,
-                "slot_positions": slot_positions,
-                "shift_interval": float(entry.get("shift_interval", 1.2)),
-            }
         else:
-            continue  # Unknown type — ignore.
+            continue  # Unknown type — ignore (validate_asset_graph reports it).
         out.append({
             "id": entry["id"],
             "type": t,
@@ -609,19 +567,6 @@ def get_extra_assets():
             "downstream": entry.get("downstream", []),
             "geometry": g,
         })
-    return out
-
-
-def _compute_slot_positions(frm, to, n):
-    if n <= 0:
-        return []
-    if n == 1:
-        return [{"x": (frm["x"] + to["x"]) / 2, "y": (frm["y"] + to["y"]) / 2}]
-    out = []
-    for i in range(n):
-        t = i / (n - 1)
-        out.append({"x": frm["x"] + (to["x"] - frm["x"]) * t,
-                    "y": frm["y"] + (to["y"] - frm["y"]) * t})
     return out
 
 
@@ -743,12 +688,12 @@ def get_topological_order():
 
 # ---------------------------------------------------------------------------
 # Unified asset registry (Phase 1 backend foundation).
-# Arms remain backend-controlled; vehicles and conveyors are registered but
-# passive (no controller, no socket events). All assets are exposed here as
+# Arms remain backend-controlled; vehicles are registered but passive
+# (no controller, no socket events). All assets are exposed here as
 # plain dicts so consumers can iterate the full graph without recomputing.
 # ---------------------------------------------------------------------------
 
-ASSET_TYPES = ('arm', 'vehicle', 'conveyor')
+ASSET_TYPES = ('arm', 'vehicle')
 
 
 def _arm_string_id(numeric_id):
@@ -760,8 +705,8 @@ def get_all_assets():
 
     Shape per entry:
         {
-          'id':         str,        # 'arm-1' | 'veh-a' | 'conv-1'
-          'type':       str,        # 'arm' | 'vehicle' | 'conveyor'
+          'id':         str,        # 'arm-1' | 'veh-a'
+          'type':       str,        # 'arm' | 'vehicle'
           'label':      str,
           'color':      str,
           'upstream':   list[str],  # asset IDs
@@ -852,7 +797,7 @@ def get_asset_ids():
 
 
 def get_assets_by_type(asset_type):
-    """Return assets of a given type (arm | vehicle | conveyor)."""
+    """Return assets of a given type (arm | vehicle)."""
     return [a for a in get_all_assets() if a['type'] == asset_type]
 
 
@@ -880,6 +825,12 @@ def validate_asset_graph():
         etype = ea.get('type')
         if etype == 'arm':
             continue  # legacy: arms live under arms:
+        if etype == 'conveyor':
+            errors.append(
+                f"Asset {eid!r}: unsupported asset type 'conveyor' — "
+                f"conveyor support has been removed"
+            )
+            continue
         if etype not in ASSET_TYPES:
             errors.append(f"Asset {eid!r} has unknown type {etype!r}")
             continue

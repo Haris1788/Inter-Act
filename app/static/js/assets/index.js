@@ -2,9 +2,8 @@
 
 import * as arm from './arm.js';
 import * as vehicle from './vehicle.js';
-import * as conveyor from './conveyor.js';
 
-export const RENDERERS = { arm, vehicle, conveyor };
+export const RENDERERS = { arm, vehicle };
 
 export function canPick(asset, slotHint) {
     const r = RENDERERS[asset.type];

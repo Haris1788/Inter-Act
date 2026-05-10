@@ -1,7 +1,7 @@
-"""Asset Microservice — Flask wrapper around VehicleController / ConveyorController.
+"""Asset Microservice — Flask wrapper around VehicleController.
 
-Mirrors the arm container pattern: each non-arm asset (vehicle / conveyor)
-runs in its own container, exposes the same lifecycle endpoints, and can be
+Mirrors the arm container pattern: each non-arm asset (vehicle) runs in
+its own container, exposes the same lifecycle endpoints, and can be
 killed via `docker stop` to trigger the same downstream failure propagation.
 
 Phase 6 scope: container shells + health monitoring only. Object transfer
@@ -11,15 +11,13 @@ in-process pipeline in run_demo.py continues unchanged.
 
 Environment variables
 ---------------------
-    ASSET_TYPE      "vehicle" or "conveyor"
+    ASSET_TYPE      "vehicle" (only supported type)
     ASSET_ID        unique id, must match pipeline.yaml + docker service name
     ASSET_LABEL     human-readable label
     SERVER_HOST     backend URL (defaults via utils.DEFAULT_HOST)
     UPSTREAM_URL    optional URL of upstream asset's /object GET (future)
     DOWNSTREAM_URL  optional URL of downstream asset's /object POST (future)
-    SLOT_COUNT      conveyor only — number of slots
-    SHIFT_INTERVAL  conveyor only — seconds per shift
-    TRAVEL_TIME     vehicle only — seconds per traversal
+    TRAVEL_TIME     vehicle — seconds per traversal
     SPEED_FACTOR    multiplier applied to controller speed (default 1.0)
 
 Usage
@@ -48,7 +46,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..")))
 
 from utils import DEFAULT_HOST
-from app.services.asset_controllers import VehicleController, ConveyorController
+from app.services.asset_controllers import VehicleController
 
 
 # ── Environment ───────────────────────────────────────────────────────
@@ -59,8 +57,6 @@ ASSET_LABEL = os.environ.get("ASSET_LABEL", ASSET_ID)
 UPSTREAM_URL = os.environ.get("UPSTREAM_URL", "").rstrip("/")
 DOWNSTREAM_URL = os.environ.get("DOWNSTREAM_URL", "").rstrip("/")
 SPEED_FACTOR = float(os.environ.get("SPEED_FACTOR", "1.0"))
-SLOT_COUNT = int(os.environ.get("SLOT_COUNT", "4"))
-SHIFT_INTERVAL = float(os.environ.get("SHIFT_INTERVAL", "1.2"))
 TRAVEL_TIME = float(os.environ.get("TRAVEL_TIME", "2.0"))
 
 
@@ -185,24 +181,8 @@ if ASSET_TYPE == "vehicle":
         keep_alive=True,
         travel_time=TRAVEL_TIME,
     )
-elif ASSET_TYPE == "conveyor":
-    controller = ConveyorController(
-        asset_id=ASSET_ID,
-        label=ASSET_LABEL,
-        input_tp=input_tp,
-        output_tp=output_tp,
-        speed_factor=SPEED_FACTOR,
-        log_fn=_post_log,
-        object_event_fn=_post_object_event,
-        upstream_alive_fn=_upstream_alive,
-        downstream_alive_fn=_downstream_alive,
-        num_products=10**9,
-        keep_alive=True,
-        slot_count=SLOT_COUNT,
-        shift_interval=SHIFT_INTERVAL,
-    )
 else:
-    raise SystemExit(f"Unknown ASSET_TYPE={ASSET_TYPE!r}; expected vehicle|conveyor")
+    raise SystemExit(f"Unknown ASSET_TYPE={ASSET_TYPE!r}; expected vehicle")
 
 controller.start()
 
@@ -405,9 +385,6 @@ def reset_route():
         if output_tp.wait_and_pick(timeout=0.1) is None:
             break
         drained_out += 1
-    # Clear conveyor slots if applicable.
-    if hasattr(controller, "slots"):
-        controller.slots = [None] * controller.slot_count
     controller._current_object = None
     # Also reset the cached downstream-accepts-post flag so a re-detect happens.
     global _downstream_accepts_post

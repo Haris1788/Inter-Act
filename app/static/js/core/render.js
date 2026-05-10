@@ -198,12 +198,8 @@ function computeHandoverPosition(from, to) {
         const vStart = getVehicleStart(to);
         return midpoint(armBoundaryToward(from, vStart), vStart);
     }
-    if (from.type === 'vehicle' && to.type === 'conveyor') {
-        return midpoint(getVehicleEnd(from), to.geometry.from);
-    }
-    if (from.type === 'conveyor' && to.type === 'arm') {
-        const cOut = from.geometry.to;
-        return midpoint(cOut, armBoundaryToward(to, cOut));
+    if (from.type === 'vehicle' && to.type === 'vehicle') {
+        return midpoint(getVehicleEnd(from), getVehicleStart(to));
     }
     if (from.type === 'vehicle' && to.type === 'arm') {
         const vEnd = getVehicleEnd(from);
@@ -257,9 +253,6 @@ function getAssetCenter(asset) {
         const end = getVehicleEnd(asset);
         return midpoint(start, end);
     }
-    if (asset.type === 'conveyor') {
-        return midpoint(asset.geometry.from, asset.geometry.to);
-    }
     return { x: 0, y: 0 };
 }
 
@@ -305,7 +298,7 @@ function getObjectPosition(obj) {
     if (obj.owner_type === 'arm') {
         return getAssetAttachPoint(obj.owner_id, obj.slot);
     }
-    if (obj.owner_type === 'vehicle' || obj.owner_type === 'conveyor' || obj.owner_type === 'asset') {
+    if (obj.owner_type === 'vehicle' || obj.owner_type === 'asset') {
         return getAssetAttachPoint(obj.owner_id, obj.slot);
     }
     if (obj.owner_type === 'transfer_point') {
@@ -365,7 +358,7 @@ function resolveTransferPointPosition(tpOwnerId) {
     return computeHandoverPosition(fromAsset, toAsset);
 }
 
-/* Render tracked objects + objects currently occupying conveyor slots (not in trackedObjects). */
+/* Render tracked objects driven by backend object_update events. */
 function renderObjects(now) {
     // Backend-tracked objects
     Object.values(state.trackedObjects).forEach(obj => {
@@ -382,8 +375,7 @@ function renderObjects(now) {
         const transition = state.objectTransitions[id];
         let pos = targetPos;
 
-        // 'carried' hard-locks to carrier tip (arm/vehicle/conveyor).
-        // 'on_X' conveyor slots are deterministic per backend slot field.
+        // 'carried' hard-locks to carrier tip (arm/vehicle).
         // Phase 3: snap on every asset-carried state — no client-side ease.
         const stateStr = obj.state;
         const isCarrierState = stateStr === 'carried'
@@ -497,9 +489,6 @@ function drawConnectionAnchors() {
                 points.push(wp[0]);
                 points.push(wp[wp.length - 1]);
             }
-        } else if (a.type === 'conveyor') {
-            points.push(a.geometry.from);
-            points.push(a.geometry.to);
         }
     }
     ctx.save();
