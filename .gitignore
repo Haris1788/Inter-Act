@@ -15,3 +15,7 @@ build/
 planning/
 .cursor/rules/humanized-docs.mdc
 graphify-out/
+presentation/
+CLAUDE.md
+.graphify_python
+HANDOFF.md
