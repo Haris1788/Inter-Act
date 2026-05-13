@@ -15,7 +15,7 @@ build/
 planning/
 .cursor/rules/humanized-docs.mdc
 
-# Personal weekly tracking documents — kept locally, not pushed.
-documentation/PROJECT_PROGRESS.md
-documentation/PROJECT_FLOWCHART.md
-documentation/README.md
+# Personal documentation — kept locally, not pushed.
+# documentation/ folder holds shareable docs that get committed and pushed.
+# Doc-check/ folder holds everything kept local (weekly logs, presentation drafts, etc.).
+Doc-check/
