@@ -25,6 +25,7 @@ export function createMockDriver(): RuntimeDriver {
   return {
     start(store) {
       const s = store.getState();
+      s.setConnection("mock", "connected");
       s.hydrateTopology({ actors: mockActors, zones: mockZones, pool: mockPool, goal: mockGoal });
       s.hydrateRuntime({
         actorRuntime: mockActorRuntime,

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useStore } from "@/store";
-import { createMockDriver } from "@/runtime/mockDriver";
+import { createRuntimeDriver, type RuntimeDriver } from "@/runtime";
 import { Topbar } from "@/chrome/Topbar";
 import { LeftRegistry } from "@/chrome/LeftRegistry";
 import { Inspector } from "@/chrome/Inspector";
@@ -13,9 +13,17 @@ import { CanvasViewport } from "@/canvas/CanvasViewport";
 //           areas "left canvas right" / "left logs right"
 export function App() {
   useEffect(() => {
-    const driver = createMockDriver();
-    driver.start(useStore);
-    return () => driver.stop();
+    let driver: RuntimeDriver | null = null;
+    let cancelled = false;
+    void createRuntimeDriver().then((d) => {
+      if (cancelled) return;
+      driver = d;
+      d.start(useStore);
+    });
+    return () => {
+      cancelled = true;
+      driver?.stop();
+    };
   }, []);
 
   return (
