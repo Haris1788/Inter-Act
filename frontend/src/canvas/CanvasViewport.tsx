@@ -46,7 +46,6 @@ function FlowInner() {
   const moveActor = useStore((s) => s.moveActor);
   const addActor = useStore((s) => s.addActor);
   const removeActor = useStore((s) => s.removeActor);
-  const duplicateActor = useStore((s) => s.duplicateActor);
   const markDirty = useStore((s) => s.markDirty);
   const toggleSelection = useStore((s) => s.toggleSelection);
   const clearSelection = useStore((s) => s.clearSelection);
@@ -146,6 +145,26 @@ function FlowInner() {
         s.markDirty();
         return;
       }
+      if (meta && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        s.setSelection(Object.keys(s.actors));
+        return;
+      }
+      // Arrow-nudge selected actors (precision placement). Shift = 10px.
+      if (e.key.startsWith("Arrow")) {
+        const ids = s.selectedIds.length ? s.selectedIds : s.selectedActorId ? [s.selectedActorId] : [];
+        if (!ids.length) return;
+        e.preventDefault();
+        const d = e.shiftKey ? 10 : 1;
+        const dx = e.key === "ArrowLeft" ? -d : e.key === "ArrowRight" ? d : 0;
+        const dy = e.key === "ArrowUp" ? -d : e.key === "ArrowDown" ? d : 0;
+        for (const id of ids) {
+          const a = s.actors[id];
+          if (a) s.moveActor(id, { x: a.position.x + dx, y: a.position.y + dy });
+        }
+        s.markDirty();
+        return;
+      }
       if (!meta && e.key === "v") s.setMode("select");
       if (!meta && e.key === "h") s.setMode("pan");
       if (!meta && e.key === "e") s.setMode("edit");
@@ -157,7 +176,8 @@ function FlowInner() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [duplicateActor, removeActor]);
+    // handler reads via useStore.getState() — stable, no deps needed
+  }, []);
 
   // Interaction mode → RF behavior. select: drag nodes; pan: hand-drag canvas;
   // edit: drag nodes + box-select.

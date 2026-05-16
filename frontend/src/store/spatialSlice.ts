@@ -27,11 +27,25 @@ export const createSpatialSlice: StateCreator<RootStore, [], [], SpatialSlice> =
         const dy = k.target.y - k.pos.y;
         const dist = Math.hypot(dx, dy);
         if (dist < 0.5) {
-          nextK[id] = { ...k, pos: k.target, target: null };
+          nextK[id] = { ...k, pos: k.target, target: null, origin: null };
           changed = true;
           continue;
         }
-        const step = (k.speed * dtMs) / 1000;
+        // Accel/decel easing — operational, not gamey. Velocity ramps up over
+        // the first ~18% of the leg and eases down over the last ~22%, with a
+        // floor so the AGV never stalls. Falls back to constant speed if the
+        // leg origin is unknown.
+        const origin = k.origin ?? null;
+        let vf = 1;
+        if (origin) {
+          const legLen = Math.hypot(k.target.x - origin.x, k.target.y - origin.y) || dist;
+          const traveled = Math.max(0, legLen - dist);
+          const p = Math.min(1, Math.max(0, traveled / legLen));
+          const accel = Math.min(1, p / 0.18);
+          const decel = Math.min(1, (1 - p) / 0.22);
+          vf = Math.max(0.22, Math.min(accel, decel, 1));
+        }
+        const step = (k.speed * vf * dtMs) / 1000;
         const t = Math.min(1, step / dist);
         nextK[id] = {
           ...k,
@@ -81,7 +95,11 @@ export const createSpatialSlice: StateCreator<RootStore, [], [], SpatialSlice> =
     set((s) => {
       const cur = s.agvKinematics[id] ?? { pos: target ?? { x: 0, y: 0 }, heading: 0, speed: 220, target: null };
       return {
-        agvKinematics: { ...s.agvKinematics, [id]: { ...cur, target, speed: speed ?? cur.speed } },
+        agvKinematics: {
+          ...s.agvKinematics,
+          // record the leg origin so tick() can ease accel/decel
+          [id]: { ...cur, target, origin: { ...cur.pos }, speed: speed ?? cur.speed },
+        },
       };
     }),
 

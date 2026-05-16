@@ -179,6 +179,8 @@ export interface AgvKinematics {
   heading: number;
   speed: number;
   target: Vec2 | null;
+  /** leg start — set when a target is assigned; enables accel/decel easing */
+  origin?: Vec2 | null;
 }
 
 export interface Trajectory {
