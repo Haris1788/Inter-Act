@@ -3,6 +3,7 @@ import { cn } from "@/lib/cn";
 import { useActors, useDirty } from "@/store/selectors";
 import { useStore } from "@/store";
 import { ConnectionChip } from "./ConnectionChip";
+import { WorkspaceName } from "./WorkspaceName";
 import { DeployModal } from "./DeployModal";
 import { serializeTopology, docToState } from "@/lib/topologySchema";
 import { exportTopologyFile, importTopologyFile } from "@/lib/persistence";
@@ -86,15 +87,9 @@ export function Topbar() {
         </div>
         {/* Divider */}
         <span className="inline-block h-5 w-px bg-line" />
-        {/* Breadcrumb */}
-        <div className="flex items-center gap-2 rounded-sm px-2.5 py-1">
-          <span className="text-12 text-ink-3">in3-group</span>
-          <span className="text-12 text-ink-5">/</span>
-          <span className="text-12 font-semibold text-ink">atlas-floor-3</span>
-          <span className="text-12 text-ink-5">/</span>
-          <span className="font-mono text-12 text-ink-2">
-            orchestration.yaml
-          </span>
+        {/* Workspace name (editable) + status chips */}
+        <div className="flex items-center gap-2">
+          <WorkspaceName />
           <ConnectionChip />
           {/* Lifecycle status chip */}
           <span

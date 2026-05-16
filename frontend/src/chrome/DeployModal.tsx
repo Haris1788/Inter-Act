@@ -488,7 +488,8 @@ export function DeployModal({
             {/* Honest terminal notes */}
             {isPrepared && (
               <p className="mt-2 pl-2.5 border-l-2 border-line text-11 text-ink-4 leading-snug">
-                Payload recorded. To apply: edit{" "}
+                Payload recorded. The frontend does not generate compose or
+                restart containers (backend is authoritative). To apply: edit{" "}
                 <span className="font-mono">pipeline.yaml</span> and run{" "}
                 <span className="font-mono">generate_compose.py</span> →{" "}
                 <span className="font-mono">docker compose up --build</span>.
