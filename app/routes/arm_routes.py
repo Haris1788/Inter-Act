@@ -1052,7 +1052,10 @@ def deploy_apply():
     if not isinstance(actors, list):
         return jsonify({"error": "actors[] required", "code": "BAD_PAYLOAD"}), 400
 
-    result = deploy_bridge.apply_topology(payload)
+    # Background: write config + spawn the heavy materialize off-thread so
+    # this request returns instantly (no client-timeout "unreachable",
+    # any actor count). The client polls GET /deploy/status.
+    result = deploy_bridge.apply_topology(payload, background=True)
 
     timestamp = datetime.now().strftime("%H:%M:%S")
     socketio.emit(
@@ -1062,13 +1065,23 @@ def deploy_apply():
             "source": "pipeline",
             "message": (
                 f"Deploy apply: {result['detail']} "
-                f"(arms={result['arms']}, applied={result['applied']})"
+                f"(arms={result['arms']}, running={result.get('running')})"
             ),
         },
     )
     if result.get("steps", {}).get("reloaded") == "ok":
         socketio.emit("state_update", arm_state.get_all())
     return jsonify(result)
+
+
+@arm_bp.route("/deploy/status", methods=["GET"])
+def deploy_status():
+    """Background deploy progress for the client to poll (Phase 15).
+
+    Lets the UI advance the deploy lifecycle on backend truth instead of
+    holding one long HTTP request open.
+    """
+    return jsonify(deploy_bridge.get_deploy_state())
 
 
 # --- Arm health and lifecycle ---

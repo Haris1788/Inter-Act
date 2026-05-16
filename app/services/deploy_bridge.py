@@ -23,12 +23,41 @@ import copy
 import os
 import re
 import subprocess
+import threading
+import time
 from typing import Any, Optional
 
 import yaml
 
 from app.models import pipeline_config
 from app.services import container_manager
+
+# Background deploy state. Heavy work (image build + N container
+# create/restart) runs off the request thread so the HTTP call returns
+# instantly and never trips the client timeout, regardless of actor count.
+_STATE_LOCK = threading.Lock()
+_STATE: dict[str, Any] = {
+    "phase": "idle",  # idle | materializing | done
+    "running": False,
+    "applied": False,
+    "detail": "",
+    "arms": [],
+    "assets": [],
+    "steps": {},
+    "ts": None,
+}
+
+
+def _set(**kw: Any) -> None:
+    with _STATE_LOCK:
+        _STATE.update(kw)
+        _STATE["ts"] = time.strftime("%H:%M:%S")
+
+
+def get_deploy_state() -> dict[str, Any]:
+    with _STATE_LOCK:
+        return dict(_STATE)
+
 
 _ARM_RE = re.compile(r"^arm-(\d+)$")
 _ARM_COLORS = [
@@ -147,6 +176,7 @@ def apply_topology(
     compose_path: Optional[str] = None,
     run_compose: bool = True,
     reload_runtime: bool = True,
+    background: bool = False,
 ) -> dict[str, Any]:
     """Apply an authored topology to the real runtime. Honest by design.
 
@@ -170,18 +200,18 @@ def apply_topology(
             yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
         steps["config_written"] = "ok"
     except OSError as exc:
+        detail = (
+            f"pipeline.yaml not writable ({exc.strerror or exc}). "
+            "Containerized backend mounts it read-only - apply the "
+            "authored topology via the offline pipeline.yaml -> "
+            "generate_compose flow. Runtime left unchanged (honest)."
+        )
+        _set(phase="done", running=False, applied=False, detail=detail,
+             arms=arm_ids, assets=asset_ids, steps=steps)
         return {
-            "status": "ok",
-            "applied": False,
-            "arms": arm_ids,
-            "assets": asset_ids,
-            "steps": steps,
-            "detail": (
-                f"pipeline.yaml not writable ({exc.strerror or exc}). "
-                "Containerized backend mounts it read-only - apply the "
-                "authored topology via the offline pipeline.yaml -> "
-                "generate_compose flow. Runtime left unchanged (honest)."
-            ),
+            "status": "ok", "applied": False, "running": False,
+            "arms": arm_ids, "assets": asset_ids, "steps": steps,
+            "detail": detail,
         }
 
     # 2) Regenerate docker-compose.yml.
@@ -192,47 +222,17 @@ def apply_topology(
         steps["compose_generated"] = "ok"
     except Exception as exc:  # noqa: BLE001 - report, don't fake
         steps["compose_generated"] = f"failed: {exc}"
+        detail = f"compose generation failed: {exc}"
+        _set(phase="done", running=False, applied=False, detail=detail,
+             arms=arm_ids, assets=asset_ids, steps=steps)
         return {
-            "status": "ok",
-            "applied": False,
-            "arms": arm_ids,
-            "assets": asset_ids,
-            "steps": steps,
-            "detail": f"compose generation failed: {exc}",
+            "status": "ok", "applied": False, "running": False,
+            "arms": arm_ids, "assets": asset_ids, "steps": steps,
+            "detail": detail,
         }
 
-    # 3) Bring containers up (real). Skipped honestly when docker absent.
-    compose_up_ok = False
-    if not run_compose or not container_manager.is_enabled():
-        steps["compose_up"] = "skipped: docker control unavailable"
-    else:
-        cmd = _docker_compose_cmd()
-        if cmd is None:
-            steps["compose_up"] = "skipped: docker compose not found"
-        else:
-            try:
-                r = subprocess.run(
-                    [*cmd, "-f", comp_path, "up", "-d", "--remove-orphans"],
-                    cwd=project_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=240,
-                    check=False,
-                )
-                if r.returncode == 0:
-                    compose_up_ok = True
-                    steps["compose_up"] = "ok"
-                else:
-                    steps["compose_up"] = "failed: " + (
-                        (r.stderr or r.stdout or "").strip()[:300]
-                    )
-            except subprocess.TimeoutExpired:
-                steps["compose_up"] = "failed: docker compose up timed out"
-            except Exception as exc:  # noqa: BLE001
-                steps["compose_up"] = f"failed: {exc}"
-
-    # 4) Reload config + re-init arm state so the health monitor begins
-    #    pinging any new arm container and rebroadcasts its real state.
+    # 3) Reload config + re-init arm state NOW (fast) so the health monitor
+    #    starts tracking the authored arms immediately.
     reloaded_ok = False
     if reload_runtime:
         try:
@@ -245,99 +245,166 @@ def apply_topology(
         except Exception as exc:  # noqa: BLE001
             steps["reloaded"] = f"failed: {exc}"
 
-    # 5) Make the running stack match the authored topology: restart
-    #    existing containers (re-read config) and CREATE first-class new
-    #    ones - arms AND AGVs - from a clean shared image (not a copy of
-    #    arm-1). This is what makes "add arm-5 / a new AGV then deploy"
-    #    actually run real containers.
-    restarted: list[str] = []
-    created: list[str] = []
-    create_failed: list[str] = []
-    if reload_runtime and container_manager.is_enabled():
-        # Sibling = the lowest-id arm that already has a container; new
-        # containers join its network and bind its host pipeline.yaml.
-        sibling = None
-        for a in doc["arms"]:
-            mid = f"arm-{a['id']}"
-            if container_manager.container_exists(mid):
-                sibling = mid
-                break
-        sibling = sibling or "arm-1"
-
-        for a in doc["arms"]:
-            mid = f"arm-{a['id']}"
-            if container_manager.container_exists(mid):
-                stop_err = container_manager.stop_container(mid)
-                start_err = container_manager.start_container(mid)
-                if not stop_err and not start_err:
-                    restarted.append(mid)
+    # 4) Heavy, slow, scales-with-N work (image build + compose up + per
+    #    actor create/restart) runs OFF the request thread. The HTTP call
+    #    returns instantly; the client polls /deploy/status. This is the
+    #    permanent fix for "/deploy/apply unreachable": the request can no
+    #    longer outlive the client timeout no matter how many actors.
+    def _materialize() -> None:
+        s_compose = "skipped: docker control unavailable"
+        compose_up_ok = False
+        if run_compose and container_manager.is_enabled():
+            cmd = _docker_compose_cmd()
+            if cmd is None:
+                s_compose = "skipped: docker compose not found"
             else:
-                err = container_manager.create_arm_container(
-                    a["id"], template_module=sibling
-                )
-                (created if err is None else create_failed).append(
-                    mid if err is None else f"{mid}: {err}"
-                )
+                try:
+                    r = subprocess.run(
+                        [*cmd, "-f", comp_path, "up", "-d", "--remove-orphans"],
+                        cwd=project_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=600,
+                        check=False,
+                    )
+                    compose_up_ok = r.returncode == 0
+                    s_compose = (
+                        "ok"
+                        if compose_up_ok
+                        else "failed: "
+                        + ((r.stderr or r.stdout or "").strip()[:300])
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    s_compose = f"failed: {exc}"
+        steps["compose_up"] = s_compose
 
-        for i, asset in enumerate(doc["assets"]):
-            aid = asset["id"]
-            if container_manager.container_exists(aid):
-                stop_err = container_manager.stop_container(aid)
-                start_err = container_manager.start_container(aid)
-                if not stop_err and not start_err:
-                    restarted.append(aid)
-            else:
-                err = container_manager.create_asset_container(
-                    aid,
-                    label=asset.get("label", aid),
-                    asset_type=asset.get("type", "vehicle"),
-                    template_module=sibling,
-                    publish_port=8010 + i * 10,
-                )
-                (created if err is None else create_failed).append(
-                    aid if err is None else f"{aid}: {err}"
-                )
-
-        steps["restarted"] = ", ".join(restarted) if restarted else "none"
-        steps["created"] = ", ".join(created) if created else "none"
-        if create_failed:
-            steps["create_failed"] = "; ".join(create_failed)
-
-    # Honest "applied": the backend genuinely applied the authored config to
-    # its running model (writable mount + reload) and/or brought containers
-    # up. The frontend STILL gates "ready" on real per-arm health, so a
-    # brand-new arm with no container can never fake a ready state.
-    applied = compose_up_ok or (steps.get("config_written") == "ok" and reloaded_ok)
-
-    if compose_up_ok:
-        detail = "Containers brought up; health monitor confirms liveness."
-    elif applied:
-        parts = ["Authored config applied."]
-        if restarted:
-            parts.append(f"Restarted {len(restarted)} existing arm(s).")
-        if created:
-            parts.append(
-                f"Created {len(created)} new arm container(s) - booting, "
-                "health monitor will confirm."
+        restarted: list[str] = []
+        created: list[str] = []
+        create_failed: list[str] = []
+        if container_manager.is_enabled():
+            sibling = next(
+                (
+                    f"arm-{a['id']}"
+                    for a in doc["arms"]
+                    if container_manager.container_exists(f"arm-{a['id']}")
+                ),
+                "arm-1",
             )
-        if create_failed:
-            parts.append(
-                f"{len(create_failed)} arm(s) could not be created "
-                "(see steps); they stay stale until a real container is up."
+
+            def _ensure(mid: str, make) -> None:
+                if container_manager.container_exists(mid):
+                    if not container_manager.stop_container(
+                        mid
+                    ) and not container_manager.start_container(mid):
+                        restarted.append(mid)
+                else:
+                    err = make()
+                    (created if err is None else create_failed).append(
+                        mid if err is None else f"{mid}: {err}"
+                    )
+                _set(
+                    detail=f"materializing… {mid}",
+                    steps={
+                        **steps,
+                        "restarted": ", ".join(restarted) or "none",
+                        "created": ", ".join(created) or "none",
+                        **(
+                            {"create_failed": "; ".join(create_failed)}
+                            if create_failed
+                            else {}
+                        ),
+                    },
+                )
+
+            for a in doc["arms"]:
+                aid = a["id"]
+                _ensure(
+                    f"arm-{aid}",
+                    lambda aid=aid: container_manager.create_arm_container(
+                        aid, template_module=sibling
+                    ),
+                )
+            for i, asset in enumerate(doc["assets"]):
+                a_id = asset["id"]
+                _ensure(
+                    a_id,
+                    lambda asset=asset, i=i: container_manager.create_asset_container(
+                        asset["id"],
+                        label=asset.get("label", asset["id"]),
+                        asset_type=asset.get("type", "vehicle"),
+                        template_module=sibling,
+                        publish_port=8010 + i * 10,
+                    ),
+                )
+
+            steps["restarted"] = ", ".join(restarted) or "none"
+            steps["created"] = ", ".join(created) or "none"
+            if create_failed:
+                steps["create_failed"] = "; ".join(create_failed)
+
+        applied = compose_up_ok or (
+            steps.get("config_written") == "ok" and reloaded_ok
+        )
+        if compose_up_ok:
+            detail = "Containers brought up; health monitor confirms liveness."
+        elif applied:
+            parts = ["Authored config applied."]
+            if restarted:
+                parts.append(f"Restarted {len(restarted)} container(s).")
+            if created:
+                parts.append(
+                    f"Created {len(created)} new container(s) - booting; "
+                    "health monitor confirms when alive."
+                )
+            if create_failed:
+                parts.append(
+                    f"{len(create_failed)} could not be created "
+                    "(see steps); they stay stale until really up."
+                )
+            detail = " ".join(parts)
+        else:
+            detail = (
+                "docker unavailable - runtime left unchanged (honest). "
+                "Apply via the offline pipeline.yaml -> generate_compose flow."
             )
-        detail = " ".join(parts)
-    else:
-        detail = (
-            "pipeline.yaml not writable / docker unavailable - runtime left "
-            "unchanged (honest). Apply via the offline pipeline.yaml -> "
-            "generate_compose flow."
+        _set(
+            phase="done",
+            running=False,
+            applied=applied,
+            detail=detail,
+            arms=arm_ids,
+            assets=asset_ids,
+            steps=steps,
         )
 
+    _set(
+        phase="materializing",
+        running=True,
+        applied=False,
+        detail="Applying topology - building images and (re)starting containers…",
+        arms=arm_ids,
+        assets=asset_ids,
+        steps=steps,
+    )
+    if background:
+        threading.Thread(target=_materialize, daemon=True).start()
+        return {
+            "status": "ok",
+            "applied": False,
+            "running": True,
+            "arms": arm_ids,
+            "assets": asset_ids,
+            "steps": steps,
+            "detail": "Applying topology in background - poll /deploy/status.",
+        }
+    _materialize()
+    st = get_deploy_state()
     return {
         "status": "ok",
-        "applied": applied,
+        "applied": st["applied"],
+        "running": False,
         "arms": arm_ids,
         "assets": asset_ids,
-        "steps": steps,
-        "detail": detail,
+        "steps": st["steps"],
+        "detail": st["detail"],
     }

@@ -62,17 +62,26 @@ interface ApplyResult {
   applied: boolean;
   detail: string;
   arms: string[];
+  running?: boolean;
 }
 
-/** POST the authored payload to the real deploy bridge. null = unreachable. */
+interface DeployStatus {
+  phase: string; // idle | materializing | done
+  running: boolean;
+  applied: boolean;
+  detail: string;
+  arms: string[];
+}
+
+/** POST the authored payload. The bridge returns INSTANTLY (heavy work is
+ *  backgrounded), so a short timeout is correct. null = unreachable. */
 async function postApply(
   path: string,
   body: unknown,
 ): Promise<ApplyResult | null> {
   try {
     const ctrl = new AbortController();
-    // Bridge may run `docker compose up` server-side - allow generous time.
-    const t = setTimeout(() => ctrl.abort(), 250_000);
+    const t = setTimeout(() => ctrl.abort(), 15_000);
     const r = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -82,6 +91,15 @@ async function postApply(
     clearTimeout(t);
     if (!r.ok) return null;
     return (await r.json()) as ApplyResult;
+  } catch {
+    return null;
+  }
+}
+
+async function getDeployStatus(): Promise<DeployStatus | null> {
+  try {
+    const r = await fetch("/deploy/status");
+    return r.ok ? ((await r.json()) as DeployStatus) : null;
   } catch {
     return null;
   }
@@ -179,44 +197,62 @@ export async function runDeploy(
     st().pushEvent({
       kind: "deploy",
       text: `Backend: ${res.detail}`,
-      tone: res.applied ? "info" : "warn",
+      tone: "info",
     });
 
-    // The backend did not start real containers - do NOT fake a ready
-    // runtime or record a deploy baseline. The actor stays stale until a
-    // real container reports healthy (honest, per spec).
-    if (!res.applied) {
+    // Honest immediate stop: backend could not even start (read-only
+    // pipeline.yaml / docker unavailable). It is not running anything.
+    if (!res.running && !res.applied) {
       st().setDeployPhase(
         "failed",
         "Runtime not started by backend - actor stays stale (see Events)",
       );
+      return { ok: false, payload, finalPhase: "failed", note: res.detail };
+    }
+
+    // Phase A: poll the background materialize to completion. The request
+    // already returned, so this is cheap polling - it can never make the
+    // deploy call itself time out, for any actor count.
+    st().setDeployPhase("restarting", "Building images / starting containers…");
+    let status: DeployStatus | null = null;
+    for (let i = 0; i < 150; i++) {
+      // ~5 min ceiling: first-ever shared-image build is slow.
+      await sleep(2000);
+      status = await getDeployStatus();
+      if (status) {
+        st().setDeployPhase("restarting", status.detail || "Materializing…");
+        if (!status.running) break;
+      }
+    }
+    if (status && !status.applied) {
+      st().setDeployPhase("failed", status.detail || "Backend did not apply");
+      st().pushEvent({
+        kind: "deploy",
+        text: `Backend: ${status.detail}`,
+        tone: "warn",
+      });
       return {
         ok: false,
         payload,
         finalPhase: "failed",
-        note: res.detail,
+        note: status.detail || "not applied",
       };
     }
 
+    // Phase B: confirm via backend truth - every authored arm container
+    // must report a live health before the deploy is "ready".
     st().setDeployPhase("reconciling", "Reconciling runtime…");
     const expected = new Set(res.arms);
     const aliveHealth = new Set(["alive", "idle", "busy", "recovering"]);
-    // Confirm via backend truth ONLY: every authored arm container must
-    // report a live health before we call the deploy ready. Timeout → fail.
-    // ~36s: freshly-cloned arm containers need time to boot arm_server and
-    // POST their first health. Generous so a real-but-slow start is not
-    // misreported as a failure.
     let ready = false;
-    for (let i = 0; i < 18; i++) {
+    for (let i = 0; i < 30; i++) {
       await sleep(2000);
       try {
         const ar = await fetch("/arms/health")
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null);
         const arms: Record<string, { health?: string }> = ar?.arms ?? {};
-        const present = new Set(
-          Object.keys(arms).map((k) => `arm-${k}`),
-        );
+        const present = new Set(Object.keys(arms).map((k) => `arm-${k}`));
         const allUp =
           expected.size === 0 ||
           [...expected].every(
@@ -237,8 +273,8 @@ export async function runDeploy(
       ready ? "ready" : "failed",
       ready
         ? "Runtime ready - containers confirmed alive"
-        : "Some arm containers not healthy yet - backend applied the config "
-          + "(see Events for per-arm detail); they may still be booting",
+        : "Backend applied the config; some containers still booting "
+          + "(see Events for per-actor detail)",
     );
     st().pushEvent({
       kind: "deploy",
@@ -251,9 +287,7 @@ export async function runDeploy(
       ok: ready,
       payload,
       finalPhase: ready ? "ready" : "failed",
-      note: ready
-        ? "Backend pipeline restarted and reconciled"
-        : "Reconcile timed out",
+      note: ready ? "Applied and reconciled" : "Reconcile timed out",
     };
   }
 

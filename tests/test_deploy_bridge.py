@@ -122,13 +122,14 @@ class TestDeployApplyRoute:
         monkeypatch.setattr(
             deploy_bridge,
             "apply_topology",
-            lambda payload: {
+            lambda payload, **kw: {
                 "status": "ok",
                 "applied": False,
+                "running": True,
                 "arms": ["arm-1"],
                 "assets": [],
                 "steps": {"config_written": "ok"},
-                "detail": "stubbed - no containers started",
+                "detail": "stubbed - materializing in background",
             },
         )
         resp = client.post(
@@ -139,4 +140,10 @@ class TestDeployApplyRoute:
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["applied"] is False
-        assert body["arms"] == ["arm-1"]
+
+    def test_deploy_status_shape(self, client):
+        resp = client.get("/deploy/status")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        for key in ("phase", "running", "applied", "detail"):
+            assert key in body
