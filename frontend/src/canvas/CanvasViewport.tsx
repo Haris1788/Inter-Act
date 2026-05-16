@@ -21,7 +21,7 @@ import {
 } from "@xyflow/react";
 
 import { useStore } from "@/store";
-import { useEditorMode } from "@/store/selectors";
+import { useEditorMode, useFocusRequest } from "@/store/selectors";
 import { createActorFromPalette } from "@/runtime/nodeFactory";
 import { DRAG_MIME } from "@/lib/dragContract";
 import { useFlowNodes } from "./flow/useFlowNodes";
@@ -41,6 +41,7 @@ function FlowInner() {
   const containerRef = useRef<HTMLDivElement>(null);
   const rf = useReactFlow();
   const mode = useEditorMode();
+  const focusRequest = useFocusRequest();
 
   const setSelectedActor = useStore((s) => s.setSelectedActor);
   const moveActor = useStore((s) => s.moveActor);
@@ -54,6 +55,19 @@ function FlowInner() {
 
   const nodes = useFlowNodes();
   const { fitToStage } = useFitViewport(containerRef);
+
+  // Focus-on-selection: center + gently zoom the requested actor. Smooth,
+  // restrained — operational navigation at scale, not a camera fly.
+  useEffect(() => {
+    if (!focusRequest) return;
+    void rf.fitView({
+      nodes: [{ id: focusRequest.id }],
+      duration: 450,
+      minZoom: 0.6,
+      maxZoom: 1.2,
+      padding: 0.55,
+    });
+  }, [focusRequest, rf]);
 
   const handleNodesChange = useCallback(
     (changes: NodeChange<Node>[]) => {
@@ -163,6 +177,14 @@ function FlowInner() {
           if (a) s.moveActor(id, { x: a.position.x + dx, y: a.position.y + dy });
         }
         s.markDirty();
+        return;
+      }
+      if (!meta && e.key === "f") {
+        const id = s.selectedActorId ?? s.selectedIds[0];
+        if (id) {
+          e.preventDefault();
+          s.requestFocus(id);
+        }
         return;
       }
       if (!meta && e.key === "v") s.setMode("select");

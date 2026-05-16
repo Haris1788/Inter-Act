@@ -19,6 +19,7 @@ export const useDirty = () => useStore((s) => s.dirty);
 export const useDeployPhase = () => useStore((s) => s.deployPhase);
 export const useDeployMessage = () => useStore((s) => s.deployMessage);
 export const useDeployedAt = () => useStore((s) => s.deployedAt);
+export const useFocusRequest = () => useStore((s) => s.focusRequest);
 
 export const useDataSource = () => useStore((s) => s.dataSource);
 export const useLinkStatus = () => useStore((s) => s.linkStatus);

@@ -12,6 +12,7 @@ export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (
   deployedAt: null,
   deployPhase: "idle",
   deployMessage: "",
+  focusRequest: null,
 
   setMode: (mode) => set({ mode, contextMenu: null }),
 
@@ -41,4 +42,7 @@ export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (
 
   setDeployPhase: (deployPhase, message) =>
     set({ deployPhase, deployMessage: message ?? "" }),
+
+  requestFocus: (id) =>
+    set((s) => ({ focusRequest: { id, nonce: (s.focusRequest?.nonce ?? 0) + 1 } })),
 });

@@ -112,6 +112,10 @@ export interface EditorSlice {
   markClean: () => void;
   recordDeploy: (docJson: string) => void;
   setDeployPhase: (phase: DeployPhase, message?: string) => void;
+  // Phase 7 — request the canvas to center/zoom an actor (nonce so repeat
+  // focus of the same id still fires). Consumed by the RF viewport effect.
+  focusRequest: { id: ActorId; nonce: number } | null;
+  requestFocus: (id: ActorId) => void;
 }
 
 // ---------- SLICE 2: Runtime (live status; read-mostly in UI) ----------
