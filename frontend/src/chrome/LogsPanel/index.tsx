@@ -6,7 +6,14 @@ import { EventsPane } from "./EventsPane";
 import { FleetRoster } from "./FleetRoster";
 import { ValidationList } from "./ValidationList";
 import { BusPane } from "./BusPane";
-import { useLogLines, useEvents, useActors, useBusMessages } from "@/store/selectors";
+import {
+  useLogLines,
+  useEvents,
+  useActors,
+  useBusMessages,
+  useDataSource,
+  useLinkStatus,
+} from "@/store/selectors";
 import { useStore } from "@/store";
 import { useTopologyValidation } from "@/store/derived";
 
@@ -22,6 +29,8 @@ export function LogsPanel() {
   const events = useEvents();
   const actors = useActors();
   const busMessages = useBusMessages();
+  const dataSource = useDataSource();
+  const linkStatus = useLinkStatus();
   const { errors, warnings } = useTopologyValidation();
 
   // For pausing: snapshot the log lines when pause is toggled on
@@ -90,6 +99,8 @@ export function LogsPanel() {
         onClear={clearHandler}
         collapsed={collapsed}
         onCollapse={() => setCollapsed((c) => !c)}
+        dataSource={dataSource}
+        linkStatus={linkStatus}
       />
 
       {!collapsed && (

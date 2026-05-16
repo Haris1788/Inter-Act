@@ -9,6 +9,7 @@ import type {
   TopologyPool,
   TopologyGoal,
 } from "@/store/types";
+import { normalizeActor } from "./actorNormalizer";
 
 export const TOPOLOGY_SCHEMA_VERSION = 1 as const;
 
@@ -40,8 +41,9 @@ export function serializeTopology(s: TopologyState): TopologyDoc {
 }
 
 export function docToState(doc: TopologyDoc): TopologyState {
+  // Import / restore is a creation path → same canonical normalizer.
   const actors: Record<string, TopologyActor> = {};
-  for (const a of doc.actors) actors[a.id] = a;
+  for (const a of doc.actors) actors[a.id] = normalizeActor(a);
   const zones: Record<string, TopologyZone> = {};
   for (const z of doc.zones) zones[z.id] = z;
   return { actors, zones, pool: doc.pool, goal: doc.goal };

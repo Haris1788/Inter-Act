@@ -5,6 +5,7 @@ import {
   useActorRuntime,
   useDataSource,
 } from "@/store/selectors";
+import { DEFAULT_RUNTIME } from "@/store/runtimeSlice";
 import { InspHead } from "./InspHead";
 import { InspTabs, type Tab } from "./InspTabs";
 import { SectionIdentity } from "./SectionIdentity";
@@ -35,11 +36,16 @@ export function Inspector() {
 
   const selectedId = useSelectedActorId();
   const actor = useActor(selectedId ?? "");
-  const runtime = useActorRuntime(selectedId ?? "");
+  const liveRuntime = useActorRuntime(selectedId ?? "");
+  // Schema-driven: a selected actor ALWAYS gets a full inspector. Actors
+  // with no live runtime yet (e.g. just drag-created) fall back to the
+  // canonical default so every section/control renders consistently. No
+  // preset / authored / runtime special-casing anywhere below.
+  const runtime = liveRuntime ?? DEFAULT_RUNTIME;
 
   const [activeTab, setActiveTab] = useState<Tab>("Properties");
 
-  if (!selectedId || !actor || !runtime) {
+  if (!selectedId || !actor) {
     return (
       <aside className="flex h-full flex-col border-l border-line bg-bg-panel">
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-12 text-ink-4">
@@ -96,7 +102,7 @@ export function Inspector() {
         )}
       </div>
 
-      <ActionsRow />
+      <ActionsRow actorId={actor.id} />
     </aside>
   );
 }

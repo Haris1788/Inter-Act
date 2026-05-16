@@ -1,4 +1,5 @@
-import type { RuntimeDriver } from "./driver";
+import type { RuntimeDriver, ActorOpResult } from "./driver";
+import type { useStore } from "@/store";
 import {
   mockActors,
   mockZones,
@@ -21,9 +22,11 @@ import {
 export function createMockDriver(): RuntimeDriver {
   let raf = 0;
   let last = 0;
+  let storeRef: typeof useStore | null = null;
 
   return {
     start(store) {
+      storeRef = store;
       const s = store.getState();
       s.setConnection("mock", "connected");
       s.hydrateTopology({ actors: mockActors, zones: mockZones, pool: mockPool, goal: mockGoal });
@@ -59,6 +62,41 @@ export function createMockDriver(): RuntimeDriver {
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
       last = 0;
+      storeRef = null;
+    },
+
+    // Honest mock control: there is no container, so we mutate the mock
+    // runtime directly. The topbar already labels the data source "mock",
+    // so this is a truthful local effect, not a faked backend.
+    stopActor(actorId: string): Promise<ActorOpResult> {
+      const s = storeRef?.getState();
+      if (!s) return Promise.resolve({ ok: false, note: "mock not started" });
+      s.setActorRuntime(actorId, { status: "down", phase: "stopped" });
+      s.pushEvent({
+        kind: "lifecycle",
+        actorId,
+        text: `${actorId} stopped (mock runtime)`,
+        tone: "warn",
+      });
+      return Promise.resolve({ ok: true, note: "mock actor stopped" });
+    },
+
+    restartActor(actorId: string): Promise<ActorOpResult> {
+      const s = storeRef?.getState();
+      if (!s) return Promise.resolve({ ok: false, note: "mock not started" });
+      s.setActorRuntime(actorId, { status: "idle", phase: "idle" });
+      s.pushEvent({
+        kind: "lifecycle",
+        actorId,
+        text: `${actorId} restarted (mock runtime)`,
+        tone: "ok",
+      });
+      return Promise.resolve({ ok: true, note: "mock actor restarted" });
+    },
+
+    refreshRuntime(): Promise<void> {
+      // Mock state is authoritative locally; nothing to reconcile.
+      return Promise.resolve();
     },
   };
 }

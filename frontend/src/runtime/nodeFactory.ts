@@ -2,6 +2,7 @@
 // Frontend authoring only; no backend involvement.
 
 import type { TopologyActor, Vec2 } from "@/store/types";
+import { normalizeActor } from "@/lib/actorNormalizer";
 
 export interface PaletteDescriptor {
   kind: "arm" | "agv";
@@ -88,16 +89,16 @@ export function createActorFromPalette(
   if (!d) return null;
   const size = d.kind === "arm" ? ARM_SIZE : AGV_SIZE;
   const id = d.kind === "arm" ? nextArmId(existing) : nextVehId(existing);
-  return {
+  // No explicit label: the canonical normalizer derives "Arm 7" / "Veh C"
+  // from the id (same path presets/hydration use).
+  return normalizeActor({
     id,
     kind: d.kind,
     type: d.type,
-    label: id,
     position: { x: dropCenter.x - size.w / 2, y: dropCenter.y - size.h / 2 },
     size,
     capabilities: d.capabilities,
-    liveCapability: null,
     brain: d.brain,
     spec: d.spec,
-  };
+  });
 }

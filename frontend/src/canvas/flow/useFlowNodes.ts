@@ -21,8 +21,13 @@ export function useFlowNodes(): Node[] {
         type: "actorNode",
         position: { x: actor.position.x, y: actor.position.y },
         data: { ...actor },
-        // Width is set on the card element; RF needs it for hit-test accuracy.
-        style: { ...nodeStyle, width: actor.size.w, height: actor.size.h },
+        // First-class dimensions (NOT only in style): RF's MiniMap reads
+        // node.width/height directly. With onlyRenderVisibleElements culling
+        // off-viewport nodes, measured dims never arrive for culled nodes, so
+        // style-only sizing left the MiniMap drawing zero-area rects (blank).
+        width: actor.size.w,
+        height: actor.size.h,
+        style: { ...nodeStyle },
         // Prevent RF from adding its own selected class (we manage it from store).
         selected: false,
       });
@@ -35,6 +40,10 @@ export function useFlowNodes(): Node[] {
         type: "zoneNode",
         position: { x: zone.position.x, y: zone.position.y },
         data: { ...zone },
+        // Representative dims so the source/sink markers appear in the
+        // MiniMap overview (centered via origin like the live chip).
+        width: 96,
+        height: 36,
         style: { ...nodeStyle },
         // origin [0.5, 0.5] so position == chip center (prototype uses translate(-50%,-50%))
         origin: [0.5, 0.5],
@@ -51,6 +60,8 @@ export function useFlowNodes(): Node[] {
       type: "poolLabelNode",
       position: { x: 660, y: 410 },
       data: { pool },
+      width: 240,
+      height: 64,
       style: { ...nodeStyle },
       origin: [0.5, 0.5],
       draggable: false,

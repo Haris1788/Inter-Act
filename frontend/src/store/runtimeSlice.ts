@@ -5,7 +5,10 @@ const BUS_CAP = 40;
 const LOG_CAP = 200;
 const EVENT_CAP = 300; // bounded - long-session memory safety
 
-const DEFAULT_RUNTIME = {
+// Exported so schema-driven surfaces (Inspector) can render consistent
+// controls for any actor that has no live runtime entry yet (e.g. just
+// drag-created, not yet seen by a driver). No preset/origin special-case.
+export const DEFAULT_RUNTIME = {
   status: "idle" as const,
   phase: "",
   bid: null,

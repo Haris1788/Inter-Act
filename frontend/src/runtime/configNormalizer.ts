@@ -3,6 +3,7 @@
 // intentionally ignored (no transfer pads in the new architecture).
 
 import { STAGE_W, STAGE_H } from "@/lib/stageCoords";
+import { normalizeActor } from "@/lib/actorNormalizer";
 import type { TopologyActor, TopologyZone, Vec2 } from "@/store/types";
 
 interface RawGraphNode {
@@ -70,33 +71,25 @@ export function normalizeConfig(cfg: RawConfig): NormalizedTopology {
     if (n.type === "arm") {
       const pv = n.geometry?.pivot ?? armPivot.get(n.id) ?? { x: cw / 2, y: ch / 2 };
       const c = map(pv);
-      actors[n.id] = {
+      actors[n.id] = normalizeActor({
         id: n.id,
         kind: "arm",
         type: n.label?.includes("·") ? n.label : "Arm",
-        label: n.label ?? n.id,
+        label: n.label,
         position: { x: c.x - ARM_SIZE.w / 2, y: c.y - ARM_SIZE.h / 2 },
         size: ARM_SIZE,
-        capabilities: ["pick", "place", "dock"],
-        liveCapability: null,
-        brain: "Scripted",
-        spec: "",
-      };
+      });
     } else if (n.type === "vehicle") {
       const wp = assetsById.get(n.id)?.geometry?.waypoints?.[0] ?? { x: cw / 2, y: ch * 0.75 };
       const c = map(wp);
-      actors[n.id] = {
+      actors[n.id] = normalizeActor({
         id: n.id,
         kind: "agv",
         type: n.label?.includes("AGV") ? n.label : "AGV",
-        label: n.label ?? n.id,
+        label: n.label,
         position: { x: c.x - AGV_SIZE.w / 2, y: c.y - AGV_SIZE.h / 2 },
         size: AGV_SIZE,
-        capabilities: ["transit", "dock", "carry"],
-        liveCapability: null,
-        brain: "Scheduler · FIFO",
-        spec: "",
-      };
+      });
     }
   }
 

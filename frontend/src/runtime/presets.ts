@@ -9,6 +9,7 @@ import type {
   TopologyGoal,
 } from "@/store/types";
 import { mockActors, mockZones, mockPool, mockGoal } from "./mockData";
+import { normalizeActor } from "@/lib/actorNormalizer";
 
 interface PresetTopology {
   actors: Record<string, TopologyActor>;
@@ -35,18 +36,15 @@ function arm(
   y: number,
   spec: string,
 ): TopologyActor {
-  return {
+  return normalizeActor({
     id,
     kind: "arm",
     type,
     label,
     position: { x, y },
     size: ARM,
-    capabilities: ["pick", "place", "dock"],
-    liveCapability: null,
-    brain: "Scripted",
     spec,
-  };
+  });
 }
 function agv(
   id: string,
@@ -56,18 +54,15 @@ function agv(
   y: number,
   spec: string,
 ): TopologyActor {
-  return {
+  return normalizeActor({
     id,
     kind: "agv",
     type,
     label,
     position: { x, y },
     size: AGV,
-    capabilities: ["transit", "dock", "carry"],
-    liveCapability: null,
-    brain: "Scheduler · FIFO",
     spec,
-  };
+  });
 }
 // Authored presets have no live feed yet - neutral counts, not fabricated.
 const ZONES: Record<string, TopologyZone> = {

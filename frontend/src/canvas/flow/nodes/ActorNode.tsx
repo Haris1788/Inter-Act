@@ -12,6 +12,7 @@ import {
 } from "@/store/selectors";
 import { useStore } from "@/store";
 import { useCoherence } from "@/store/derived";
+import { displayName } from "@/chrome/Inspector/displayName";
 import type { TopologyActor } from "@/store/types";
 
 /** The `data` payload stored on each RF ActorNode. */
@@ -146,9 +147,9 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const startEdit = useCallback(() => {
-    setEditValue(actor.label);
+    setEditValue(displayName(actor));
     setEditing(true);
-  }, [actor.label]);
+  }, [actor]);
 
   const commitEdit = useCallback(() => {
     const trimmed = editValue.trim();
@@ -289,7 +290,7 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
                 startEdit();
               }}
             >
-              {actor.label}
+              {displayName(actor)}
             </div>
           )}
           <div className="mt-[2px] font-mono text-10.5 text-ink-3">

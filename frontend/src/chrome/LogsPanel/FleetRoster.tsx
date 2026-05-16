@@ -1,7 +1,9 @@
 import { useActors } from "@/store/selectors";
 import { useStore } from "@/store";
 import { cn } from "@/lib/cn";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { displayName } from "@/chrome/Inspector/displayName";
+import { opStopActor, opRestartActor } from "@/runtime/ops";
 import type { ActorStatus } from "@/store/types";
 
 /** Lower index = rendered first (attention-worthy at top). */
@@ -98,7 +100,7 @@ export function FleetRoster() {
               "px-1 py-1.5 text-11.5",
               "last:border-b-0",
             )}
-            style={{ gridTemplateColumns: "18px 1fr 70px 56px" }}
+            style={{ gridTemplateColumns: "18px 1fr 58px 46px 44px" }}
           >
             {/* Status dot */}
             <span className="flex justify-center">
@@ -111,11 +113,11 @@ export function FleetRoster() {
               />
             </span>
 
-            {/* Name + sub */}
+            {/* Name + sub — canonical label, raw id as mono sub */}
             <span className="text-ink">
-              {actor.id}
+              {displayName(actor)}
               <span className="ml-1 font-mono text-10.5 text-ink-4">
-                · {actor.type}
+                · {actor.id}
               </span>
             </span>
 
@@ -133,6 +135,9 @@ export function FleetRoster() {
             <span className="text-right font-mono text-10.5 text-ink-3">
               {cpu}% cpu
             </span>
+
+            {/* Per-actor runtime controls */}
+            <RowControls actorId={actor.id} />
           </div>
         );
       })}
@@ -141,5 +146,65 @@ export function FleetRoster() {
         <p className="py-3 text-11.5 text-ink-5">No actors in topology</p>
       )}
     </div>
+  );
+}
+
+/** Real per-actor runtime control (restart / stop) via the ops seam. */
+function RowControls({ actorId }: { actorId: string }) {
+  const [busy, setBusy] = useState(false);
+
+  async function run(kind: "stop" | "restart") {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (kind === "stop") await opStopActor(actorId);
+      else await opRestartActor(actorId);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className="flex items-center justify-end gap-1">
+      <button
+        title={`Restart ${actorId}`}
+        onClick={() => run("restart")}
+        disabled={busy}
+        className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-ink-4 hover:bg-bg-hover hover:text-ink disabled:opacity-40"
+      >
+        <svg
+          width="11"
+          height="11"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M3 7v6h6" />
+          <path d="M21 17a9 9 0 0 0-15-6.7L3 13" />
+        </svg>
+      </button>
+      <button
+        title={`Stop ${actorId}`}
+        onClick={() => run("stop")}
+        disabled={busy}
+        className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-ink-4 hover:bg-bg-hover hover:text-[#8B3621] disabled:opacity-40"
+      >
+        <svg
+          width="11"
+          height="11"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+        >
+          <circle cx="12" cy="12" r="9" />
+          <line x1="8" y1="8" x2="16" y2="16" />
+          <line x1="16" y1="8" x2="8" y2="16" />
+        </svg>
+      </button>
+    </span>
   );
 }

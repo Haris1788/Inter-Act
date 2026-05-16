@@ -1,5 +1,6 @@
 import type { StateCreator } from "zustand";
 import type { RootStore, TopologySlice, TopologyActor } from "./types";
+import { normalizeActor } from "@/lib/actorNormalizer";
 
 function uniqueId(base: string, taken: Record<string, unknown>): string {
   if (!taken[base]) return base;
@@ -49,11 +50,13 @@ export const createTopologySlice: StateCreator<RootStore, [], [], TopologySlice>
     const src = get().actors[id];
     if (!src) return null;
     const newId = uniqueId(`${src.id}-copy`, get().actors);
-    const clone: TopologyActor = {
+    // Through the one canonical normalizer like every other creation path.
+    // An authored label (≠ id) is preserved; an id-derived one re-derives.
+    const clone: TopologyActor = normalizeActor({
       ...src,
       id: newId,
       position: { x: src.position.x + 36, y: src.position.y + 36 },
-    };
+    });
     set((s) => ({ actors: { ...s.actors, [newId]: clone } }));
     return newId;
   },

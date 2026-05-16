@@ -1,5 +1,6 @@
 import { io, type Socket } from "socket.io-client";
-import type { RuntimeDriver } from "./driver";
+import type { useStore } from "@/store";
+import type { RuntimeDriver, ActorOpResult } from "./driver";
 import { normalizeConfig, type RawConfig } from "./configNormalizer";
 import {
   armActorId,
@@ -27,6 +28,33 @@ async function getJSON<T>(
   }
 }
 
+async function postOk(url: string): Promise<{ ok: boolean; note: string }> {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    const r = await fetch(url, { method: "POST", signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return { ok: false, note: `HTTP ${r.status}` };
+    const body = (await r.json().catch(() => ({}))) as {
+      container_control?: string;
+    };
+    const cc = body.container_control;
+    // Honest: the backend soft-fails container control when docker is not
+    // wired up. Surface that instead of pretending the action landed.
+    if (cc && cc !== "ok" && cc !== "not needed" && cc !== "already recovering")
+      return { ok: false, note: cc };
+    return { ok: true, note: cc ?? "ok" };
+  } catch {
+    return { ok: false, note: "request failed" };
+  }
+}
+
+/** `arm-7` → 7; anything else → null (treated as a non-arm asset id). */
+function armNumber(actorId: string): number | null {
+  const m = /^arm-(\d+)$/.exec(actorId);
+  return m ? Number(m[1]) : null;
+}
+
 export function createSocketDriver(): RuntimeDriver {
   let socket: Socket | null = null;
   let raf = 0;
@@ -44,9 +72,39 @@ export function createSocketDriver(): RuntimeDriver {
   let adjacency: Record<string, string[]> = {};
   // object_id → last owner key, for detecting dock moments.
   const objOwner = new Map<string, string>();
+  // Captured at start() so the Phase 13 operational controls can reconcile
+  // store state from the backend without holding a separate store ref.
+  let storeRef: typeof useStore | null = null;
+
+  // Re-derive truthful actor runtime from the backend container snapshot.
+  // Used on reconnect and after every operational action so the UI never
+  // advances ahead of the backend (the backend stays the authority).
+  async function reconcileRuntime(): Promise<void> {
+    const store = storeRef;
+    if (!store) return;
+    const snap = await getJSON<{
+      arms?: Record<string, { health: string; error: string | null }>;
+      assets?: Record<string, { status: string }>;
+    }>("/runtime/status");
+    if (!snap) return;
+    const st = store.getState();
+    if (snap.arms)
+      for (const [id, h] of Object.entries(snap.arms))
+        st.setActorRuntime(armActorId(id), {
+          status: armHealthToStatus(h.health),
+          phase: h.error ? `${h.health} · ${h.error}` : h.health,
+        });
+    if (snap.assets)
+      for (const [id, a] of Object.entries(snap.assets))
+        st.setActorRuntime(assetActorId(id), {
+          status: assetStatusToStatus(a.status),
+          phase: a.status,
+        });
+  }
 
   return {
     start(store) {
+      storeRef = store;
       const st = () => store.getState();
       st().setConnection("live", "connecting");
 
@@ -394,6 +452,55 @@ export function createSocketDriver(): RuntimeDriver {
       socket?.removeAllListeners();
       socket?.disconnect();
       socket = null;
+      storeRef = null;
+    },
+
+    // ── Phase 13 operational controls ──
+    // Real backend container actions. After the call we reconcile runtime
+    // from the backend (never optimistic). Health/asset socket events also
+    // arrive independently; reconcile is the immediate confirmation.
+    async stopActor(actorId: string): Promise<ActorOpResult> {
+      const armN = armNumber(actorId);
+      const url =
+        armN != null
+          ? `/arms/${armN}/stop`
+          : `/assets/${encodeURIComponent(actorId)}/fail`;
+      const r = await postOk(url);
+      const st = storeRef?.getState();
+      st?.pushEvent({
+        kind: "lifecycle",
+        actorId,
+        text: r.ok
+          ? `${actorId} stop requested · ${r.note}`
+          : `${actorId} stop failed · ${r.note}`,
+        tone: r.ok ? "warn" : "err",
+      });
+      await reconcileRuntime();
+      return r;
+    },
+
+    async restartActor(actorId: string): Promise<ActorOpResult> {
+      const armN = armNumber(actorId);
+      const url =
+        armN != null
+          ? `/arms/${armN}/restart`
+          : `/assets/${encodeURIComponent(actorId)}/recover`;
+      const r = await postOk(url);
+      const st = storeRef?.getState();
+      st?.pushEvent({
+        kind: "lifecycle",
+        actorId,
+        text: r.ok
+          ? `${actorId} restart requested · ${r.note}`
+          : `${actorId} restart failed · ${r.note}`,
+        tone: r.ok ? "ok" : "err",
+      });
+      await reconcileRuntime();
+      return r;
+    },
+
+    refreshRuntime(): Promise<void> {
+      return reconcileRuntime();
     },
   };
 }

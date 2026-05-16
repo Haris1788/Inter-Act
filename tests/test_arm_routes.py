@@ -372,3 +372,67 @@ class TestAssetRecoverRoutes:
         assert data["container_control"] == "not needed"
         assert data["asset"]["status"] == "idle"
         assert calls == []
+
+
+class TestPhase13OperationalRoutes:
+    """Phase 13: real arm restart + runtime status snapshot."""
+
+    def test_restart_arm_stops_then_starts_container(self, client, monkeypatch):
+        from app.services import container_manager
+
+        order = []
+        monkeypatch.setattr(
+            container_manager,
+            "stop_container",
+            lambda module_id: order.append(("stop", module_id)),
+        )
+        monkeypatch.setattr(
+            container_manager,
+            "start_container",
+            lambda module_id: order.append(("start", module_id)),
+        )
+
+        resp = client.post("/arms/1/restart")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["arm_id"] == 1
+        assert data["container_control"] == "ok"
+        # Stop must precede start (a real restart, not a bare start).
+        assert order == [("stop", "arm-1"), ("start", "arm-1")]
+
+    def test_restart_arm_surfaces_container_error(self, client, monkeypatch):
+        from app.services import container_manager
+
+        monkeypatch.setattr(
+            container_manager, "stop_container", lambda module_id: None
+        )
+        monkeypatch.setattr(
+            container_manager,
+            "start_container",
+            lambda module_id: "docker unavailable",
+        )
+
+        resp = client.post("/arms/1/restart")
+
+        assert resp.status_code == 200
+        # Honest: a failed container hop is reported, not swallowed.
+        assert "docker unavailable" in resp.get_json()["container_control"]
+
+    def test_runtime_status_snapshot_shape(self, client):
+        resp = client.get("/runtime/status")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        for key in (
+            "timestamp",
+            "pipeline_stopped",
+            "arms",
+            "assets",
+            "container_control",
+        ):
+            assert key in data
+        assert isinstance(data["arms"], dict)
+        assert isinstance(data["assets"], dict)
+        assert isinstance(data["pipeline_stopped"], bool)

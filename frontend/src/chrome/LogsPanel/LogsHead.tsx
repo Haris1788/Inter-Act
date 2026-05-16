@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import type { DataSource, LinkStatus } from "@/store/types";
 
 type TabId = "coordination" | "fleet" | "bus" | "validation" | "events";
 
@@ -19,6 +20,8 @@ interface LogsHeadProps {
   onClear: (() => void) | null; // null = not available for this tab → button hidden
   collapsed: boolean;
   onCollapse: () => void;
+  dataSource: DataSource;
+  linkStatus: LinkStatus;
 }
 
 const TABS: { id: TabId; label: string }[] = [
@@ -38,7 +41,11 @@ export function LogsHead({
   onClear,
   collapsed,
   onCollapse,
+  dataSource,
+  linkStatus,
 }: LogsHeadProps) {
+  const linkOk = linkStatus === "connected";
+  const linkWarn = linkStatus === "connecting";
   return (
     <div
       className={cn(
@@ -79,18 +86,29 @@ export function LogsHead({
 
       {/* Right tools */}
       <div className="flex items-center gap-1.5 text-ink-3">
-        {/* Runtime status pill */}
+        {/* Runtime status pill — real data source + link health */}
         <span
           className={cn(
-            "inline-flex items-center gap-1.5 rounded px-2 py-[3px]",
-            "border bg-ok-bg text-11 text-[#3D6A39]",
-            "border-[#CFD8C8]",
+            "inline-flex items-center gap-1.5 rounded px-2 py-[3px] border text-11",
+            linkOk
+              ? "bg-ok-bg text-[#3D6A39] border-[#CFD8C8]"
+              : linkWarn
+                ? "bg-warn-bg text-warn border-[#E3D3A8]"
+                : "bg-bg-sunken text-ink-3 border-line-soft",
           )}
+          title={`data source: ${dataSource} · link: ${linkStatus}`}
         >
           <span
-            className="animate-pulse-dot inline-block h-1.5 w-1.5 rounded-full bg-ok"
+            className={cn(
+              "inline-block h-1.5 w-1.5 rounded-full",
+              linkOk
+                ? "animate-pulse-dot bg-ok"
+                : linkWarn
+                  ? "bg-warn"
+                  : "bg-err",
+            )}
           />
-          staging · runtime #284
+          {dataSource} · {linkStatus}
         </span>
 
         {/* Pause — toggles frozen view */}

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useStore } from "@/store";
 import { createRuntimeDriver, type RuntimeDriver } from "@/runtime";
+import { setActiveDriver } from "@/runtime/ops";
 import { useAutosave } from "@/runtime/useAutosave";
 import { Topbar } from "@/chrome/Topbar";
 import { LeftRegistry } from "@/chrome/LeftRegistry";
@@ -23,9 +24,11 @@ export function App() {
       if (cancelled) return;
       driver = d;
       d.start(useStore);
+      setActiveDriver(d);
     });
     return () => {
       cancelled = true;
+      setActiveDriver(null);
       driver?.stop();
     };
   }, []);

@@ -1148,6 +1148,56 @@ def start_arm(arm_id):
     )
 
 
+@arm_bp.route("/arms/<int:arm_id>/restart", methods=["POST"])
+def restart_arm(arm_id):
+    """Restart an arm container (stop then start) as one operational action.
+
+    Phase 13: real container control for the UI fleet/inspector restart
+    button. In-memory state is left to the health monitor to reconcile
+    once the container reports healthy again - we do not fake an idle
+    state the container has not actually reached.
+    """
+    stop_err = container_manager.stop_container(f"arm-{arm_id}")
+    start_err = container_manager.start_container(f"arm-{arm_id}")
+
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    socketio.emit(
+        "log_message",
+        {
+            "timestamp": timestamp,
+            "source": "pipeline",
+            "message": f"Arm {arm_id} container restart requested",
+        },
+    )
+    errs = [e for e in (stop_err, start_err) if e]
+    return jsonify(
+        {
+            "status": "ok",
+            "arm_id": arm_id,
+            "container_control": "ok" if not errs else "; ".join(errs),
+        }
+    )
+
+
+@arm_bp.route("/runtime/status", methods=["GET"])
+def runtime_status():
+    """Container/runtime snapshot for frontend reconnect reconciliation.
+
+    Phase 13: lets the live driver re-derive truthful actor state after a
+    socket reconnect or an operational action instead of advancing the UI
+    optimistically. Backend stays the authority.
+    """
+    return jsonify(
+        {
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "pipeline_stopped": arm_state.is_pipeline_stopped(),
+            "arms": arm_state.get_all_health(),
+            "assets": asset_state.get_all(),
+            "container_control": container_manager.is_enabled(),
+        }
+    )
+
+
 @arm_bp.route("/arms/<int:arm_id>/allowed", methods=["GET"])
 def check_arm_allowed(arm_id):
     """Check if an arm is allowed to execute (no upstream failures)."""
