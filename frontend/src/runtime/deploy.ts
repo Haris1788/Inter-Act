@@ -58,15 +58,32 @@ export function buildDeployPayload(s: DeployState): DeployPayload {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-async function post(path: string): Promise<boolean> {
+interface ApplyResult {
+  applied: boolean;
+  detail: string;
+  arms: string[];
+}
+
+/** POST the authored payload to the real deploy bridge. null = unreachable. */
+async function postApply(
+  path: string,
+  body: unknown,
+): Promise<ApplyResult | null> {
   try {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 4000);
-    const r = await fetch(path, { method: "POST", signal: ctrl.signal });
+    // Bridge may run `docker compose up` server-side - allow generous time.
+    const t = setTimeout(() => ctrl.abort(), 250_000);
+    const r = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
     clearTimeout(t);
-    return r.ok;
+    if (!r.ok) return null;
+    return (await r.json()) as ApplyResult;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -139,41 +156,72 @@ export async function runDeploy(
 
   const live = st().dataSource === "live" && st().linkStatus === "connected";
   if (live && opts.applyRestart) {
-    st().setDeployPhase("restarting", "Restarting backend pipeline…");
-    const ok = await post("/restart_pipeline");
-    if (!ok) {
-      // No snapshot recorded - the deploy did not land.
-      st().setDeployPhase("failed", "Backend /restart_pipeline failed");
+    st().setDeployPhase("restarting", "Applying topology to runtime…");
+    // REAL backend-authoritative apply: payload → pipeline.yaml →
+    // generate_compose → docker compose up → reload. The backend is honest:
+    // `applied` is false when it could not actually start containers.
+    const res = await postApply("/deploy/apply", payload);
+    if (!res) {
+      st().setDeployPhase("failed", "Backend /deploy/apply unreachable");
       st().pushEvent({
         kind: "deploy",
-        text: "Restart failed - /restart_pipeline error",
+        text: "Deploy failed - /deploy/apply unreachable",
         tone: "err",
       });
       return {
         ok: false,
         payload,
         finalPhase: "failed",
-        note: "restart_pipeline failed",
+        note: "/deploy/apply unreachable",
       };
     }
+
+    st().pushEvent({
+      kind: "deploy",
+      text: `Backend: ${res.detail}`,
+      tone: res.applied ? "info" : "warn",
+    });
+
+    // The backend did not start real containers - do NOT fake a ready
+    // runtime or record a deploy baseline. The actor stays stale until a
+    // real container reports healthy (honest, per spec).
+    if (!res.applied) {
+      st().setDeployPhase(
+        "failed",
+        "Runtime not started by backend - actor stays stale (see Events)",
+      );
+      return {
+        ok: false,
+        payload,
+        finalPhase: "failed",
+        note: res.detail,
+      };
+    }
+
     st().setDeployPhase("reconciling", "Reconciling runtime…");
-    // Poll until the backend reports actors again (arms OR assets - an
-    // AGV-only topology has no arms). Timeout → failed, not silent.
+    const expected = new Set(res.arms);
+    const aliveHealth = new Set(["alive", "idle", "busy", "recovering"]);
+    // Confirm via backend truth ONLY: every authored arm container must
+    // report a live health before we call the deploy ready. Timeout → fail.
     let ready = false;
-    for (let i = 0; i < 6; i++) {
-      await sleep(1200);
+    for (let i = 0; i < 8; i++) {
+      await sleep(1500);
       try {
-        const [ar, as] = await Promise.all([
-          fetch("/arms/health")
-            .then((r) => (r.ok ? r.json() : null))
-            .catch(() => null),
-          fetch("/assets/state")
-            .then((r) => (r.ok ? r.json() : null))
-            .catch(() => null),
-        ]);
-        const armN = ar?.arms ? Object.keys(ar.arms).length : 0;
-        const assetN = as?.assets ? Object.keys(as.assets).length : 0;
-        if (armN + assetN > 0) {
+        const ar = await fetch("/arms/health")
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null);
+        const arms: Record<string, { health?: string }> = ar?.arms ?? {};
+        const present = new Set(
+          Object.keys(arms).map((k) => `arm-${k}`),
+        );
+        const allUp =
+          expected.size === 0 ||
+          [...expected].every(
+            (id) =>
+              present.has(id) &&
+              aliveHealth.has(arms[id.replace("arm-", "")]?.health ?? ""),
+          );
+        if (allUp) {
           ready = true;
           break;
         }
@@ -184,13 +232,15 @@ export async function runDeploy(
     if (ready) st().recordDeploy(snapshotJson); // baseline only on confirmed land
     st().setDeployPhase(
       ready ? "ready" : "failed",
-      ready ? "Runtime ready" : "Runtime did not converge",
+      ready
+        ? "Runtime ready - containers confirmed alive"
+        : "Containers did not report healthy in time",
     );
     st().pushEvent({
       kind: "deploy",
       text: ready
-        ? "Deploy reconciled - runtime ready"
-        : "Deploy reconcile timed out - runtime did not converge",
+        ? "Deploy reconciled - containers confirmed alive"
+        : "Deploy reconcile timed out - containers not confirmed",
       tone: ready ? "ok" : "warn",
     });
     return {

@@ -49,7 +49,8 @@ export function CanvasToolbar({ onFit }: CanvasToolbarProps) {
           title="Edit"
           onClick={() => setMode("edit")}
         >
-          {/* Node/edit glyph: pencil touching a node circle */}
+          {/* Edit-topology glyph: two linked graph nodes + a pencil over
+              them. Reads as "edit the topology graph", not an abstract mark. */}
           <svg
             width="14"
             height="14"
@@ -57,11 +58,15 @@ export function CanvasToolbar({ onFit }: CanvasToolbarProps) {
             fill="none"
             stroke="currentColor"
             strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
           >
-            <circle cx="8" cy="8" r="3" />
-            <path d="M14 10l6-6" />
-            <path d="M17 4l3 3" />
-            <path d="M10 14l4-4" />
+            <circle cx="6" cy="6" r="2.4" />
+            <circle cx="6" cy="18" r="2.4" />
+            <path d="M6 8.4v7.2" />
+            <path d="M8.2 6h3.4" />
+            <path d="M20.4 4.7l-7 7-1.2 3 3-1.2 7-7z" />
+            <path d="M17.7 7.4l1.9 1.9" />
           </svg>
         </ToolBtn>
         <div className="mx-[2px] my-1 w-px self-stretch bg-line-soft" />

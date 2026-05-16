@@ -18,6 +18,7 @@ from app.models import asset_state
 from app.models.scene_config import get_full_config
 from app.models import pipeline_config
 from app.services import container_manager
+from app.services import deploy_bridge
 from app import socketio
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1033,6 +1034,41 @@ def restart_pipeline():
     socketio.emit("objects_reset", {})
     n = pipeline_config.get_arm_count()
     return jsonify({"status": "ok", "arms": n})
+
+
+@arm_bp.route("/deploy/apply", methods=["POST"])
+def deploy_apply():
+    """Apply an authored topology to the REAL runtime (Phase 15 bridge).
+
+    Body: the frontend deploy payload {actors, zones, goal}. Translates it
+    to pipeline.yaml, regenerates docker-compose.yml, brings containers up,
+    reloads config and re-inits arm state so the health monitor confirms
+    liveness. Honest: when the config is read-only or docker/compose is
+    unavailable, ``applied`` is False and the caller must keep the actor
+    stale - nothing here fakes a container.
+    """
+    payload = request.get_json(silent=True) or {}
+    actors = payload.get("actors")
+    if not isinstance(actors, list):
+        return jsonify({"error": "actors[] required", "code": "BAD_PAYLOAD"}), 400
+
+    result = deploy_bridge.apply_topology(payload)
+
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    socketio.emit(
+        "log_message",
+        {
+            "timestamp": timestamp,
+            "source": "pipeline",
+            "message": (
+                f"Deploy apply: {result['detail']} "
+                f"(arms={result['arms']}, applied={result['applied']})"
+            ),
+        },
+    )
+    if result.get("steps", {}).get("reloaded") == "ok":
+        socketio.emit("state_update", arm_state.get_all())
+    return jsonify(result)
 
 
 # --- Arm health and lifecycle ---

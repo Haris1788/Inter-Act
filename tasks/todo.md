@@ -21,6 +21,14 @@ Frontend-only (React app `frontend/src`). No backend, no AI, no arch rewrite, pr
 - [x] Density pass across panes
 - [x] Verify (typecheck+build), docs, local commit (no push)
 
+## Phase 15 (3 remaining regressions)
+
+- [x] Issue 1 Label desync — already fixed `cf93c1b` (controlled, store-backed); verified, no change
+- [x] Issue 3 edit icon — linked graph nodes + pencil, same style
+- [x] Issue 2 — `deploy_bridge.apply_topology` + `POST /deploy/apply`; `deploy.ts` posts payload, ready only on `applied` + per-arm health (no optimism, honest no-fake)
+- [x] 7 bridge tests; 142/142 pytest; typecheck+build clean
+- [ ] Browser/Docker E2E — cannot run here (no live stack); listed in HANDOFF
+
 ## Review
 
 All 7 issues closed, frontend-only, no arch change.
