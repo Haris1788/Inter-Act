@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/cn";
 import { useActors, useDirty } from "@/store/selectors";
 import { useStore } from "@/store";
@@ -8,6 +8,7 @@ import { serializeTopology, docToState } from "@/lib/topologySchema";
 import { exportTopologyFile, importTopologyFile } from "@/lib/persistence";
 import { useTopologyValidation, useLifecycle } from "@/store/derived";
 import type { Tone } from "@/lib/lifecycle";
+import { PRESETS, applyPreset, resetDemo } from "@/runtime/presets";
 
 function toneDot(tone: Tone): string {
   switch (tone) {
@@ -25,8 +26,28 @@ export function Topbar() {
   const actorCount = Object.keys(actors).length;
   const dirty = useDirty();
   const [deployOpen, setDeployOpen] = useState(false);
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const presetsRef = useRef<HTMLDivElement>(null);
   const { deployable, warnings } = useTopologyValidation();
   const lifecycle = useLifecycle();
+
+  useEffect(() => {
+    if (!presetsOpen) return;
+    function onDown(e: MouseEvent) {
+      if (presetsRef.current && !presetsRef.current.contains(e.target as Node)) {
+        setPresetsOpen(false);
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setPresetsOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [presetsOpen]);
 
   const onExport = () => exportTopologyFile(serializeTopology(useStore.getState()));
   const onImport = async () => {
@@ -146,6 +167,44 @@ export function Topbar() {
         >
           Export
         </button>
+
+        {/* Presets */}
+        <div ref={presetsRef} className="relative">
+          <button
+            onClick={() => setPresetsOpen((v) => !v)}
+            className={cn(
+              "inline-flex h-[30px] items-center gap-1.5 rounded-md border border-transparent",
+              "px-2.5 text-12.5 text-ink-2 hover:bg-bg-hover",
+              presetsOpen && "bg-bg-hover",
+            )}
+          >
+            Presets
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          {presetsOpen && (
+            <div className="absolute left-0 top-[calc(100%+4px)] w-64 rounded-md border border-line bg-bg-panel shadow-e3 z-[60]">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => { applyPreset(p.id); setPresetsOpen(false); }}
+                  className="flex w-full flex-col gap-0.5 px-3 py-2 text-left hover:bg-bg-hover"
+                >
+                  <span className="text-12.5 text-ink">{p.label}</span>
+                  <span className="text-11 text-ink-4">{p.description}</span>
+                </button>
+              ))}
+              <div className="mx-2 my-1 h-px bg-line" />
+              <button
+                onClick={() => { resetDemo(); setPresetsOpen(false); }}
+                className="flex w-full px-3 py-2 text-left text-12.5 text-ink-3 hover:bg-bg-hover"
+              >
+                Reset demo
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* RIGHT */}

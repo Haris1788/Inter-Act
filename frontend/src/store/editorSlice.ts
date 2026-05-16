@@ -40,6 +40,8 @@ export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (
   recordDeploy: (docJson) =>
     set({ deployedJson: docJson, deployedAt: new Date().toISOString() }),
 
+  clearDeploySnapshot: () => set({ deployedJson: null, deployedAt: null }),
+
   setDeployPhase: (deployPhase, message) =>
     set({ deployPhase, deployMessage: message ?? "" }),
 
