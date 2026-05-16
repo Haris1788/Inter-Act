@@ -5,6 +5,7 @@ import { useStore } from "@/store";
 import {
   useDeployPhase,
   useDeployMessage,
+  useDeployedAt,
   useDataSource,
   useLinkStatus,
 } from "@/store/selectors";
@@ -139,6 +140,17 @@ function ValidationGate({ deployable, errors, warnings }: ValidationGateProps) {
   );
 }
 
+// ── Timestamp formatter ───────────────────────────────────────────────────────
+
+function formatDeployedAt(iso: string | null): string {
+  if (!iso) return "never deployed";
+  const d = new Date(iso);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `snapshot recorded ${hh}:${mm}:${ss}`;
+}
+
 // ── Main modal ────────────────────────────────────────────────────────────────
 
 export function DeployModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -149,6 +161,7 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
 
   const phase = useDeployPhase();
   const deployMessage = useDeployMessage();
+  const deployedAt = useDeployedAt();
   const dataSource = useDataSource();
   const linkStatus = useLinkStatus();
   const validation = useTopologyValidation();
@@ -345,8 +358,13 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
 
           {/* Lifecycle stepper */}
           <div className="px-5 pt-4 pb-3">
-            <div className="text-11 text-ink-3 mb-[10px] font-medium uppercase tracking-wide">
-              Deployment lifecycle
+            <div className="flex items-baseline justify-between mb-[10px]">
+              <span className="text-11 text-ink-3 font-medium uppercase tracking-wide">
+                Deployment lifecycle
+              </span>
+              <span className="font-mono text-10.5 text-ink-4">
+                {formatDeployedAt(deployedAt)}
+              </span>
             </div>
             <div className="flex items-center gap-0">
               {visibleSteps.map((step, i) => {
@@ -401,9 +419,12 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
 
             {/* Honest terminal notes */}
             {isPrepared && (
-              <p className="mt-2 text-11 text-ink-3 leading-snug">
-                Payload recorded. To apply: edit <span className="font-mono">pipeline.yaml</span> and run{" "}
-                <span className="font-mono">generate_compose.py</span> → <span className="font-mono">docker compose up --build</span>.
+              <p className="mt-2 pl-2.5 border-l-2 border-line text-11 text-ink-4 leading-snug">
+                Payload recorded. To apply: edit{" "}
+                <span className="font-mono">pipeline.yaml</span> and run{" "}
+                <span className="font-mono">generate_compose.py</span>{" "}
+                →{" "}
+                <span className="font-mono">docker compose up --build</span>.
               </p>
             )}
             {isReady && (

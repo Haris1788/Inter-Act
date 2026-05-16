@@ -1,6 +1,7 @@
 import { useActors } from "@/store/selectors";
 import { useStore } from "@/store";
 import { cn } from "@/lib/cn";
+import { useMemo } from "react";
 import type { ActorStatus, ValidationRow } from "@/store/types";
 import { useTopologyValidation } from "@/store/derived";
 
@@ -34,6 +35,13 @@ function statusDotShadow(status: ActorStatus): string {
   }
 }
 
+const SEVERITY_ORDER: Record<ValidationRow["level"], number> = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  ok: 3,
+};
+
 function levelMarker(level: ValidationRow["level"]): string {
   if (level === "ok") return "✓";
   if (level === "error") return "✕";
@@ -45,6 +53,11 @@ export function CoordPane() {
   const actors = useActors();
   const { rows, errors, warnings } = useTopologyValidation();
   const actorRuntime = useStore((s) => s.actorRuntime);
+
+  const sortedRows = useMemo(
+    () => [...rows].sort((a, b) => SEVERITY_ORDER[a.level] - SEVERITY_ORDER[b.level]),
+    [rows],
+  );
 
   const actorList = Object.values(actors);
 
@@ -110,21 +123,27 @@ export function CoordPane() {
       })}
 
       {/* Validation */}
-      {rows.length > 0 && (
+      {sortedRows.length > 0 && (
         <>
           <h4
             className={cn(
               "mb-2 mt-3.5 flex items-center justify-between",
-              "text-10.5 font-semibold uppercase tracking-[0.08em] text-ink-3",
+              "text-10.5 font-semibold uppercase tracking-[0.08em]",
+              errors > 0 ? "text-err" : "text-ink-3",
             )}
           >
             Validation
-            <span className="font-mono text-10.5 normal-case tracking-normal text-ink-5">
-              {errors} errors · {warnings} hints
+            <span
+              className={cn(
+                "font-mono text-10.5 normal-case tracking-normal",
+                errors > 0 ? "text-err" : "text-ink-5",
+              )}
+            >
+              {errors} error{errors !== 1 ? "s" : ""} · {warnings} hint{warnings !== 1 ? "s" : ""}
             </span>
           </h4>
 
-          {rows.map((row) => (
+          {sortedRows.map((row) => (
             <div
               key={row.id}
               className="flex items-center gap-2 py-[5px] text-12 text-ink-2"
