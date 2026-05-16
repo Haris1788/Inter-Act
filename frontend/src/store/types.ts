@@ -4,7 +4,13 @@
 export type ActorId = string;
 export type Vec2 = { x: number; y: number };
 export type ActorKind = "arm" | "agv";
-export type ActorStatus = "ok" | "busy" | "warn" | "idle";
+// "down" added in Phase 2 for dead/failed/stopped backend states
+// (degraded-state visualization).
+export type ActorStatus = "ok" | "busy" | "warn" | "idle" | "down";
+
+// Phase 2 — which driver is feeding the store, and live link health.
+export type DataSource = "mock" | "live";
+export type LinkStatus = "connecting" | "connected" | "disconnected";
 
 // ---------- SLICE 1: Topology (user-composed; persisted to YAML later) ----------
 export interface TopologyActor {
@@ -100,12 +106,19 @@ export interface RuntimeSlice {
   logLines: LogLine[];
   validation: ValidationRow[];
   contracts: { id: string; from: ActorId; to: ActorId }[];
+  /** Phase 2 — live link state, shown in the topbar; never persisted. */
+  dataSource: DataSource;
+  linkStatus: LinkStatus;
   pushBusMessage: (m: BusMessage) => void;
   pushLogLine: (l: LogLine) => void;
   setActorRuntime: (id: ActorId, patch: Partial<ActorRuntime>) => void;
+  setConnection: (source: DataSource, status: LinkStatus) => void;
   hydrateRuntime: (
     patch: Partial<
-      Pick<RuntimeSlice, "actorRuntime" | "busMessages" | "logLines" | "validation" | "contracts" | "busRate">
+      Pick<
+        RuntimeSlice,
+        "actorRuntime" | "busMessages" | "logLines" | "validation" | "contracts" | "busRate"
+      >
     >,
   ) => void;
 }
@@ -124,14 +137,29 @@ export interface Trajectory {
   path: string;
   phantom: boolean;
   opacity: number;
+  /** Phase 2 — runtime traces fade out; null = persistent (mock). */
+  fadeMsLeft?: number | null;
+}
+
+export interface DockGlow {
+  id: string;
+  at: Vec2;
+  intensity: number;
+  fadeMsLeft?: number | null;
 }
 
 export interface SpatialSlice {
   agvKinematics: Record<ActorId, AgvKinematics>;
   trajectories: Trajectory[];
-  dockGlows: { id: string; at: Vec2; intensity: number }[];
+  dockGlows: DockGlow[];
   reachability: { id: string; path: string; opacity: number }[];
   tick: (dtMs: number) => void;
+  // Phase 2 — runtime-driven, ephemeral. Driven by object_update events.
+  setAgvKinematics: (id: ActorId, patch: Partial<AgvKinematics>) => void;
+  setAgvTarget: (id: ActorId, target: Vec2 | null, speed?: number) => void;
+  emitTrajectory: (t: Trajectory) => void;
+  emitDockGlow: (g: DockGlow) => void;
+  clearSpatialRuntime: () => void;
   hydrateSpatial: (
     patch: Partial<
       Pick<SpatialSlice, "agvKinematics" | "trajectories" | "dockGlows" | "reachability">

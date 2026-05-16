@@ -26,3 +26,4 @@ frontend/.verify/
 frontend/dev-server.log
 .playwright-mcp/
 verify-*.png
+frontend/preview.log
