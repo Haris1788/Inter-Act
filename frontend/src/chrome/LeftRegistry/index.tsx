@@ -124,16 +124,16 @@ export function LeftRegistry() {
 
         {/* Capability Stations — 2-col grid */}
         <LibSection label="Capability Stations" count={3} grid>
-          <LibChip icon={CapStationArm6DoF} name="Arm · 6DoF" sub="pick · place · dock" />
-          <LibChip icon={CapStationArmSCARA} name="Arm · SCARA" sub="fast cycle" />
-          <LibChip icon={CapStationArmDelta} name="Arm · Delta" sub="high-speed" />
+          <LibChip icon={CapStationArm6DoF} name="Arm · 6DoF" sub="pick · place · dock" paletteKey="arm-6dof" />
+          <LibChip icon={CapStationArmSCARA} name="Arm · SCARA" sub="fast cycle" paletteKey="arm-scara" />
+          <LibChip icon={CapStationArmDelta} name="Arm · Delta" sub="high-speed" paletteKey="arm-delta" />
         </LibSection>
 
         {/* Mobile Agents — 2-col grid */}
         <LibSection label="Mobile Agents" count={3} grid>
-          <LibChip icon={MobileShuttle} name="Shuttle AGV" sub="fast · cap 1" />
-          <LibChip icon={MobileForklift} name="Forklift AGV" sub="heavy · pallet" />
-          <LibChip icon={MobileTow} name="Tow AGV" sub="balanced" />
+          <LibChip icon={MobileShuttle} name="Shuttle AGV" sub="fast · cap 1" paletteKey="agv-shuttle" />
+          <LibChip icon={MobileForklift} name="Forklift AGV" sub="heavy · pallet" paletteKey="agv-forklift" />
+          <LibChip icon={MobileTow} name="Tow AGV" sub="balanced" paletteKey="agv-tow" />
         </LibSection>
 
         {/* Capabilities — list, gap:0 */}

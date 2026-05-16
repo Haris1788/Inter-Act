@@ -1,13 +1,24 @@
+import { DRAG_MIME } from "@/lib/dragContract";
+
 interface LibChipProps {
   icon: React.ReactNode;
   name: string;
   sub: string;
+  paletteKey?: string;
 }
 
-export function LibChip({ icon, name, sub }: LibChipProps) {
+export function LibChip({ icon, name, sub, paletteKey }: LibChipProps) {
+  function handleDragStart(e: React.DragEvent<HTMLDivElement>) {
+    if (paletteKey) {
+      e.dataTransfer.setData(DRAG_MIME, paletteKey);
+      e.dataTransfer.effectAllowed = "copy";
+    }
+  }
+
   return (
     <div
       draggable
+      onDragStart={handleDragStart}
       className="flex cursor-grab flex-col rounded-md border border-line bg-bg-surface p-[9px_9px_8px] transition-[box-shadow,border-color,transform] duration-[120ms] hover:border-line-strong hover:shadow-e1 active:translate-y-px active:cursor-grabbing"
     >
       {/* .top */}

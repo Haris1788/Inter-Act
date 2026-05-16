@@ -1,23 +1,28 @@
-// CanvasViewport — Domain 3 (React Flow topology layer + canvas chrome).
+// CanvasViewport — React Flow topology authoring layer + canvas chrome.
 //
-// Layer stack inside the container:
+// Layer stack:
 //   z-[1]  ReactFlow (pan/zoom/nodes) — single transform authority
-//   z-[2]  KonvaOverlay (Domain 4 — halos, glows, trajectories)
-//   z-[3]  LabelsOverlay (Domain 4 — cap-tags, dock-state labels)
-//   z-[4+] Canvas chrome (toolbar, meta pill, zoom cluster, fleet card)
+//   z-[2]  KonvaOverlay (runtime spatial — halos, glows, trajectories)
+//   z-[3]  LabelsOverlay (cap-tags, dock-state labels)
+//   z-[4+] Canvas chrome (toolbar, meta, zoom, fleet, goal, bus, context menu)
 //
-// Domain 4 files don't exist yet (parallel build); TS errors on those imports
-// are expected and ignored per spec.
+// Phase 4: this is now an EDITOR. Drag/drop creates actors, toolbar modes
+// switch RF interaction, keyboard shortcuts delete/duplicate. Konva stays a
+// pure runtime slave to the RF transform (coexistence preserved).
 
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
+  useReactFlow,
   type NodeChange,
   type Node,
 } from "@xyflow/react";
 
 import { useStore } from "@/store";
+import { useEditorMode } from "@/store/selectors";
+import { createActorFromPalette } from "@/runtime/nodeFactory";
+import { DRAG_MIME } from "@/lib/dragContract";
 import { useFlowNodes } from "./flow/useFlowNodes";
 import { useFitViewport } from "./flow/useFitViewport";
 import { nodeTypes } from "./flow/nodeTypes";
@@ -26,111 +31,189 @@ import { CanvasToolbar } from "./chrome/CanvasToolbar";
 import { CanvasMeta } from "./chrome/CanvasMeta";
 import { ZoomCluster } from "./chrome/ZoomCluster";
 import { FleetCard } from "./chrome/FleetCard";
+import { ContextMenu } from "./chrome/ContextMenu";
 import { GoalBar } from "@/chrome/GoalBar";
 import { BusStrip } from "@/chrome/BusStrip";
-
-// Domain 4 — stubs exist now; real implementations from Domain 4 will replace them.
 import { KonvaOverlay } from "@/canvas/overlay/KonvaOverlay";
 import { LabelsOverlay } from "@/canvas/labels/LabelsOverlay";
 
-/** Inner component — must be inside ReactFlowProvider to access RF hooks. */
 function FlowInner() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const rf = useReactFlow();
+  const mode = useEditorMode();
+
   const setSelectedActor = useStore((s) => s.setSelectedActor);
   const moveActor = useStore((s) => s.moveActor);
+  const addActor = useStore((s) => s.addActor);
+  const removeActor = useStore((s) => s.removeActor);
+  const duplicateActor = useStore((s) => s.duplicateActor);
+  const markDirty = useStore((s) => s.markDirty);
+  const toggleSelection = useStore((s) => s.toggleSelection);
+  const clearSelection = useStore((s) => s.clearSelection);
+  const closeContextMenu = useStore((s) => s.closeContextMenu);
+  const openContextMenu = useStore((s) => s.openContextMenu);
 
   const nodes = useFlowNodes();
   const { fitToStage } = useFitViewport(containerRef);
 
-  // Forward node drag → store.
   const handleNodesChange = useCallback(
     (changes: NodeChange<Node>[]) => {
-      for (const change of changes) {
-        if (change.type === "position" && change.position) {
-          // Only commit when dragging ends or on position changes.
-          moveActor(change.id, { x: change.position.x, y: change.position.y });
+      for (const c of changes) {
+        if (c.type === "position" && c.position) {
+          moveActor(c.id, { x: c.position.x, y: c.position.y });
+          markDirty();
         }
       }
     },
-    [moveActor],
+    [moveActor, markDirty],
   );
 
-  // Click on a node → select actor.
   const handleNodeClick = useCallback(
-    (_: React.MouseEvent, node: Node) => {
-      // Zone/pool-label nodes are not selectable actors.
-      if (node.type === "actorNode") {
-        setSelectedActor(node.id);
-      }
+    (e: React.MouseEvent, node: Node) => {
+      if (node.type !== "actorNode") return;
+      const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+      toggleSelection(node.id, additive);
+      setSelectedActor(node.id);
+      closeContextMenu();
     },
-    [setSelectedActor],
+    [toggleSelection, setSelectedActor, closeContextMenu],
   );
 
-  // Click on empty pane → deselect.
+  const handleNodeContextMenu = useCallback(
+    (e: React.MouseEvent, node: Node) => {
+      if (node.type !== "actorNode") return;
+      e.preventDefault();
+      setSelectedActor(node.id);
+      toggleSelection(node.id, false);
+      openContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
+    },
+    [setSelectedActor, toggleSelection, openContextMenu],
+  );
+
   const handlePaneClick = useCallback(() => {
     setSelectedActor(null);
-  }, [setSelectedActor]);
+    clearSelection();
+    closeContextMenu();
+  }, [setSelectedActor, clearSelection, closeContextMenu]);
+
+  // ── drag/drop authoring ────────────────────────────────────────────────
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes(DRAG_MIME)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }, []);
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      const key = e.dataTransfer.getData(DRAG_MIME);
+      if (!key) return;
+      e.preventDefault();
+      const center = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const actor = createActorFromPalette(key, center, useStore.getState().actors);
+      if (!actor) return;
+      addActor(actor);
+      markDirty();
+      setSelectedActor(actor.id);
+      toggleSelection(actor.id, false);
+    },
+    [rf, addActor, markDirty, setSelectedActor, toggleSelection],
+  );
+
+  // ── keyboard shortcuts ─────────────────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      const s = useStore.getState();
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        const ids = s.selectedIds.length ? s.selectedIds : s.selectedActorId ? [s.selectedActorId] : [];
+        const dups = ids.map((id) => s.duplicateActor(id)).filter(Boolean) as string[];
+        if (dups.length) {
+          s.setSelection(dups);
+          s.markDirty();
+        }
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const ids = s.selectedIds.length ? s.selectedIds : s.selectedActorId ? [s.selectedActorId] : [];
+        if (!ids.length) return;
+        e.preventDefault();
+        ids.forEach((id) => removeActor(id));
+        s.clearSelection();
+        s.markDirty();
+        return;
+      }
+      if (!meta && e.key === "v") s.setMode("select");
+      if (!meta && e.key === "h") s.setMode("pan");
+      if (!meta && e.key === "e") s.setMode("edit");
+      if (e.key === "Escape") {
+        s.clearSelection();
+        s.setSelectedActor(null);
+        s.closeContextMenu();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [duplicateActor, removeActor]);
+
+  // Interaction mode → RF behavior. select: drag nodes; pan: hand-drag canvas;
+  // edit: drag nodes + box-select.
+  const panOnDrag = mode === "pan";
+  const nodesDraggable = mode !== "pan";
+  const selectionOnDrag = mode === "edit";
 
   return (
-    // The ref goes on this wrapper so ResizeObserver tracks the actual pane size.
-    <div ref={containerRef} className="relative h-full w-full overflow-hidden">
-      {/* z-[1] — React Flow (owns pan/zoom; the only transform authority) */}
+    <div
+      ref={containerRef}
+      className="relative h-full w-full overflow-hidden"
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <ReactFlow
         nodes={nodes}
         edges={[]}
         nodeTypes={nodeTypes}
         onNodesChange={handleNodesChange}
         onNodeClick={handleNodeClick}
+        onNodeContextMenu={handleNodeContextMenu}
         onPaneClick={handlePaneClick}
         {...flowDefaults}
-        // Disable all RF node-selection visuals; we manage selection in store.
+        panOnDrag={panOnDrag}
+        nodesDraggable={nodesDraggable}
+        selectionOnDrag={selectionOnDrag}
         selectNodesOnDrag={false}
         multiSelectionKeyCode={null}
-        // No handles, no edge connections.
         connectOnClick={false}
-        // Prevent "selected" class from RF on nodes (we control it via store).
         nodesFocusable={false}
-        // Disable default RF fit-view on init; useFitViewport handles it.
         fitView={false}
         className="h-full w-full"
         style={{ background: "transparent" }}
       />
 
-      {/* z-[2] — Konva overlay (Domain 4) */}
       <div className="pointer-events-none absolute inset-0 z-[2]">
         <KonvaOverlay />
       </div>
-
-      {/* z-[3] — Labels overlay (Domain 4) */}
       <div className="pointer-events-none absolute inset-0 z-[3]">
         <LabelsOverlay />
       </div>
 
-      {/* z-[4+] — Canvas chrome (toolbar, meta, zoom, fleet, goal, bus) */}
       <CanvasToolbar onFit={fitToStage} />
       <CanvasMeta />
-      <ZoomClusterWrapper onFit={fitToStage} />
+      <ZoomCluster onFit={fitToStage} />
       <FleetCard />
-      {/* goal-bar (z-6) + bus-strip (z-5) — self-positioned canvas overlays */}
       <GoalBar />
       <BusStrip />
+      <ContextMenu />
     </div>
   );
 }
 
-/** ZoomCluster must be inside ReactFlowProvider to call useReactFlow/useViewport. */
-function ZoomClusterWrapper({ onFit }: { onFit: () => void }) {
-  return <ZoomCluster onFit={onFit} />;
-}
-
-/**
- * CanvasViewport — exported named component consumed by App shell.
- * Wraps everything in ReactFlowProvider so all child hooks work.
- */
 export function CanvasViewport() {
   return (
     <ReactFlowProvider>
-      {/* dot-grid::before provides the background dot pattern via CSS */}
       <section className="dot-grid relative h-full overflow-hidden border-b border-line bg-bg-canvas">
         <FlowInner />
       </section>
