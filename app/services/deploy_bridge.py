@@ -245,21 +245,25 @@ def apply_topology(
         except Exception as exc:  # noqa: BLE001
             steps["reloaded"] = f"failed: {exc}"
 
-    # 5) Make the running stack match the authored arms: restart existing
-    #    arm containers (re-read config) and CREATE brand-new ones by
-    #    cloning an existing arm (shared image, ARM_ID overridden). This is
-    #    what makes "add arm-5 then deploy" actually run a container.
+    # 5) Make the running stack match the authored topology: restart
+    #    existing containers (re-read config) and CREATE first-class new
+    #    ones - arms AND AGVs - from a clean shared image (not a copy of
+    #    arm-1). This is what makes "add arm-5 / a new AGV then deploy"
+    #    actually run real containers.
     restarted: list[str] = []
     created: list[str] = []
     create_failed: list[str] = []
     if reload_runtime and container_manager.is_enabled():
-        # Template = the lowest-id arm that already has a container.
-        template = None
+        # Sibling = the lowest-id arm that already has a container; new
+        # containers join its network and bind its host pipeline.yaml.
+        sibling = None
         for a in doc["arms"]:
             mid = f"arm-{a['id']}"
             if container_manager.container_exists(mid):
-                template = mid
+                sibling = mid
                 break
+        sibling = sibling or "arm-1"
+
         for a in doc["arms"]:
             mid = f"arm-{a['id']}"
             if container_manager.container_exists(mid):
@@ -269,16 +273,35 @@ def apply_topology(
                     restarted.append(mid)
             else:
                 err = container_manager.create_arm_container(
-                    a["id"], template_module=template or "arm-1"
+                    a["id"], template_module=sibling
                 )
-                if err is None:
-                    created.append(mid)
-                else:
-                    create_failed.append(f"{mid}: {err}")
-        steps["arms_restarted"] = ", ".join(restarted) if restarted else "none"
-        steps["arms_created"] = ", ".join(created) if created else "none"
+                (created if err is None else create_failed).append(
+                    mid if err is None else f"{mid}: {err}"
+                )
+
+        for i, asset in enumerate(doc["assets"]):
+            aid = asset["id"]
+            if container_manager.container_exists(aid):
+                stop_err = container_manager.stop_container(aid)
+                start_err = container_manager.start_container(aid)
+                if not stop_err and not start_err:
+                    restarted.append(aid)
+            else:
+                err = container_manager.create_asset_container(
+                    aid,
+                    label=asset.get("label", aid),
+                    asset_type=asset.get("type", "vehicle"),
+                    template_module=sibling,
+                    publish_port=8010 + i * 10,
+                )
+                (created if err is None else create_failed).append(
+                    aid if err is None else f"{aid}: {err}"
+                )
+
+        steps["restarted"] = ", ".join(restarted) if restarted else "none"
+        steps["created"] = ", ".join(created) if created else "none"
         if create_failed:
-            steps["arms_create_failed"] = "; ".join(create_failed)
+            steps["create_failed"] = "; ".join(create_failed)
 
     # Honest "applied": the backend genuinely applied the authored config to
     # its running model (writable mount + reload) and/or brought containers

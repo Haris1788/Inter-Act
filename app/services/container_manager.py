@@ -130,87 +130,137 @@ def container_exists(module_id: str) -> bool:
         return False
 
 
-def create_arm_container(
-    arm_id: int, template_module: str = "arm-1"
-) -> Optional[str]:
-    """Materialise a NEW arm container by cloning an existing sibling.
+# Repo root inside the backend container (Dockerfile: WORKDIR /interact +
+# COPY . .) - the build context for new actor images. Resolved from this
+# file so it also works when run locally outside Docker.
+_REPO_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
 
-    All arms share one image (docker/Dockerfile.arm, parametrised only by
-    ARM_ID), so a brand-new authored arm can run by reusing the template
-    arm's image, network and volume mounts with ARM_ID overridden. This is
-    the real path that lets deploy add arm-5+ at runtime without an offline
-    `docker compose up` (the backend container has no build context).
+_SHARED_IMAGE = {
+    "arm": "interact-shared-arm:latest",
+    "asset": "interact-shared-asset:latest",
+}
+_DOCKERFILE = {
+    "arm": "docker/Dockerfile.arm",
+    "asset": "docker/Dockerfile.asset",
+}
 
-    Returns None on success or an honest error string. Never fakes.
-    """
-    if not _docker_available():
-        return "docker CLI/socket unavailable"
 
-    template_name = container_name_for(template_module)
-    new_name = container_name_for(f"arm-{arm_id}")
-
+def _image_exists(tag: str) -> bool:
     try:
-        ins = subprocess.run(
-            ["docker", "inspect", template_name],
+        r = subprocess.run(
+            ["docker", "image", "inspect", tag],
             capture_output=True,
             text=True,
             timeout=10,
             check=False,
         )
-        if ins.returncode != 0:
-            return (
-                f"template container {template_name} not found - cannot "
-                f"clone arm-{arm_id} (need at least one existing arm)"
-            )
-        info = json.loads(ins.stdout)[0]
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def ensure_shared_image(kind: str) -> Optional[str]:
+    """Build the shared arm/asset image once (idempotent).
+
+    All arms come from one Dockerfile (likewise all assets), so a single
+    clean image - NOT a copy of arm-1 - backs every new container. The
+    backend image bakes the repo at /interact, so the build context is
+    present without compose or a host mount.
+    """
+    tag = _SHARED_IMAGE[kind]
+    if _image_exists(tag):
+        return None
+    dockerfile = os.path.join(_REPO_DIR, _DOCKERFILE[kind])
+    _emit_log("system", f"[SYSTEM] Building shared {kind} image {tag}")
+    try:
+        r = subprocess.run(
+            ["docker", "build", "-f", dockerfile, "-t", tag, _REPO_DIR],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+        if r.returncode != 0:
+            return (r.stderr or r.stdout or "").strip()[:400]
+        return None
+    except subprocess.TimeoutExpired:
+        return f"docker build {tag} timed out"
     except Exception as exc:  # noqa: BLE001
-        return f"inspect {template_name} failed: {exc}"
+        return str(exc)
 
-    cfg = info.get("Config", {}) or {}
-    host_cfg = info.get("HostConfig", {}) or {}
-    image = cfg.get("Image")
-    if not image:
-        return f"template {template_name} has no image"
-    network = host_cfg.get("NetworkMode") or "bridge"
-    labels = cfg.get("Labels", {}) or {}
-    project = labels.get("com.docker.compose.project")
 
+def _sibling_runtime(module_id: str) -> dict:
+    """Network + pipeline.yaml host mount + compose project from a running
+    sibling, so a new container joins the SAME network and binds the SAME
+    host config file (daemon-resolved paths stay correct)."""
+    out = {"network": None, "pipeline_mount": None, "project": None}
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", container_name_for(module_id)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if r.returncode != 0:
+            return out
+        info = json.loads(r.stdout)[0]
+        out["network"] = (info.get("HostConfig", {}) or {}).get("NetworkMode")
+        out["project"] = (
+            (info.get("Config", {}) or {}).get("Labels", {}) or {}
+        ).get("com.docker.compose.project")
+        for m in info.get("Mounts", []) or []:
+            if (m.get("Destination") or "").endswith("pipeline.yaml"):
+                out["pipeline_mount"] = (m.get("Source"), m.get("Destination"))
+                break
+    except Exception:
+        pass
+    return out
+
+
+def _run_new_container(
+    new_name: str,
+    image: str,
+    env: list[str],
+    sibling: str,
+    service_label: str,
+    publish_port: Optional[int],
+) -> Optional[str]:
+    sib = _sibling_runtime(sibling)
     args = [
         "docker",
         "run",
         "-d",
         "--name",
         new_name,
-        "--network",
-        network,
         "--restart",
         "unless-stopped",
     ]
-    # Keep it inside the compose project so normal tooling/cleanup sees it.
-    if project:
+    if sib["network"]:
+        args += ["--network", sib["network"]]
+    if sib["project"]:
         args += [
             "--label",
-            f"com.docker.compose.project={project}",
+            f"com.docker.compose.project={sib['project']}",
             "--label",
-            f"com.docker.compose.service=arm-{arm_id}",
+            f"com.docker.compose.service={service_label}",
         ]
-    # Reuse the template's volume mounts (daemon-resolved host sources, so
-    # the backend never needs to see the host repo itself).
-    for m in info.get("Mounts", []) or []:
-        src, dst = m.get("Source"), m.get("Destination")
+    if sib["pipeline_mount"]:
+        src, dst = sib["pipeline_mount"]
         if src and dst:
-            ro = "" if m.get("RW", True) else ":ro"
-            args += ["-v", f"{src}:{dst}{ro}"]
-    # Carry env, but force this arm's identity.
-    for e in cfg.get("Env", []) or []:
-        if not e.startswith("ARM_ID="):
-            args += ["-e", e]
-    args += ["-e", f"ARM_ID={arm_id}", image]
+            args += ["-v", f"{src}:{dst}:ro"]
+    if publish_port:
+        args += ["-p", f"{publish_port}:8000"]
+    for e in env:
+        args += ["-e", e]
+    args.append(image)
 
-    _emit_log("system", f"[SYSTEM] Creating container: {new_name} (clone of {template_name})")
+    _emit_log("system", f"[SYSTEM] Creating container: {new_name} ({image})")
     try:
         r = subprocess.run(
-            args, capture_output=True, text=True, timeout=40, check=False
+            args, capture_output=True, text=True, timeout=60, check=False
         )
         if r.returncode != 0:
             err = (r.stderr or r.stdout or "").strip()
@@ -221,6 +271,65 @@ def create_arm_container(
         return f"docker run {new_name} timed out"
     except Exception as exc:  # noqa: BLE001
         return str(exc)
+
+
+def create_arm_container(
+    arm_id: int, template_module: str = "arm-1"
+) -> Optional[str]:
+    """Create a NEW, first-class arm container (own clean image + port +
+    ARM_ID) - not a copy of arm-1. Returns None or an honest error."""
+    if not _docker_available():
+        return "docker CLI/socket unavailable"
+    build_err = ensure_shared_image("arm")
+    if build_err:
+        return f"arm image build failed: {build_err}"
+    env = [
+        f"ARM_ID={arm_id}",
+        "SERVER_HOST=http://backend:5000",
+        "PIPELINE_CONFIG=/config/pipeline.yaml",
+        "PYTHONUNBUFFERED=1",
+    ]
+    return _run_new_container(
+        new_name=container_name_for(f"arm-{arm_id}"),
+        image=_SHARED_IMAGE["arm"],
+        env=env,
+        sibling=template_module,
+        service_label=f"arm-{arm_id}",
+        publish_port=8000 + int(arm_id),
+    )
+
+
+def create_asset_container(
+    asset_id: str,
+    label: str = "",
+    asset_type: str = "vehicle",
+    template_module: str = "arm-1",
+    publish_port: Optional[int] = None,
+) -> Optional[str]:
+    """Create a NEW, first-class asset (AGV) container. Returns None or an
+    honest error string."""
+    if not _docker_available():
+        return "docker CLI/socket unavailable"
+    build_err = ensure_shared_image("asset")
+    if build_err:
+        return f"asset image build failed: {build_err}"
+    env = [
+        f"ASSET_ID={asset_id}",
+        f"ASSET_TYPE={asset_type}",
+        f"ASSET_LABEL={label or asset_id}",
+        "SERVER_HOST=http://backend:5000",
+        "PIPELINE_CONFIG=/config/pipeline.yaml",
+        "SPEED_FACTOR=1.0",
+        "PYTHONUNBUFFERED=1",
+    ]
+    return _run_new_container(
+        new_name=container_name_for(asset_id),
+        image=_SHARED_IMAGE["asset"],
+        env=env,
+        sibling=template_module,
+        service_label=asset_id,
+        publish_port=publish_port,
+    )
 
 
 def is_enabled() -> bool:

@@ -98,8 +98,10 @@ class TestCreateArmContainerHonest:
         monkeypatch.setattr(
             container_manager, "_docker_available", lambda: False
         )
-        err = container_manager.create_arm_container(5)
-        assert err and "unavailable" in err
+        assert "unavailable" in (container_manager.create_arm_container(5) or "")
+        assert "unavailable" in (
+            container_manager.create_asset_container("veh-9") or ""
+        )
         # And it must never raise / never fake success.
         assert container_manager.container_exists("arm-5") is False
 
