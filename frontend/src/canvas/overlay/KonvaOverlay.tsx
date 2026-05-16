@@ -19,10 +19,12 @@ import { useEffect, useRef, useState } from "react";
 import { Stage, Layer, Circle, Rect, Path } from "react-konva";
 
 import { useViewportTransform } from "./useViewportTransform";
+import type { ViewportTransform } from "./useViewportTransform";
 import { useTrajectories, useReachability, useDockGlows } from "@/store/selectors";
 import { tokens } from "@/lib/tokens";
+import { AgvTokenLayer } from "./AgvTokenLayer";
 
-type Transform = { x: number; y: number; zoom: number };
+type Transform = ViewportTransform;
 
 // ---------------------------------------------------------------------------
 // Static layer — arm halos, docking rings, pool stadium, source/sink whispers.
@@ -231,6 +233,7 @@ export function KonvaOverlay() {
         <StaticLayer tx={tx} />
         <ReachabilityLayer tx={tx} traces={reachability} />
         <DynamicLayer tx={tx} trajectories={trajectories} dockGlows={dockGlows} />
+        <AgvTokenLayer tx={tx} />
       </Stage>
     </div>
   );

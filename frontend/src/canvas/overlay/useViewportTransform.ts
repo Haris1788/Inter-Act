@@ -13,6 +13,7 @@ export interface ViewportTransform {
 }
 
 export function useViewportTransform(): ViewportTransform {
-  const transform = useStore((s) => s.transform);
+  // Default before RF initializes its transform on first paint.
+  const transform = useStore((s) => s.transform) ?? [0, 0, 1];
   return { x: transform[0], y: transform[1], zoom: transform[2] };
 }
