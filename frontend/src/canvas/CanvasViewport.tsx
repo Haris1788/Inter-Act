@@ -14,18 +14,13 @@ import { useCallback, useEffect, useRef } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
-  MiniMap,
   useReactFlow,
   type NodeChange,
   type Node,
 } from "@xyflow/react";
 
 import { useStore } from "@/store";
-import {
-  useEditorMode,
-  useFocusRequest,
-  useSelectedActorId,
-} from "@/store/selectors";
+import { useEditorMode, useFocusRequest } from "@/store/selectors";
 import { createActorFromPalette } from "@/runtime/nodeFactory";
 import { DRAG_MIME } from "@/lib/dragContract";
 import { useFlowNodes } from "./flow/useFlowNodes";
@@ -35,6 +30,7 @@ import { flowDefaults } from "./flow/flowConfig";
 import { CanvasToolbar } from "./chrome/CanvasToolbar";
 import { CanvasMeta } from "./chrome/CanvasMeta";
 import { ZoomCluster } from "./chrome/ZoomCluster";
+import { TopologyMinimap } from "./chrome/TopologyMinimap";
 import { ContextMenu } from "./chrome/ContextMenu";
 import { GoalBar } from "@/chrome/GoalBar";
 import { KonvaOverlay } from "@/canvas/overlay/KonvaOverlay";
@@ -45,7 +41,6 @@ function FlowInner() {
   const rf = useReactFlow();
   const mode = useEditorMode();
   const focusRequest = useFocusRequest();
-  const selectedId = useSelectedActorId();
 
   const setSelectedActor = useStore((s) => s.setSelectedActor);
   const moveActor = useStore((s) => s.moveActor);
@@ -262,41 +257,10 @@ function FlowInner() {
         fitView={false}
         className="h-full w-full"
         style={{ background: "transparent" }}
-      >
-        {/* Topology overview — a subtle navigation preview, NOT a second
-            canvas. Muted warm-gray, stroke-led, low fill opacity so it reads
-            as an architectural thumbnail rather than solid blocks. Anchored
-            bottom-right, above the operational dock; inspector is a separate
-            grid column so there is no overlap. */}
-        <MiniMap
-          position="bottom-right"
-          pannable
-          zoomable
-          ariaLabel="Topology overview"
-          className="!rounded-md !border !border-line !bg-bg-surface !shadow-e1"
-          style={{ width: 176, height: 110, margin: 12 }}
-          maskColor="rgba(244,243,239,0.62)"
-          maskStrokeColor="rgba(201,198,189,0.7)"
-          nodeBorderRadius={3}
-          nodeStrokeWidth={1}
-          // Selected actor: filled accent + dark border so it pops locally
-          // in the overview without re-styling the whole map.
-          nodeColor={(n) => {
-            if (n.id === selectedId) return "rgba(24,24,27,0.30)";
-            return n.type === "actorNode"
-              ? (n.data as { kind?: string })?.kind === "agv"
-                ? "rgba(122,132,110,0.22)"
-                : "rgba(96,94,88,0.24)"
-              : "rgba(201,198,189,0.16)";
-          }}
-          nodeStrokeColor={(n) => {
-            if (n.id === selectedId) return "#18181B";
-            return n.type === "actorNode"
-              ? "rgba(96,94,88,0.55)"
-              : "rgba(201,198,189,0.6)";
-          }}
-        />
-      </ReactFlow>
+      />
+      {/* Topology overview - faithful port of the prototype `.minimap`
+          (framed card + label + node SVG). Canvas chrome, not an RF child. */}
+      <TopologyMinimap />
 
       <div className="pointer-events-none absolute inset-0 z-[2]">
         <KonvaOverlay />
