@@ -1,10 +1,29 @@
+import { useState } from "react";
 import { cn } from "@/lib/cn";
-import { useActors } from "@/store/selectors";
+import { useActors, useDirty } from "@/store/selectors";
+import { useStore } from "@/store";
 import { ConnectionChip } from "./ConnectionChip";
+import { DeployModal } from "./DeployModal";
+import { serializeTopology, docToState } from "@/lib/topologySchema";
+import { exportTopologyFile, importTopologyFile } from "@/lib/persistence";
 
 export function Topbar() {
   const actors = useActors();
   const actorCount = Object.keys(actors).length;
+  const dirty = useDirty();
+  const [deployOpen, setDeployOpen] = useState(false);
+
+  const onExport = () => exportTopologyFile(serializeTopology(useStore.getState()));
+  const onImport = async () => {
+    try {
+      const doc = await importTopologyFile();
+      const s = useStore.getState();
+      s.replaceTopology(docToState(doc));
+      s.markDirty();
+    } catch {
+      /* user cancelled / invalid file — non-fatal */
+    }
+  };
   return (
     <header
       className={cn(
@@ -83,10 +102,16 @@ export function Topbar() {
         {/* Divider */}
         <span className="mx-1 inline-block h-[18px] w-px bg-line" />
 
-        <button className="inline-flex h-[30px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-12.5 text-ink-2 hover:bg-bg-hover">
+        <button
+          onClick={onImport}
+          className="inline-flex h-[30px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-12.5 text-ink-2 hover:bg-bg-hover"
+        >
           Import
         </button>
-        <button className="inline-flex h-[30px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-12.5 text-ink-2 hover:bg-bg-hover">
+        <button
+          onClick={onExport}
+          className="inline-flex h-[30px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-12.5 text-ink-2 hover:bg-bg-hover"
+        >
           Export
         </button>
       </div>
@@ -110,6 +135,7 @@ export function Topbar() {
 
         {/* Deploy */}
         <button
+          onClick={() => setDeployOpen(true)}
           className={cn(
             "inline-flex h-8 items-center gap-2 rounded-md border border-cta",
             "bg-cta px-3.5 text-12.5 font-semibold text-[#FAFAF7]",
@@ -134,6 +160,15 @@ export function Topbar() {
           </svg>
         </button>
       </div>
+      {dirty && (
+        <span
+          title="Unsaved changes"
+          className="pointer-events-none fixed left-1/2 top-[40px] -translate-x-1/2 font-mono text-10.5 text-ink-4"
+        >
+          ● unsaved
+        </span>
+      )}
+      <DeployModal open={deployOpen} onClose={() => setDeployOpen(false)} />
     </header>
   );
 }
