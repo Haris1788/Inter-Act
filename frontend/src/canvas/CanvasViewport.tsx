@@ -33,7 +33,6 @@ import { CanvasMeta } from "./chrome/CanvasMeta";
 import { ZoomCluster } from "./chrome/ZoomCluster";
 import { ContextMenu } from "./chrome/ContextMenu";
 import { GoalBar } from "@/chrome/GoalBar";
-import { BusStrip } from "@/chrome/BusStrip";
 import { KonvaOverlay } from "@/canvas/overlay/KonvaOverlay";
 import { LabelsOverlay } from "@/canvas/labels/LabelsOverlay";
 
@@ -294,7 +293,6 @@ function FlowInner() {
       <CanvasMeta />
       <ZoomCluster onFit={fitToStage} />
       <GoalBar />
-      <BusStrip />
       <ContextMenu />
     </div>
   );
