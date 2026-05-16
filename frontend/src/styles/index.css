@@ -1,0 +1,106 @@
+@import "@xyflow/react/dist/style.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================
+   INTER.act v2 — global base ported from styles-v2.css
+   Tokens live in tailwind.config.ts; this file holds the few
+   rules that are not expressible as utilities (base sizing,
+   keyframes, scrollbar) plus the canvas dot-grid.
+   ========================================================== */
+
+@layer base {
+  html,
+  body,
+  #root {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+  }
+  body {
+    background: theme("colors.bg.app");
+    color: theme("colors.ink.DEFAULT");
+    font-family: theme("fontFamily.sans");
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  button {
+    font-family: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+  input {
+    font-family: inherit;
+  }
+}
+
+@layer utilities {
+  /* canvas dot-grid backdrop (styles-v2.css .canvas-wrap::before) */
+  .dot-grid::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(circle, #d7d5ce 1px, transparent 1.4px);
+    background-size: 22px 22px;
+    background-position: 11px 11px;
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}
+
+/* status pulse — kept as CSS keyframes (GPU-composited; never JS) */
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+.animate-pulse-dot {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* dashed-trajectory marching ants (field-layer phantom path) */
+@keyframes dash-march {
+  to {
+    stroke-dashoffset: -22;
+  }
+}
+
+/* scrollbar — ported verbatim */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d6d4ce;
+  border-radius: 5px;
+  border: 2px solid #ffffff;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b8b6af;
+}
+
+/* React Flow surface should be transparent — our dot-grid shows through */
+.react-flow__background {
+  background: transparent;
+}
+.react-flow__attribution {
+  display: none;
+}
