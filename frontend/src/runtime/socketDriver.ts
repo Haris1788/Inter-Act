@@ -66,13 +66,23 @@ export function createSocketDriver(): RuntimeDriver {
         if (assets?.assets)
           for (const [id, a] of Object.entries(assets.assets))
             st().setActorRuntime(assetActorId(id), { status: assetStatusToStatus(a.status), phase: a.status });
-        objects?.objects?.forEach((o) => objSeq.set(o.object_id, o.event_seq));
+        // Never regress the dedup guard below an event_seq already seen from
+        // an in-flight live event that arrived before this bootstrap resolved.
+        objects?.objects?.forEach((o) =>
+          objSeq.set(o.object_id, Math.max(o.event_seq, objSeq.get(o.object_id) ?? -1)),
+        );
       };
 
       socket = io({ path: "/socket.io", transports: ["websocket", "polling"], reconnection: true });
 
       socket.on("connect", () => {
         st().setConnection("live", "connected");
+        // Resilience: a backend restart resets its event_seq counter. Clearing
+        // the per-object dedup maps on every (re)connect prevents post-restart
+        // object events being wrongly dropped as stale. Bootstrap reseeds them.
+        objSeq.clear();
+        objOwner.clear();
+        busWindow = [];
         void bootstrap();
       });
       socket.on("disconnect", () => st().setConnection("live", "disconnected"));
