@@ -91,6 +91,19 @@ class TestApplyTopologyHonest:
         assert result["steps"].get("compose_generated") is None
 
 
+class TestCreateArmContainerHonest:
+    def test_honest_when_docker_unavailable(self, monkeypatch):
+        from app.services import container_manager
+
+        monkeypatch.setattr(
+            container_manager, "_docker_available", lambda: False
+        )
+        err = container_manager.create_arm_container(5)
+        assert err and "unavailable" in err
+        # And it must never raise / never fake success.
+        assert container_manager.container_exists("arm-5") is False
+
+
 class TestDeployApplyRoute:
     def test_bad_payload_returns_400(self, client):
         resp = client.post(

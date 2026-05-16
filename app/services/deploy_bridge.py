@@ -245,19 +245,40 @@ def apply_topology(
         except Exception as exc:  # noqa: BLE001
             steps["reloaded"] = f"failed: {exc}"
 
-    # 5) Restart EXISTING arm containers so they re-read the new config.
-    #    A brand-new arm has no container/image yet - that hop honestly
-    #    fails and is reported; only `docker compose up` (step 3) or an
-    #    offline stack rebuild can materialise it.
+    # 5) Make the running stack match the authored arms: restart existing
+    #    arm containers (re-read config) and CREATE brand-new ones by
+    #    cloning an existing arm (shared image, ARM_ID overridden). This is
+    #    what makes "add arm-5 then deploy" actually run a container.
     restarted: list[str] = []
+    created: list[str] = []
+    create_failed: list[str] = []
     if reload_runtime and container_manager.is_enabled():
+        # Template = the lowest-id arm that already has a container.
+        template = None
         for a in doc["arms"]:
             mid = f"arm-{a['id']}"
-            stop_err = container_manager.stop_container(mid)
-            start_err = container_manager.start_container(mid)
-            if not stop_err and not start_err:
-                restarted.append(mid)
+            if container_manager.container_exists(mid):
+                template = mid
+                break
+        for a in doc["arms"]:
+            mid = f"arm-{a['id']}"
+            if container_manager.container_exists(mid):
+                stop_err = container_manager.stop_container(mid)
+                start_err = container_manager.start_container(mid)
+                if not stop_err and not start_err:
+                    restarted.append(mid)
+            else:
+                err = container_manager.create_arm_container(
+                    a["id"], template_module=template or "arm-1"
+                )
+                if err is None:
+                    created.append(mid)
+                else:
+                    create_failed.append(f"{mid}: {err}")
         steps["arms_restarted"] = ", ".join(restarted) if restarted else "none"
+        steps["arms_created"] = ", ".join(created) if created else "none"
+        if create_failed:
+            steps["arms_create_failed"] = "; ".join(create_failed)
 
     # Honest "applied": the backend genuinely applied the authored config to
     # its running model (writable mount + reload) and/or brought containers
@@ -268,12 +289,20 @@ def apply_topology(
     if compose_up_ok:
         detail = "Containers brought up; health monitor confirms liveness."
     elif applied:
-        detail = (
-            "Authored config applied and existing arm containers restarted. "
-            "Any brand-new arm has no container yet - rebuild the stack "
-            "(generate_compose + docker compose up) to materialise it. The "
-            "UI keeps it stale until a real container reports healthy."
-        )
+        parts = ["Authored config applied."]
+        if restarted:
+            parts.append(f"Restarted {len(restarted)} existing arm(s).")
+        if created:
+            parts.append(
+                f"Created {len(created)} new arm container(s) - booting, "
+                "health monitor will confirm."
+            )
+        if create_failed:
+            parts.append(
+                f"{len(create_failed)} arm(s) could not be created "
+                "(see steps); they stay stale until a real container is up."
+            )
+        detail = " ".join(parts)
     else:
         detail = (
             "pipeline.yaml not writable / docker unavailable - runtime left "

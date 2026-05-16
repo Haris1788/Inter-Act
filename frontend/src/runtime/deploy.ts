@@ -203,9 +203,12 @@ export async function runDeploy(
     const aliveHealth = new Set(["alive", "idle", "busy", "recovering"]);
     // Confirm via backend truth ONLY: every authored arm container must
     // report a live health before we call the deploy ready. Timeout → fail.
+    // ~36s: freshly-cloned arm containers need time to boot arm_server and
+    // POST their first health. Generous so a real-but-slow start is not
+    // misreported as a failure.
     let ready = false;
-    for (let i = 0; i < 8; i++) {
-      await sleep(1500);
+    for (let i = 0; i < 18; i++) {
+      await sleep(2000);
       try {
         const ar = await fetch("/arms/health")
           .then((r) => (r.ok ? r.json() : null))
@@ -234,7 +237,8 @@ export async function runDeploy(
       ready ? "ready" : "failed",
       ready
         ? "Runtime ready - containers confirmed alive"
-        : "Containers did not report healthy in time",
+        : "Some arm containers not healthy yet - backend applied the config "
+          + "(see Events for per-arm detail); they may still be booting",
     );
     st().pushEvent({
       kind: "deploy",
