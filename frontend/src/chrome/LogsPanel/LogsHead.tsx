@@ -1,11 +1,10 @@
 import { cn } from "@/lib/cn";
 import type { DataSource, LinkStatus } from "@/store/types";
 
-type TabId = "coordination" | "fleet" | "bus" | "validation" | "events";
+type TabId = "coordination" | "bus" | "validation" | "events";
 
 interface TabCounts {
   coordination: number;
-  fleet: number;
   bus: number;
   validation: number;
   events: number;
@@ -26,7 +25,6 @@ interface LogsHeadProps {
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "coordination", label: "Coordination" },
-  { id: "fleet", label: "Fleet" },
   { id: "bus", label: "Message bus" },
   { id: "validation", label: "Validation" },
   { id: "events", label: "Events" },

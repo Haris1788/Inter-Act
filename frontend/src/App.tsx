@@ -40,7 +40,9 @@ export function App() {
         className="grid min-h-0"
         style={{
           gridTemplateColumns: "260px 1fr 320px",
-          gridTemplateRows: "1fr 220px",
+          // Dock sizes itself (auto); canvas (1fr) reclaims the space when the
+          // operational dock collapses. The dock animates its own height.
+          gridTemplateRows: "1fr auto",
           gridTemplateAreas: '"left canvas right" "left logs right"',
         }}
       >

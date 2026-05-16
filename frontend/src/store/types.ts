@@ -106,6 +106,13 @@ export interface EditorSlice {
   deployedAt: string | null;
   deployPhase: DeployPhase;
   deployMessage: string;
+  // Phase 14 - operational dock collapse. UI chrome only (not persisted to
+  // runtime). The whole dock collapses to a slim header strip; canvas takes
+  // the freed vertical space. logsHeight restores the pre-collapse size.
+  logsCollapsed: boolean;
+  logsHeight: number;
+  toggleLogsCollapsed: () => void;
+  setLogsHeight: (px: number) => void;
   setMode: (m: EditorMode) => void;
   setSelection: (ids: ActorId[]) => void;
   toggleSelection: (id: ActorId, additive: boolean) => void;

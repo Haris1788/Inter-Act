@@ -29,7 +29,7 @@ export function ValidationList() {
   );
 
   return (
-    <div className="overflow-y-auto px-3 py-2.5">
+    <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5">
       <h4
         className={cn(
           "my-1 mb-2 flex items-center justify-between",

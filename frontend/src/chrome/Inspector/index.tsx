@@ -1,11 +1,5 @@
 import { useState } from "react";
-import {
-  useSelectedActorId,
-  useActor,
-  useActorRuntime,
-  useDataSource,
-} from "@/store/selectors";
-import { DEFAULT_RUNTIME } from "@/store/runtimeSlice";
+import { useSelectedActorBundle, useDataSource } from "@/store/selectors";
 import { InspHead } from "./InspHead";
 import { InspTabs, type Tab } from "./InspTabs";
 import { SectionIdentity } from "./SectionIdentity";
@@ -34,14 +28,12 @@ export function Inspector() {
   const dataSource = useDataSource();
   const live = dataSource === "live";
 
-  const selectedId = useSelectedActorId();
-  const actor = useActor(selectedId ?? "");
-  const liveRuntime = useActorRuntime(selectedId ?? "");
-  // Schema-driven: a selected actor ALWAYS gets a full inspector. Actors
-  // with no live runtime yet (e.g. just drag-created) fall back to the
-  // canonical default so every section/control renders consistently. No
-  // preset / authored / runtime special-casing anywhere below.
-  const runtime = liveRuntime ?? DEFAULT_RUNTIME;
+  // ONE authoritative subscription. Header / body / runtime / actions all
+  // read from this single bundle, so the header can never lag the body when
+  // selection changes (Phase 14 fix). Runtime falls back to the canonical
+  // default → schema-driven rendering for actors with no live runtime yet
+  // (Phase 13 invariant preserved).
+  const { selectedId, actor, runtime } = useSelectedActorBundle();
 
   const [activeTab, setActiveTab] = useState<Tab>("Properties");
 

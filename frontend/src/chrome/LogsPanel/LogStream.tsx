@@ -67,7 +67,7 @@ interface LogStreamProps {
 
 export function LogStream({ lines }: LogStreamProps) {
   return (
-    <div className="overflow-y-auto border-r border-line-soft py-2 font-mono text-11.5 flex-1">
+    <div className="min-h-0 flex-1 overflow-y-auto py-2 font-mono text-11.5">
       {lines.map((line) => (
         <div
           key={line.id}

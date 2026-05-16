@@ -68,24 +68,24 @@ export function FleetRoster() {
   );
 
   return (
-    <div className="overflow-y-auto px-3 py-2.5">
-      <h4
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Header aligned to the left tab strip (h-9) so the split reads level */}
+      <div
         className={cn(
-          "my-1 mb-2 flex items-center justify-between",
+          "flex h-9 shrink-0 items-center justify-between border-b border-line-soft px-3",
           "text-10.5 font-semibold uppercase tracking-[0.08em] text-ink-3",
         )}
       >
-        Fleet roster
+        <span>Fleet roster</span>
         <span className="font-mono text-10.5 normal-case tracking-normal text-ink-5">
-          {actorList.length} actors
+          {actorList.length}
           {degradedCount > 0 && (
-            <span className="ml-1.5 text-ink-4">
-              · {degradedCount} degraded
-            </span>
+            <span className="ml-1.5 text-ink-4">· {degradedCount} degraded</span>
           )}
         </span>
-      </h4>
+      </div>
 
+      <div className="min-h-0 flex-1 overflow-y-auto px-2.5 py-1.5">
       {actorList.map((actor) => {
         const rt = actorRuntime[actor.id];
         const status: ActorStatus = rt?.status ?? "idle";
@@ -145,6 +145,7 @@ export function FleetRoster() {
       {actorList.length === 0 && (
         <p className="py-3 text-11.5 text-ink-5">No actors in topology</p>
       )}
+      </div>
     </div>
   );
 }

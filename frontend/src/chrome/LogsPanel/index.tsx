@@ -9,38 +9,44 @@ import { BusPane } from "./BusPane";
 import {
   useLogLines,
   useEvents,
-  useActors,
   useBusMessages,
   useDataSource,
   useLinkStatus,
+  useLogsCollapsed,
+  useLogsHeight,
 } from "@/store/selectors";
 import { useStore } from "@/store";
 import { useTopologyValidation } from "@/store/derived";
 
-type TabId = "coordination" | "fleet" | "bus" | "validation" | "events";
+// Phase 14: the dock is ONE docked operational workspace.
+//   - left 65%  : stream tabs (Coordination / Message bus / Validation / Events)
+//   - right 35% : permanent Fleet runtime sidebar (independent of tabs)
+//   - collapse  : whole dock → slim header strip; canvas takes the space.
+type TabId = "coordination" | "bus" | "validation" | "events";
+
+const HEADER_H = 36; // matches LogsHead h-9
 
 export function LogsPanel() {
   const [activeTab, setActiveTab] = useState<TabId>("coordination");
   const [paused, setPaused] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
 
-  // Real data for counts
+  const collapsed = useLogsCollapsed();
+  const logsHeight = useLogsHeight();
+  const toggleLogsCollapsed = useStore((s) => s.toggleLogsCollapsed);
+
   const logLines = useLogLines();
   const events = useEvents();
-  const actors = useActors();
   const busMessages = useBusMessages();
   const dataSource = useDataSource();
   const linkStatus = useLinkStatus();
   const { errors, warnings } = useTopologyValidation();
 
-  // For pausing: snapshot the log lines when pause is toggled on
   const pausedLinesRef = useRef(logLines);
   const pausedEventsRef = useRef(events);
   const pausedBusRef = useRef(busMessages);
 
   function handlePause() {
     if (!paused) {
-      // Snapshot current state
       pausedLinesRef.current = logLines;
       pausedEventsRef.current = events;
       pausedBusRef.current = busMessages;
@@ -48,36 +54,29 @@ export function LogsPanel() {
     setPaused((p) => !p);
   }
 
-  // Clear for Coordination tab (logLines via hydrateRuntime)
   const hydrateRuntime = useStore((s) => s.hydrateRuntime);
 
   function handleClear() {
     if (activeTab === "coordination") {
       hydrateRuntime({ logLines: [] });
-      if (paused) {
-        pausedLinesRef.current = [];
-      }
+      if (paused) pausedLinesRef.current = [];
     } else if (activeTab === "bus") {
       hydrateRuntime({ busMessages: [] });
-      if (paused) {
-        pausedBusRef.current = [];
-      }
+      if (paused) pausedBusRef.current = [];
     }
   }
 
-  // Clear is only available for coordination and bus tabs
+  // Clear only meaningful for the live-buffer stream tabs.
   const clearHandler: (() => void) | null =
     activeTab === "coordination" || activeTab === "bus" ? handleClear : null;
 
-  // Effective data (frozen when paused)
   const displayLines = paused ? pausedLinesRef.current : logLines;
   const displayEvents = paused ? pausedEventsRef.current : events;
   const displayBus = paused ? pausedBusRef.current : busMessages;
 
-  // Real counts (always live — counts never freeze; only content does)
+  // Counts: left stream tabs only — Fleet is a permanent sidebar, not a tab.
   const counts = {
     coordination: logLines.length,
-    fleet: Object.keys(actors).length,
     bus: busMessages.length,
     validation: errors + warnings,
     events: events.length,
@@ -86,9 +85,10 @@ export function LogsPanel() {
   return (
     <section
       className={cn(
-        "flex flex-col border-t border-line bg-bg-panel",
-        "min-h-0",
+        "flex flex-col overflow-hidden border-t border-line bg-bg-panel",
+        "min-h-0 transition-[height] duration-200 ease-out",
       )}
+      style={{ height: collapsed ? HEADER_H : logsHeight }}
     >
       <LogsHead
         activeTab={activeTab}
@@ -98,28 +98,35 @@ export function LogsPanel() {
         onPause={handlePause}
         onClear={clearHandler}
         collapsed={collapsed}
-        onCollapse={() => setCollapsed((c) => !c)}
+        onCollapse={toggleLogsCollapsed}
         dataSource={dataSource}
         linkStatus={linkStatus}
       />
 
       {!collapsed && (
-        <TabBody
-          activeTab={activeTab}
-          paused={paused}
-          displayLines={displayLines}
-          displayEvents={displayEvents}
-          displayBus={displayBus}
-        />
+        <div className="flex min-h-0 flex-1">
+          {/* LEFT 65% — operational stream workspace */}
+          <div className="flex min-h-0 flex-1 flex-col border-r border-line basis-[65%]">
+            <StreamBody
+              activeTab={activeTab}
+              paused={paused}
+              displayLines={displayLines}
+              displayEvents={displayEvents}
+              displayBus={displayBus}
+            />
+          </div>
+
+          {/* RIGHT 35% — permanent fleet runtime monitor */}
+          <aside className="flex min-h-0 flex-col bg-bg-panel basis-[35%] shrink-0">
+            <FleetRoster />
+          </aside>
+        </div>
       )}
     </section>
   );
 }
 
-// ── TabBody ───────────────────────────────────────────────────────────────────
-// Separated so LogsPanel hook count stays fixed regardless of collapsed state.
-
-interface TabBodyProps {
+interface StreamBodyProps {
   activeTab: TabId;
   paused: boolean;
   displayLines: ReturnType<typeof useLogLines>;
@@ -127,48 +134,38 @@ interface TabBodyProps {
   displayBus: ReturnType<typeof useBusMessages>;
 }
 
-function TabBody({ activeTab, paused, displayLines, displayEvents, displayBus }: TabBodyProps) {
-  // Coordination — full-width log stream (frozen when paused)
+function StreamBody({
+  activeTab,
+  paused,
+  displayLines,
+  displayEvents,
+  displayBus,
+}: StreamBodyProps) {
   if (activeTab === "coordination") {
     return (
-      <div className="min-h-0 flex-1 flex flex-col relative">
+      <div className="relative flex min-h-0 flex-1 flex-col">
         {paused && <PausedBanner />}
         <LogStream lines={displayLines} />
       </div>
     );
   }
-
-  // Fleet — actor roster only
-  if (activeTab === "fleet") {
-    return (
-      <div className="min-h-0 flex-1 flex flex-col">
-        <FleetRoster />
-      </div>
-    );
-  }
-
-  // Message bus — bus traffic (frozen when paused)
   if (activeTab === "bus") {
     return (
-      <div className="min-h-0 flex-1 flex flex-col relative">
+      <div className="relative flex min-h-0 flex-1 flex-col">
         {paused && <PausedBanner />}
         <BusPane messages={displayBus} />
       </div>
     );
   }
-
-  // Validation — topology/deploy validation only
   if (activeTab === "validation") {
     return (
-      <div className="min-h-0 flex-1 flex flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <ValidationList />
       </div>
     );
   }
-
-  // Events — full operational history timeline (frozen when paused)
   return (
-    <div className="min-h-0 flex-1 flex flex-col relative">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       {paused && <PausedBanner />}
       <EventsPane events={displayEvents} />
     </div>

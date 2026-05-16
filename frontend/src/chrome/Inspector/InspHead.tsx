@@ -107,19 +107,34 @@ export function InspHead({ actor, runtime, live }: InspHeadProps) {
         {/* Icon */}
         <div className="insp-title-icon flex-1 flex items-center gap-[9px] min-w-0">
           <span className="w-[30px] h-[30px] rounded-md bg-[#FAF8F2] border border-line text-ink inline-flex items-center justify-center flex-shrink-0">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-            >
-              <rect x="3" y="9" width="18" height="7" rx="1.5" />
-              <circle cx="8" cy="18" r="1.7" />
-              <circle cx="16" cy="18" r="1.7" />
-              <path d="M5 9V7h14v2" />
-            </svg>
+            {actor.kind === "arm" ? (
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+              >
+                <circle cx="6" cy="18" r="2" />
+                <path d="M6 16V9l6-3v5l5 1v6" />
+                <circle cx="17" cy="17" r="2" />
+              </svg>
+            ) : (
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+              >
+                <rect x="3" y="9" width="18" height="7" rx="1.5" />
+                <circle cx="8" cy="18" r="1.7" />
+                <circle cx="16" cy="18" r="1.7" />
+                <path d="M5 9V7h14v2" />
+              </svg>
+            )}
           </span>
           <div className="min-w-0">
             <h3 className="m-0 text-14 font-semibold">{displayName(actor)}</h3>

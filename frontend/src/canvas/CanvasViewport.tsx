@@ -258,27 +258,34 @@ function FlowInner() {
         className="h-full w-full"
         style={{ background: "transparent" }}
       >
-        {/* Topology overview - permanent spatial navigation widget
-            (bottom-right). Replaces the removed Fleet card; fleet/runtime
-            telemetry now lives only in the lower operational panel. */}
+        {/* Topology overview — a subtle navigation preview, NOT a second
+            canvas. Muted warm-gray, stroke-led, low fill opacity so it reads
+            as an architectural thumbnail rather than solid blocks. Anchored
+            bottom-right, above the operational dock; inspector is a separate
+            grid column so there is no overlap. */}
         <MiniMap
           position="bottom-right"
           pannable
           zoomable
           ariaLabel="Topology overview"
           className="!rounded-md !border !border-line !bg-bg-surface !shadow-e1"
-          style={{ width: 184, height: 116, margin: 14 }}
-          maskColor="rgba(238,235,227,0.55)"
-          maskStrokeColor="#C9C6BD"
-          nodeStrokeWidth={2}
+          style={{ width: 176, height: 110, margin: 12 }}
+          maskColor="rgba(244,243,239,0.62)"
+          maskStrokeColor="rgba(201,198,189,0.7)"
+          nodeBorderRadius={3}
+          nodeStrokeWidth={1}
           nodeColor={(n) =>
             n.type === "actorNode"
               ? (n.data as { kind?: string })?.kind === "agv"
-                ? "#5F8F58"
-                : "#18181B"
-              : "#C9C6BD"
+                ? "rgba(122,132,110,0.22)"
+                : "rgba(96,94,88,0.24)"
+              : "rgba(201,198,189,0.16)"
           }
-          nodeStrokeColor="transparent"
+          nodeStrokeColor={(n) =>
+            n.type === "actorNode"
+              ? "rgba(96,94,88,0.55)"
+              : "rgba(201,198,189,0.6)"
+          }
         />
       </ReactFlow>
 

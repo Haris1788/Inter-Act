@@ -15,6 +15,16 @@ export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (
   deployPhase: "idle",
   deployMessage: "",
   focusRequest: null,
+  logsCollapsed: false,
+  logsHeight: 220,
+
+  toggleLogsCollapsed: () =>
+    set((s) => ({ logsCollapsed: !s.logsCollapsed })),
+
+  // Clamp so a stray resize can't strand the dock off-screen or crush the
+  // canvas. Restored verbatim on expand.
+  setLogsHeight: (px) =>
+    set({ logsHeight: Math.max(140, Math.min(520, Math.round(px))) }),
 
   setMode: (mode) => set({ mode, contextMenu: null }),
 
