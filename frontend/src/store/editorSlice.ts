@@ -8,6 +8,10 @@ export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (
   selectedIds: [],
   contextMenu: null,
   dirty: false,
+  deployedJson: null,
+  deployedAt: null,
+  deployPhase: "idle",
+  deployMessage: "",
 
   setMode: (mode) => set({ mode, contextMenu: null }),
 
@@ -28,4 +32,13 @@ export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (
 
   markDirty: () => set((s) => (s.dirty ? {} : { dirty: true })),
   markClean: () => set((s) => (s.dirty ? { dirty: false } : {})),
+
+  // Records the deploy/prepare baseline for divergence detection. Does NOT
+  // clear `dirty` — that flag is local-persistence state; deploy-needed is
+  // derived from snapshot divergence, not from autosave.
+  recordDeploy: (docJson) =>
+    set({ deployedJson: docJson, deployedAt: new Date().toISOString() }),
+
+  setDeployPhase: (deployPhase, message) =>
+    set({ deployPhase, deployMessage: message ?? "" }),
 });

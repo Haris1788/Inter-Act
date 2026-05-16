@@ -16,6 +16,9 @@ export const useEditorMode = () => useStore((s) => s.mode);
 export const useSelectedIds = () => useStore((s) => s.selectedIds);
 export const useContextMenu = () => useStore((s) => s.contextMenu);
 export const useDirty = () => useStore((s) => s.dirty);
+export const useDeployPhase = () => useStore((s) => s.deployPhase);
+export const useDeployMessage = () => useStore((s) => s.deployMessage);
+export const useDeployedAt = () => useStore((s) => s.deployedAt);
 
 export const useDataSource = () => useStore((s) => s.dataSource);
 export const useLinkStatus = () => useStore((s) => s.linkStatus);

@@ -80,11 +80,28 @@ export interface ContextMenuState {
   y: number;
   nodeId: ActorId | null;
 }
+// Phase 5 deployment lifecycle (frontend; backend stays the authority).
+export type DeployPhase =
+  | "idle"
+  | "validating"
+  | "preparing"
+  | "restarting"
+  | "reconciling"
+  | "prepared"
+  | "ready"
+  | "failed";
+
 export interface EditorSlice {
   mode: EditorMode;
   selectedIds: ActorId[];
   contextMenu: ContextMenuState | null;
   dirty: boolean;
+  // Lifecycle: snapshot of the topology at the last successful deploy/prepare
+  // (serialized TopologyDoc JSON) — the baseline for divergence detection.
+  deployedJson: string | null;
+  deployedAt: string | null;
+  deployPhase: DeployPhase;
+  deployMessage: string;
   setMode: (m: EditorMode) => void;
   setSelection: (ids: ActorId[]) => void;
   toggleSelection: (id: ActorId, additive: boolean) => void;
@@ -93,6 +110,8 @@ export interface EditorSlice {
   closeContextMenu: () => void;
   markDirty: () => void;
   markClean: () => void;
+  recordDeploy: (docJson: string) => void;
+  setDeployPhase: (phase: DeployPhase, message?: string) => void;
 }
 
 // ---------- SLICE 2: Runtime (live status; read-mostly in UI) ----------
@@ -126,7 +145,7 @@ export interface LogLine {
 
 export interface ValidationRow {
   id: string;
-  level: "ok" | "info" | "warn";
+  level: "ok" | "info" | "warn" | "error";
   text: string;
 }
 
