@@ -34,6 +34,14 @@ export function LogsPanel() {
   const logsHeight = useLogsHeight();
   const toggleLogsCollapsed = useStore((s) => s.toggleLogsCollapsed);
 
+  // Clicking any tab while collapsed expands the dock first, then switches.
+  // Reuses the one authoritative collapse state + its height transition -
+  // no per-tab hidden state. Guarded so an expanded dock never collapses.
+  function handleTab(id: TabId) {
+    setActiveTab(id);
+    if (collapsed) toggleLogsCollapsed();
+  }
+
   const logLines = useLogLines();
   const events = useEvents();
   const busMessages = useBusMessages();
@@ -92,7 +100,7 @@ export function LogsPanel() {
     >
       <LogsHead
         activeTab={activeTab}
-        onTab={setActiveTab}
+        onTab={handleTab}
         counts={counts}
         paused={paused}
         onPause={handlePause}
