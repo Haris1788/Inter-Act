@@ -1,0 +1,84 @@
+# INTER.act Pipeline Configuration
+# Edit this file to add/remove arms, change modes, or set failure policies.
+# Then run: python scripts/generate_compose.py && docker compose up --build
+
+pipeline:
+  mode: dependency # sequential | parallel | dependency (DAG-based)
+  products: 3
+  speed: normal # fast | normal | slow
+
+failure_policy:
+  default: isolate # stop | skip | retry | isolate
+  retry_max: 3
+  retry_delay: 2.0
+
+health:
+  check_interval: 2.0
+  timeout: 5.0
+  max_missed: 3
+
+# Canvas size is auto-computed from arm count. Remove these to use defaults.
+# canvas:
+#   width: 1920
+#   height: 720
+
+# Arms are positioned automatically in sequence. Add vehicles in the
+# assets section below to insert them in the flow. The layout engine
+# will reposition all assets to create a continuous, gap-free layout.
+arms:
+  - id: 1
+    label: "Arm 1"
+    color: "#e74c3c"
+    depends_on: []
+    critical: true
+
+  - id: 2
+    label: "Arm 2"
+    color: "#2ecc71"
+    depends_on: [1]
+    critical: true
+
+  - id: 3
+    label: "Arm 3"
+    color: "#3498db"
+    depends_on: [2]
+    critical: true
+
+  - id: 4
+    label: "Arm 4"
+    color: "#e67e22"
+    depends_on: [3]
+    critical: true
+
+  # - id: 5
+  #   label: "Arm 5"
+  #   color: "#1abc9c"
+  #   depends_on: [4]
+  #   critical: true
+
+# Optional: add vehicles here. Frontend renders + ticks them;
+# backend ignores them (arms-only for lifecycle). Uncomment to enable.
+assets:
+  - id: veh-a
+    type: vehicle
+    label: "Shuttle A"
+    color: "#9b59b6"
+    speed: 140 # px/sec
+    loop: false
+    waypoints:
+      - { x: 730, y: 300 }
+      - { x: 900, y: 300 }
+    upstream: [arm-2]
+    downstream: [arm-3]
+
+  # - id: veh-b
+  #   type: vehicle
+  #   label: "Shuttle B"
+  #   color: "#8e44ad"
+  #   speed: 140
+  #   loop: false
+  #   waypoints:
+  #     - { x: 730, y: 300 }
+  #     - { x: 900, y: 300 }
+  #   upstream: [arm-3]
+  #   downstream: [arm-4]

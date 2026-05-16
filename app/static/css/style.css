@@ -1,0 +1,564 @@
+/* INTER.act Simulation Styles */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Hide scrollbars globally while preserving scroll */
+html,
+body {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+#canvas-wrapper::-webkit-scrollbar,
+#log-panel::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f6fa;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+:root {
+    --control-radius: 6px;
+    --control-shadow: 0 1px 2px rgba(44, 62, 80, 0.12);
+    --control-shadow-hover: 0 3px 8px rgba(44, 62, 80, 0.16);
+}
+
+h1 {
+    font-size: 22px;
+    color: #2c3e50;
+    margin-bottom: 6px;
+    letter-spacing: 1px;
+}
+
+/* Status indicator */
+#status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: #7f8c8d;
+}
+
+#status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #e74c3c;
+    transition: background 0.3s;
+}
+
+#status-dot.connected {
+    background: #27ae60;
+}
+
+/* Shared control buttons */
+#demo-btn,
+.control-btn {
+    appearance: none;
+    min-height: 24px;
+    padding: 5px 13px;
+    border: 1px solid transparent;
+    border-radius: var(--control-radius);
+    font: 700 11px/1.1 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: var(--control-shadow);
+    transition:
+        background-color 0.18s ease,
+        border-color 0.18s ease,
+        color 0.18s ease,
+        box-shadow 0.18s ease,
+        transform 0.12s ease;
+}
+
+#demo-btn {
+    margin-left: 16px;
+    color: #236a8d;
+    background: #edf6fb;
+    border-color: #8fc5df;
+}
+
+#demo-btn:hover {
+    color: #fff;
+    background: #3498db;
+    border-color: #3498db;
+    box-shadow: var(--control-shadow-hover);
+    transform: translateY(-1px);
+}
+
+#demo-btn:active {
+    transform: translateY(0);
+    box-shadow: var(--control-shadow);
+}
+
+#demo-btn.running {
+    background: #e67e22;
+    border-color: #e67e22;
+    cursor: default;
+    transform: none;
+}
+
+#demo-btn.done {
+    background: #27ae60;
+    border-color: #27ae60;
+}
+
+#demo-btn:focus-visible,
+.control-btn:focus-visible {
+    outline: 2px solid rgba(52, 152, 219, 0.28);
+    outline-offset: 2px;
+}
+
+/* AI bar — Qwen-driven script dispatch */
+#ai-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+    align-items: center;
+    width: min(100%, 980px);
+    padding: 6px 10px 6px;
+    margin-top: 4px;
+    border-top: 1px dashed rgba(149, 165, 166, 0.35);
+}
+#ai-bar .ai-bar-label {
+    font-weight: 600;
+    color: #34495e;
+    margin-right: 4px;
+}
+#ai-bar .ai-status {
+    margin-left: 8px;
+    font-size: 0.85rem;
+    color: #7f8c8d;
+    min-width: 200px;
+}
+#ai-bar .ai-status-ok { color: #27ae60; }
+#ai-bar .ai-status-err { color: #c0392b; }
+
+/* Asset controls */
+#asset-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+    align-items: center;
+    width: min(100%, 980px);
+    padding: 8px 10px 5px;
+    margin-top: 2px;
+}
+
+.control-btn-danger {
+    color: #52686c;
+    background: #eef3f4;
+    border-color: #aebdc1;
+}
+
+.control-btn-danger:hover:not(:disabled) {
+    color: #fff;
+    background: #c94f45;
+    border-color: #c94f45;
+    box-shadow: var(--control-shadow-hover);
+    transform: translateY(-1px);
+}
+
+.control-btn-ghost {
+    color: #236a8d;
+    background: #edf6fb;
+    border-color: #8fc5df;
+}
+
+.control-btn-ghost:hover:not(:disabled) {
+    color: #fff;
+    background: #3498db;
+    border-color: #3498db;
+    box-shadow: var(--control-shadow-hover);
+    transform: translateY(-1px);
+}
+
+.control-btn-debug {
+    color: #52686c;
+    background: #f7f9fa;
+    border-color: #bdc8cb;
+}
+
+.control-btn-debug:hover:not(:disabled),
+.control-btn-debug.is-active {
+    color: #fff;
+    background: #34495e;
+    border-color: #34495e;
+    box-shadow: var(--control-shadow-hover);
+}
+
+.control-btn:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: var(--control-shadow);
+}
+
+.control-btn:disabled {
+    color: #7f8c8d;
+    background: #dce3e5;
+    border-color: #dce3e5;
+    cursor: not-allowed;
+    opacity: 0.75;
+}
+
+#brain-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 8px;
+    font-size: 12px;
+    color: #2c3e50;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+#brain-toggle input {
+    cursor: pointer;
+}
+
+/* US #16 — Send Task (Qwen brain) bar */
+#task-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: #2c3e50;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+#task-bar label {
+    color: #7f8c8d;
+    font-weight: 600;
+}
+
+#task-bar select,
+#task-bar input[type="text"] {
+    padding: 4px 8px;
+    font-size: 13px;
+    border: 1px solid #dcdde1;
+    border-radius: 4px;
+    background: #fff;
+}
+
+#task-bar input[type="text"] {
+    width: 280px;
+}
+
+#task-btn {
+    padding: 5px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    background: #8e44ad;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+#task-btn:hover {
+    background: #71368a;
+}
+
+#task-btn:disabled {
+    background: #b39ec5;
+    cursor: not-allowed;
+}
+
+#task-status {
+    font-size: 12px;
+    color: #7f8c8d;
+    min-width: 12ch;
+}
+
+#task-status.state-processing {
+    color: #e67e22;
+}
+
+#task-status.state-success {
+    color: #27ae60;
+}
+
+#task-status.state-failed {
+    color: #e74c3c;
+}
+
+/* US 17 — Role bar (Qwen picks a script per arm) */
+#role-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: #2c3e50;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+#role-bar .role-label {
+    color: #7f8c8d;
+    font-weight: 600;
+}
+
+#role-bar input[type="text"] {
+    padding: 4px 8px;
+    font-size: 13px;
+    border: 1px solid #dcdde1;
+    border-radius: 4px;
+    background: #fff;
+    width: 220px;
+}
+
+#role-bar .role-btn {
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    background: #16a085;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+#role-bar .role-btn:hover {
+    background: #117a65;
+}
+
+#role-bar .role-btn.role-all {
+    background: #e67e22;
+}
+
+#role-bar .role-btn.role-all:hover {
+    background: #b9651a;
+}
+
+#role-bar .role-btn.role-util {
+    background: #2980b9;
+}
+
+#role-bar .role-btn.role-util:hover {
+    background: #1f6391;
+}
+
+#role-bar .role-btn.role-reset {
+    background: #7f8c8d;
+}
+
+#role-bar .role-btn.role-reset:hover {
+    background: #566162;
+}
+
+#role-status {
+    font-size: 12px;
+    color: #7f8c8d;
+    min-width: 14ch;
+}
+
+#role-status.state-processing {
+    color: #e67e22;
+}
+
+#role-status.state-success {
+    color: #27ae60;
+}
+
+#role-status.state-failed {
+    color: #e74c3c;
+}
+
+/* Canvas wrapper */
+#canvas-wrapper {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+/* Canvas keeps native size; wrapper handles horizontal scrolling */
+#sim-canvas {
+    display: block;
+    width: auto;
+    max-width: none;
+    height: auto;
+    margin: 0 auto;
+    border: 1px solid #dcdde1;
+    background: #fff;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* Log panel */
+#log-panel {
+    width: 100%;              /* fallback before JS sets canvas-matched width */
+    max-width: 100%;
+    max-height: 200px;
+    overflow-y: auto;
+    background: #2c3e50;
+    color: #ecf0f1;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 8px 12px;
+    margin: 8px auto 0;       /* center when JS overrides width */
+    border-radius: 4px;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.log-entry {
+    white-space: nowrap;
+}
+
+.log-time {
+    color: #7f8c8d;
+}
+
+.log-source {
+    font-weight: bold;
+}
+
+.log-source.arm_1 { color: #e74c3c; }
+.log-source.arm_2 { color: #2ecc71; }
+.log-source.arm_3 { color: #3498db; }
+.log-source.arm_4 { color: #9b59b6; }
+.log-source.arm_5 { color: #9b99b6; }
+.log-source.arm_6 { color: #f39c12; }
+.log-source.arm_7 { color: #1abc9c; }
+.log-source.arm_8 { color: #34495e; }
+.log-source.arm_9 { color: #d35400; }
+.log-source.arm_10 { color: #16a085; }
+.log-source.system { color: #f39c12; }
+.log-source.pipeline { color: #9b59b6; }
+
+/* ── Notification Toasts ──────────────────────────────── */
+
+#notif-container {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 340px;
+    pointer-events: none;
+}
+
+.notif {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    border-left: 4px solid #95a5a6;
+    transform: translateX(120%);
+    opacity: 0;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+    pointer-events: auto;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 13px;
+}
+
+.notif.notif-show {
+    transform: translateX(0);
+    opacity: 1;
+}
+
+.notif.notif-exit {
+    animation: notif-slide-out 0.3s ease forwards;
+}
+
+@keyframes notif-slide-out {
+    to {
+        transform: translateX(120%);
+        opacity: 0;
+    }
+}
+
+/* Type-specific border colors */
+.notif-error { border-left-color: #e74c3c; }
+.notif-warning { border-left-color: #f39c12; }
+.notif-success { border-left-color: #27ae60; }
+.notif-info { border-left-color: #3498db; }
+
+/* Icon */
+.notif-icon {
+    font-size: 16px;
+    line-height: 1;
+    min-width: 20px;
+    text-align: center;
+    padding-top: 1px;
+}
+
+.notif-error .notif-icon { color: #e74c3c; }
+.notif-warning .notif-icon { color: #f39c12; }
+.notif-success .notif-icon { color: #27ae60; }
+.notif-info .notif-icon { color: #3498db; }
+
+/* Content */
+.notif-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.notif-title {
+    font-weight: 600;
+    color: #2c3e50;
+    margin-bottom: 2px;
+}
+
+.notif-msg {
+    color: #7f8c8d;
+    font-size: 12px;
+    word-wrap: break-word;
+}
+
+/* Timestamp */
+.notif-time {
+    color: #bdc3c7;
+    font-size: 11px;
+    white-space: nowrap;
+    padding-top: 2px;
+}
+
+/* Close button */
+.notif-close {
+    background: none;
+    border: none;
+    color: #bdc3c7;
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    transition: color 0.2s;
+}
+
+.notif-close:hover {
+    color: #7f8c8d;
+}

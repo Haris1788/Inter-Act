@@ -1,23 +1,61 @@
 # INTER.act
 
-A 2D browser simulation of three robotic arms passing objects through a production pipeline.
+INTER.act is a browser simulation of a production pipeline with robotic arms, live state updates, and config-driven topology.
 
-Built for Ostfalia SoSe 2026, IN3 Group + AiSuNe Foundation.
+## Quick start
 
-## Branch Structure
+Docker:
 
-- `main` — Protected production branch. Updated via PR from `dev` at end of each sprint.
-- `dev` — Integration branch. All personal branches merge here via PR.
-- `dev-haris` — Haris Masood
-- `dev-reza` — Reza
-- `dev-montu` — Montu
-- `dev-amir` — Amir
-- `dev-sneh` — Sneh
-- `dev-purvil` — Purvil
+```bash
+docker compose up --build
+# open http://localhost:5000
+```
 
-## Workflow
+Local:
 
-1. Each team member works on their own `dev-yourname` branch
-2. To integrate, open a PR from `dev-yourname` into `dev`
-3. Haris reviews and merges PRs into `dev`
-4. At end of sprint, `dev` is merged into `main` via PR
+```bash
+pip install -r requirements.txt
+python run.py
+python scripts/run_demo.py --speed normal --products 3
+```
+
+## Configuration
+
+Main config file is `pipeline.yaml`.
+
+After changing config in a running backend:
+
+```bash
+curl -X POST http://localhost:5000/reload_config
+curl -X POST http://localhost:5000/restart_pipeline
+```
+
+If arm count changed in Docker mode:
+
+```bash
+python scripts/generate_compose.py
+docker compose up --build
+```
+
+## Documentation map
+
+Start here:
+
+- `docs/system_documentation.md`
+
+Detailed docs:
+
+- `docs/api_reference.md`
+- `docs/failure_model.md`
+- `docs/frontend_assets.md`
+- `docs/docker_stack.md`
+- `docs/backend_runtime.md`
+- `docs/config_reference.md`
+- `docs/development_workflow.md`
+- `docs/troubleshooting.md`
+
+## Tests
+
+```bash
+pytest tests/ -v
+```
