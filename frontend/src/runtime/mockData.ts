@@ -21,7 +21,8 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     kind: "arm",
     type: "Arm · 6DoF",
     label: "Source actor",
-    position: { x: 180, y: 172 },
+    // y=165 → card center (165+75) == halo center y=240 (concentric).
+    position: { x: 180, y: 165 },
     size: { w: 210, h: 150 },
     capabilities: ["pick", "place", "dock"],
     liveCapability: "pick",
@@ -33,7 +34,8 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     kind: "arm",
     type: "Arm · SCARA",
     label: "Destination actor",
-    position: { x: 930, y: 172 },
+    // Concentric with the arm-2 halo (center y=240).
+    position: { x: 930, y: 165 },
     size: { w: 210, h: 150 },
     capabilities: ["pick", "place", "dock"],
     liveCapability: "place",
@@ -79,18 +81,21 @@ export const mockActors: Record<ActorId, TopologyActor> = {
 };
 
 export const mockZones: Record<string, TopologyZone> = {
+  // Zones sit on the shared centerline (y=240) and clear the arm halos
+  // (outer r=170 → edges x=115 / x=1205) with ~40px breathing room. The
+  // KonvaOverlay whisper strokes bridge zone → halo.
   "feed-I": {
     id: "feed-I",
     role: "source",
     label: "feed-I",
-    position: { x: 75, y: 240 },
+    position: { x: 55, y: 240 },
     count: "queue · 12",
   },
   "sink-O": {
     id: "sink-O",
     role: "sink",
     label: "sink-O",
-    position: { x: 1245, y: 240 },
+    position: { x: 1265, y: 240 },
     count: "received · 0",
   },
 };

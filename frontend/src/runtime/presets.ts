@@ -66,18 +66,19 @@ function agv(
 }
 // Authored presets have no live feed yet - neutral counts, not fabricated.
 const ZONES: Record<string, TopologyZone> = {
+  // Match mock layout: on the centerline, clear of the arm halos.
   "feed-I": {
     id: "feed-I",
     role: "source",
     label: "feed-I",
-    position: { x: 75, y: 240 },
+    position: { x: 55, y: 240 },
     count: "queue · -",
   },
   "sink-O": {
     id: "sink-O",
     role: "sink",
     label: "sink-O",
-    position: { x: 1245, y: 240 },
+    position: { x: 1265, y: 240 },
     count: "received · -",
   },
 };
@@ -113,7 +114,7 @@ export const PRESETS: Preset[] = [
           "Arm · 6DoF",
           "Source actor",
           180,
-          172,
+          165,
           "reach 1.2 m · 5 kg",
         ),
         "veh-1": agv(
@@ -141,7 +142,7 @@ export const PRESETS: Preset[] = [
           "Arm · 6DoF",
           "Source actor",
           180,
-          172,
+          165,
           "reach 1.2 m · 5 kg",
         ),
         "arm-2": arm(
@@ -149,7 +150,7 @@ export const PRESETS: Preset[] = [
           "Arm · SCARA",
           "Destination actor",
           930,
-          172,
+          165,
           "reach 0.9 m · 3 kg",
         ),
         "veh-1": agv(

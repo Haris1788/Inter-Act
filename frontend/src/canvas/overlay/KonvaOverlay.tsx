@@ -143,16 +143,18 @@ function StaticLayer({ tx }: { tx: Transform }) {
         opacity={0.9}
       />
 
-      {/* source / sink whisper strokes */}
+      {/* source / sink whisper strokes - bridge the zone chip edge to the
+          arm halo edge on the shared centerline (zone centers x=55 / x=1265,
+          halo edges x=115 / x=1205). */}
       <Path
-        data="M 110 240 L 175 240"
+        data="M 75 240 L 115 240"
         stroke={tokens.line.strong}
         strokeWidth={1}
         dash={[2, 5]}
         opacity={0.9}
       />
       <Path
-        data="M 1145 240 L 1210 240"
+        data="M 1205 240 L 1245 240"
         stroke={tokens.line.strong}
         strokeWidth={1}
         dash={[2, 5]}
