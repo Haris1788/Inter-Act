@@ -74,50 +74,43 @@ export function InspHead({ actor, runtime, live }: InspHeadProps) {
         </button>
       </div>
 
-      {/* Status row */}
-      <div className="mt-[10px] flex items-center gap-2 flex-wrap">
-        {/* Bid/winning badge — mock only (live has no bid data) */}
-        {!live && runtime.winning && (
-          <span className="inline-flex items-center gap-[6px] h-[22px] px-2 rounded-[5px] text-11 font-medium bg-cta text-[#FAFAF7] border border-cta">
-            <span className="w-[6px] h-[6px] rounded-full bg-[#FAFAF7]" />
-            Winning bid · {runtime.bid?.toFixed(2) ?? "—"}
-          </span>
-        )}
-
-        {/* Health status badge — always shown; driven by live status in live mode */}
+      {/* Status row — primary badges first, secondary phase + uptime after */}
+      <div className="mt-[8px] flex items-center gap-[6px] flex-wrap">
+        {/* Health status badge — always shown */}
         <span
           className={cn(
-            "inline-flex items-center gap-[6px] h-[22px] px-2 rounded-[5px] text-11 font-medium border",
+            "inline-flex items-center gap-[5px] h-[20px] px-[7px] rounded-[4px] text-11 font-medium border",
             badge.bgCls, badge.textCls, badge.borderCls,
           )}
         >
-          <span className={cn("w-[6px] h-[6px] rounded-full", badge.dotCls)} />
+          <span className={cn("w-[5px] h-[5px] rounded-full flex-shrink-0", badge.dotCls)} />
           {live ? badge.label : "Container healthy"}
         </span>
 
-        {/* Phase label — live only; shows the current script/phase from backend */}
-        {live && runtime.phase && (
-          <span className="font-mono text-10.5 text-ink-3 truncate max-w-[120px]" title={runtime.phase}>
-            {runtime.phase}
+        {/* Bid/winning badge — mock only */}
+        {!live && runtime.winning && (
+          <span className="inline-flex items-center gap-[5px] h-[20px] px-[7px] rounded-[4px] text-11 font-medium bg-cta text-[#FAFAF7] border border-cta">
+            <span className="w-[5px] h-[5px] rounded-full bg-[#FAFAF7] flex-shrink-0" />
+            Winning · {runtime.bid?.toFixed(2) ?? "—"}
           </span>
         )}
 
-        {/* Coherence chip */}
+        {/* Coherence chip — topology alignment signal */}
         {isRuntimeOnly ? (
           <span
             className={cn(
-              "inline-flex items-center gap-[5px] h-[22px] px-2 rounded-[5px] text-11 font-medium border",
+              "inline-flex items-center gap-[5px] h-[20px] px-[7px] rounded-[4px] text-11 font-medium border",
               COHERENCE_CHIP.stale.bg, COHERENCE_CHIP.stale.text, COHERENCE_CHIP.stale.border,
             )}
             title="Present in live runtime but not in authored topology"
           >
-            <span className={cn("w-[5px] h-[5px] rounded-full", COHERENCE_CHIP.stale.dot)} />
+            <span className={cn("w-[5px] h-[5px] rounded-full flex-shrink-0", COHERENCE_CHIP.stale.dot)} />
             runtime-only
           </span>
         ) : chip && (
           <span
             className={cn(
-              "inline-flex items-center gap-[5px] h-[22px] px-2 rounded-[5px] text-11 font-medium border",
+              "inline-flex items-center gap-[5px] h-[20px] px-[7px] rounded-[4px] text-11 font-medium border",
               chip.bg, chip.text, chip.border,
             )}
             title={
@@ -127,14 +120,24 @@ export function InspHead({ actor, runtime, live }: InspHeadProps) {
               coherenceState === "stale"    ? "In deploy snapshot but not running" : ""
             }
           >
-            <span className={cn("w-[5px] h-[5px] rounded-full", chip.dot)} />
+            <span className={cn("w-[5px] h-[5px] rounded-full flex-shrink-0", chip.dot)} />
             {chip.label}
           </span>
         )}
 
-        {/* Uptime — show only in mock (live has empty string default) */}
+        {/* Phase label — live only; secondary, muted */}
+        {live && runtime.phase && (
+          <span
+            className="ml-[2px] font-mono text-10.5 text-ink-4 truncate max-w-[110px] leading-none"
+            title={runtime.phase}
+          >
+            {runtime.phase}
+          </span>
+        )}
+
+        {/* Uptime — mock only, pushed to the right */}
         {!live && (
-          <span className="ml-auto font-mono text-11 text-ink-3">
+          <span className="ml-auto font-mono text-10.5 text-ink-4">
             up {runtime.uptime}
           </span>
         )}

@@ -12,7 +12,7 @@ export function SectionTaskQueue({ taskQueue, live }: SectionTaskQueueProps) {
       <div className="flex items-center justify-between mb-2">
         <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">Task queue</span>
         {live ? (
-          <span className="text-10.5 text-ink-5 italic">no runtime data</span>
+          <span className="text-10.5 text-ink-5">not connected</span>
         ) : (
           <span className="text-11 text-ink-4">{taskQueue.length} queued</span>
         )}

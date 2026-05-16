@@ -13,6 +13,18 @@ import { ActionsRow } from "./ActionsRow";
 
 const FALLBACK_ID = "veh-1";
 
+/** Subtle uppercase band divider — separates authored config from operational runtime. */
+function BandDivider({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-[8px] px-[14px] pt-[12px] pb-[2px]">
+      <span className="text-10.5 font-semibold uppercase tracking-[0.08em] text-ink-4 select-none whitespace-nowrap">
+        {label}
+      </span>
+      <span className="flex-1 h-px bg-line-soft" />
+    </div>
+  );
+}
+
 export function Inspector() {
   const dataSource = useDataSource();
   const live = dataSource === "live";
@@ -55,11 +67,16 @@ export function Inspector() {
       <div className="overflow-y-auto flex-1 py-1">
         {activeTab === "Properties" && (
           <>
+            {/* ── Configuration band — authored / topology ── */}
+            <BandDivider label="Configuration" />
             <SectionIdentity actor={actor} live={live} />
             <SectionCapabilities actor={actor} live={live} />
             <SectionMotion live={live} />
-            <SectionDocking live={live} />
             <SectionBrain actor={actor} live={live} />
+
+            {/* ── Runtime & Docking band — operational ── */}
+            <BandDivider label="Runtime & Docking" />
+            <SectionDocking live={live} />
             <SectionTaskQueue taskQueue={runtime.taskQueue} live={live} />
             <SectionRuntime metrics={runtime.metrics} live={live} />
           </>

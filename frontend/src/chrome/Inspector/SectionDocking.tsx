@@ -55,7 +55,7 @@ export function SectionDocking({ live }: SectionDockingProps) {
       <div className="flex items-center justify-between mb-2">
         <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">Docking</span>
         {!live && <span className="text-11 text-ink-4">3 compatible</span>}
-        {live && <span className="text-10.5 text-ink-5 italic">no runtime data</span>}
+        {live && <span className="text-10.5 text-ink-5">not connected</span>}
       </div>
 
       {live ? (

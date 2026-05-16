@@ -12,9 +12,9 @@ interface SectionRuntimeProps {
 function GaugePlaceholder({ label }: { label: string }) {
   return (
     <div>
-      <div className="text-11 text-ink-3 mb-1">{label}</div>
-      <div className="font-mono text-12 text-ink-4 mb-[5px]">{EM}</div>
-      <div className="relative h-[7px] rounded-[4px] overflow-hidden bg-bg-sunken" />
+      <div className="text-11 text-ink-4 mb-1">{label}</div>
+      <div className="font-mono text-12 text-ink-5 mb-[5px]">{EM}</div>
+      <div className="relative h-[7px] rounded-[4px] overflow-hidden bg-bg-sunken opacity-50" />
     </div>
   );
 }
@@ -25,7 +25,7 @@ export function SectionRuntime({ metrics, live }: SectionRuntimeProps) {
       <div className="flex items-center justify-between mb-2">
         <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">Runtime</span>
         {live ? (
-          <span className="text-10.5 text-ink-5 italic">no runtime data</span>
+          <span className="text-10.5 text-ink-5">not connected</span>
         ) : (
           <span className="font-mono text-10.5 text-ink-4">last 5m</span>
         )}
