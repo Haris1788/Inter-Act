@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useStore } from "@/store";
 import { createRuntimeDriver, type RuntimeDriver } from "@/runtime";
+import { useAutosave } from "@/runtime/useAutosave";
 import { Topbar } from "@/chrome/Topbar";
 import { LeftRegistry } from "@/chrome/LeftRegistry";
 import { Inspector } from "@/chrome/Inspector";
@@ -12,6 +13,8 @@ import { CanvasViewport } from "@/canvas/CanvasViewport";
 //   .main : grid-cols 260px 1fr 320px / grid-rows 1fr 220px
 //           areas "left canvas right" / "left logs right"
 export function App() {
+  useAutosave();
+
   useEffect(() => {
     let driver: RuntimeDriver | null = null;
     let cancelled = false;
