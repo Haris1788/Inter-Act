@@ -2,11 +2,11 @@
 // Width: arm=210px, agv=184px. Visuals pixel-faithful to .actor.arm / .actor.agv.dense
 // in styles-v2.css. RF default node styling is disabled via nodeDefaults in flowConfig.
 
-import { memo } from "react";
+import { memo, useState, useRef, useCallback } from "react";
 import { type NodeProps } from "@xyflow/react";
 import { cn } from "@/lib/cn";
-import { useActorRuntime } from "@/store/selectors";
-import { useSelectedActorId } from "@/store/selectors";
+import { useActorRuntime, useSelectedActorId, useSelectedIds } from "@/store/selectors";
+import { useStore } from "@/store";
 import type { TopologyActor } from "@/store/types";
 
 /** The `data` payload stored on each RF ActorNode. */
@@ -78,14 +78,39 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
   const actor = data as unknown as ActorNodeData;
   const runtime = useActorRuntime(actor.id);
   const selectedId = useSelectedActorId();
+  const selectedIds = useSelectedIds();
+  const updateActor = useStore((s) => s.updateActor);
+  const markDirty = useStore((s) => s.markDirty);
 
   const status = runtime?.status ?? "idle";
   const isWinning = runtime?.winning ?? false;
   const isSelected = selectedId === actor.id;
+  const isMultiSelected = !isSelected && selectedIds.includes(actor.id);
   const isAgv = actor.kind === "agv";
 
   const phase = runtime?.phase ?? "";
   const bid = runtime?.bid;
+
+  // Inline label editing state
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const startEdit = useCallback(() => {
+    setEditValue(actor.label);
+    setEditing(true);
+  }, [actor.label]);
+
+  const commitEdit = useCallback(() => {
+    const trimmed = editValue.trim();
+    updateActor(actor.id, { label: trimmed || actor.label });
+    markDirty();
+    setEditing(false);
+  }, [editValue, actor.id, actor.label, updateActor, markDirty]);
+
+  const cancelEdit = useCallback(() => {
+    setEditing(false);
+  }, []);
 
   return (
     <div
@@ -97,12 +122,14 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
         "shadow-e2 transition-shadow duration-[140ms]",
         // hover
         "hover:shadow-e3",
-        // selected ring
+        // primary selected ring
         isSelected && "border-cta shadow-[0_0_0_1px_#18181B,0_6px_22px_rgba(24,24,27,0.08),0_2px_4px_rgba(24,24,27,0.04)]",
+        // multi-select ring (lighter than primary)
+        isMultiSelected && "border-cta shadow-[0_0_0_1px_rgba(24,24,27,0.35),0_2px_8px_rgba(24,24,27,0.05)]",
         // winning ring (agv)
-        isWinning && !isSelected && "border-cta shadow-[0_0_0_1px_#18181B,0_1px_0_rgba(24,24,27,0.03),0_3px_10px_rgba(24,24,27,0.05)]",
+        isWinning && !isSelected && !isMultiSelected && "border-cta shadow-[0_0_0_1px_#18181B,0_1px_0_rgba(24,24,27,0.03),0_3px_10px_rgba(24,24,27,0.05)]",
         // normal border when neither
-        !isSelected && !isWinning && "border-line",
+        !isSelected && !isMultiSelected && !isWinning && "border-line",
       )}
     >
       {/* winning dashed ring overlay */}
@@ -168,14 +195,36 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
           <GlyphSvg kind={actor.kind} type={actor.type} />
         </span>
         <div>
-          <div
-            className={cn(
-              "font-semibold text-ink",
-              isAgv ? "text-12.5" : "text-13",
-            )}
-          >
-            {actor.label}
-          </div>
+          {editing ? (
+            <input
+              ref={inputRef}
+              autoFocus
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onBlur={commitEdit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
+                if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              className={cn(
+                "nodrag",
+                "block w-full rounded-sm border border-line bg-bg-surface px-[4px] py-[1px]",
+                "font-mono text-12 text-ink outline-none focus:border-cta",
+              )}
+            />
+          ) : (
+            <div
+              className={cn(
+                "cursor-text font-semibold text-ink",
+                isAgv ? "text-12.5" : "text-13",
+              )}
+              onDoubleClick={(e) => { e.stopPropagation(); startEdit(); }}
+            >
+              {actor.label}
+            </div>
+          )}
           <div className="mt-[2px] font-mono text-10.5 text-ink-3">{actor.spec}</div>
         </div>
       </div>
