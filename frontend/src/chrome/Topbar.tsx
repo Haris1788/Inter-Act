@@ -6,12 +6,27 @@ import { ConnectionChip } from "./ConnectionChip";
 import { DeployModal } from "./DeployModal";
 import { serializeTopology, docToState } from "@/lib/topologySchema";
 import { exportTopologyFile, importTopologyFile } from "@/lib/persistence";
+import { useTopologyValidation, useLifecycle } from "@/store/derived";
+import type { Tone } from "@/lib/lifecycle";
+
+function toneDot(tone: Tone): string {
+  switch (tone) {
+    case "ok":   return "bg-ok";
+    case "warn":  return "bg-warn";
+    case "err":   return "bg-err";
+    case "info":  return "bg-info";
+    case "idle":
+    default:      return "bg-ink-5";
+  }
+}
 
 export function Topbar() {
   const actors = useActors();
   const actorCount = Object.keys(actors).length;
   const dirty = useDirty();
   const [deployOpen, setDeployOpen] = useState(false);
+  const { deployable, warnings } = useTopologyValidation();
+  const lifecycle = useLifecycle();
 
   const onExport = () => exportTopologyFile(serializeTopology(useStore.getState()));
   const onImport = async () => {
@@ -49,6 +64,23 @@ export function Topbar() {
           <span className="text-12 text-ink-5">/</span>
           <span className="font-mono text-12 text-ink-2">orchestration.yaml</span>
           <ConnectionChip />
+          {/* Lifecycle status chip */}
+          <span
+            className={cn(
+              "font-mono text-10.5 tracking-wider",
+              "inline-flex items-center gap-1.5",
+              "rounded-full border border-line bg-bg-sunken px-[7px] py-px",
+            )}
+          >
+            <span
+              className={cn(
+                "inline-block h-1.5 w-1.5 rounded-full",
+                toneDot(lifecycle.tone),
+                lifecycle.tone === "info" && "animate-pulse-dot",
+              )}
+            />
+            {lifecycle.label}
+          </span>
         </div>
       </div>
 
@@ -126,10 +158,24 @@ export function Topbar() {
           )}
         >
           <span
-            className="inline-block h-1.5 w-1.5 rounded-full bg-ok"
-            style={{ boxShadow: "0 0 0 2px #E6EBE0" }}
+            className={cn(
+              "inline-block h-1.5 w-1.5 rounded-full",
+              deployable && warnings === 0 ? "bg-ok" : !deployable ? "bg-err" : "bg-warn",
+            )}
+            style={{
+              boxShadow: deployable && warnings === 0
+                ? "0 0 0 2px #E6EBE0"
+                : !deployable
+                  ? "0 0 0 2px #F5E0E0"
+                  : "0 0 0 2px #F0E6D0",
+            }}
           />
-          Coherent ·{" "}
+          {deployable && warnings === 0
+            ? "Coherent"
+            : !deployable
+              ? "Not deployable"
+              : `${warnings} hint${warnings !== 1 ? "s" : ""}`}
+          {" · "}
           <span className="font-mono text-11 text-ink-4">{actorCount} actors registered</span>
         </button>
 

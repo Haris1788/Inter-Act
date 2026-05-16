@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import { useCoherence } from "@/store/derived";
 import type { TopologyActor, ActorRuntime } from "@/store/types";
 
 interface InspHeadProps {
@@ -19,9 +20,21 @@ const STATUS_BADGE: Record<
   down:      { label: "Down",       dotCls: "bg-[#C93535]",    bgCls: "bg-[#FBEAEA]", textCls: "text-[#7A1A1A]", borderCls: "border-[#EDB8B8]" },
 };
 
+const COHERENCE_CHIP: Record<string, { label: string; dot: string; bg: string; text: string; border: string }> = {
+  draft:    { label: "draft",    dot: "bg-ink-4",  bg: "bg-bg-sunken",   text: "text-ink-3",        border: "border-line-soft" },
+  modified: { label: "modified", dot: "bg-warn",   bg: "bg-[#FDF6E3]",   text: "text-[#7A5200]",   border: "border-[#EDD68A]" },
+  deployed: { label: "deployed", dot: "bg-ok",     bg: "bg-[#E7F4EC]",   text: "text-[#1D6B38]",   border: "border-[#B8DEC5]" },
+  stale:    { label: "stale",    dot: "bg-err",    bg: "bg-[#FBEAEA]",   text: "text-[#7A1A1A]",   border: "border-[#EDB8B8]" },
+};
+
 export function InspHead({ actor, runtime, live }: InspHeadProps) {
   const statusKey = runtime.status in STATUS_BADGE ? runtime.status : "idle";
   const badge = STATUS_BADGE[statusKey];
+
+  const { byId: coherenceById, runtimeOnly } = useCoherence();
+  const coherenceState = coherenceById[actor.id];
+  const isRuntimeOnly = runtimeOnly.includes(actor.id);
+  const chip = coherenceState ? COHERENCE_CHIP[coherenceState] : null;
 
   return (
     <div className="px-[14px] pt-[12px] pb-[10px] border-b border-line-soft">
@@ -86,6 +99,36 @@ export function InspHead({ actor, runtime, live }: InspHeadProps) {
         {live && runtime.phase && (
           <span className="font-mono text-10.5 text-ink-3 truncate max-w-[120px]" title={runtime.phase}>
             {runtime.phase}
+          </span>
+        )}
+
+        {/* Coherence chip */}
+        {isRuntimeOnly ? (
+          <span
+            className={cn(
+              "inline-flex items-center gap-[5px] h-[22px] px-2 rounded-[5px] text-11 font-medium border",
+              COHERENCE_CHIP.stale.bg, COHERENCE_CHIP.stale.text, COHERENCE_CHIP.stale.border,
+            )}
+            title="Present in live runtime but not in authored topology"
+          >
+            <span className={cn("w-[5px] h-[5px] rounded-full", COHERENCE_CHIP.stale.dot)} />
+            runtime-only
+          </span>
+        ) : chip && (
+          <span
+            className={cn(
+              "inline-flex items-center gap-[5px] h-[22px] px-2 rounded-[5px] text-11 font-medium border",
+              chip.bg, chip.text, chip.border,
+            )}
+            title={
+              coherenceState === "draft"    ? "Authored but never deployed" :
+              coherenceState === "modified" ? "Changed since last deploy" :
+              coherenceState === "deployed" ? "Matches last deploy snapshot" :
+              coherenceState === "stale"    ? "In deploy snapshot but not running" : ""
+            }
+          >
+            <span className={cn("w-[5px] h-[5px] rounded-full", chip.dot)} />
+            {chip.label}
           </span>
         )}
 

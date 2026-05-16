@@ -7,6 +7,7 @@ import { type NodeProps } from "@xyflow/react";
 import { cn } from "@/lib/cn";
 import { useActorRuntime, useSelectedActorId, useSelectedIds } from "@/store/selectors";
 import { useStore } from "@/store";
+import { useCoherence } from "@/store/derived";
 import type { TopologyActor } from "@/store/types";
 
 /** The `data` payload stored on each RF ActorNode. */
@@ -87,6 +88,8 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
   const isSelected = selectedId === actor.id;
   const isMultiSelected = !isSelected && selectedIds.includes(actor.id);
   const isAgv = actor.kind === "agv";
+  const coherence = useCoherence();
+  const coherenceState = coherence.byId[actor.id];
 
   const phase = runtime?.phase ?? "";
   const bid = runtime?.bid;
@@ -162,6 +165,8 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
           {actor.type}
         </span>
         <span className="ml-auto font-mono text-11 text-ink-3">{actor.id}</span>
+        {/* coherence dot — subtle corner indicator */}
+        <CoherenceDot state={coherenceState} />
         {/* bid pill — only on agv */}
         {isAgv && bid !== null && bid !== undefined && (
           <span
@@ -280,6 +285,31 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
     </div>
   );
 });
+
+type CoherenceState = "draft" | "modified" | "deployed" | "stale" | undefined;
+
+function CoherenceDot({ state }: { state: CoherenceState }) {
+  if (!state || state === "deployed") {
+    // deployed = calm; no marker needed (or a very quiet ok dot)
+    return null;
+  }
+  const styles: Record<string, { dot: string; label: string; title: string }> = {
+    draft:    { dot: "border border-ink-4 bg-transparent",  label: "draft",    title: "Authored but never deployed" },
+    modified: { dot: "bg-warn",                              label: "modified", title: "Changed since last deploy" },
+    stale:    { dot: "bg-err",                               label: "stale",    title: "In deploy snapshot but not running" },
+  };
+  const s = styles[state];
+  if (!s) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-[3px] font-mono text-[9px] leading-none text-ink-3"
+      title={s.title}
+    >
+      <span className={cn("inline-block h-[5px] w-[5px] rounded-full flex-shrink-0", s.dot)} />
+      {s.label}
+    </span>
+  );
+}
 
 function PipDot({ status }: { status: string }) {
   const colorMap: Record<string, string> = {

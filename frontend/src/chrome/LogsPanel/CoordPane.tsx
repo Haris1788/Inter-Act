@@ -1,7 +1,8 @@
-import { useActors, useValidation } from "@/store/selectors";
+import { useActors } from "@/store/selectors";
 import { useStore } from "@/store";
 import { cn } from "@/lib/cn";
-import type { ActorStatus } from "@/store/types";
+import type { ActorStatus, ValidationRow } from "@/store/types";
+import { useTopologyValidation } from "@/store/derived";
 
 function statusDotClass(status: ActorStatus): string {
   switch (status) {
@@ -33,9 +34,16 @@ function statusDotShadow(status: ActorStatus): string {
   }
 }
 
+function levelMarker(level: ValidationRow["level"]): string {
+  if (level === "ok") return "✓";
+  if (level === "error") return "✕";
+  if (level === "warn") return "!";
+  return "i";
+}
+
 export function CoordPane() {
   const actors = useActors();
-  const validation = useValidation();
+  const { rows, errors, warnings } = useTopologyValidation();
   const actorRuntime = useStore((s) => s.actorRuntime);
 
   const actorList = Object.values(actors);
@@ -102,7 +110,7 @@ export function CoordPane() {
       })}
 
       {/* Validation */}
-      {validation.length > 0 && (
+      {rows.length > 0 && (
         <>
           <h4
             className={cn(
@@ -112,24 +120,25 @@ export function CoordPane() {
           >
             Validation
             <span className="font-mono text-10.5 normal-case tracking-normal text-ink-5">
-              {validation.filter((v) => v.level === "warn").length} errors ·{" "}
-              {validation.filter((v) => v.level === "info").length} hints
+              {errors} errors · {warnings} hints
             </span>
           </h4>
 
-          {validation.map((row) => (
+          {rows.map((row) => (
             <div
               key={row.id}
               className="flex items-center gap-2 py-[5px] text-12 text-ink-2"
             >
               <span
                 className={cn(
+                  "font-mono text-10.5 w-3 shrink-0 text-center",
                   row.level === "ok" && "text-ok",
                   row.level === "info" && "text-info",
                   row.level === "warn" && "text-warn",
+                  row.level === "error" && "text-err",
                 )}
               >
-                {row.level === "ok" ? "✓" : "i"}
+                {levelMarker(row.level)}
               </span>
               <span>{row.text}</span>
             </div>
