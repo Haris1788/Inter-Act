@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
+  MiniMap,
   useReactFlow,
   type NodeChange,
   type Node,
@@ -30,7 +31,6 @@ import { flowDefaults } from "./flow/flowConfig";
 import { CanvasToolbar } from "./chrome/CanvasToolbar";
 import { CanvasMeta } from "./chrome/CanvasMeta";
 import { ZoomCluster } from "./chrome/ZoomCluster";
-import { FleetCard } from "./chrome/FleetCard";
 import { ContextMenu } from "./chrome/ContextMenu";
 import { GoalBar } from "@/chrome/GoalBar";
 import { BusStrip } from "@/chrome/BusStrip";
@@ -191,7 +191,28 @@ function FlowInner() {
         fitView={false}
         className="h-full w-full"
         style={{ background: "transparent" }}
-      />
+      >
+        {/* Topology overview — permanent spatial navigation widget
+            (bottom-right). Replaces the removed Fleet card; fleet/runtime
+            telemetry now lives only in the lower operational panel. */}
+        <MiniMap
+          position="bottom-right"
+          pannable
+          zoomable
+          ariaLabel="Topology overview"
+          className="!rounded-md !border !border-line !bg-bg-surface !shadow-e1"
+          style={{ width: 184, height: 116, margin: 14 }}
+          maskColor="rgba(238,235,227,0.55)"
+          maskStrokeColor="#C9C6BD"
+          nodeStrokeWidth={2}
+          nodeColor={(n) =>
+            n.type === "actorNode"
+              ? ((n.data as { kind?: string })?.kind === "agv" ? "#5F8F58" : "#18181B")
+              : "#C9C6BD"
+          }
+          nodeStrokeColor="transparent"
+        />
+      </ReactFlow>
 
       <div className="pointer-events-none absolute inset-0 z-[2]">
         <KonvaOverlay />
@@ -203,7 +224,6 @@ function FlowInner() {
       <CanvasToolbar onFit={fitToStage} />
       <CanvasMeta />
       <ZoomCluster onFit={fitToStage} />
-      <FleetCard />
       <GoalBar />
       <BusStrip />
       <ContextMenu />
