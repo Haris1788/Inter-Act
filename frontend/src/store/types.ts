@@ -61,7 +61,38 @@ export interface TopologySlice {
   moveActor: (id: ActorId, position: Vec2) => void;
   setGoalText: (text: string) => void;
   toggleConstraint: (key: string) => void;
+  // ── Phase 4 authoring mutations (frontend only; no backend) ──
+  addActor: (actor: TopologyActor) => void;
+  removeActor: (id: ActorId) => void;
+  duplicateActor: (id: ActorId) => ActorId | null;
+  updateActor: (id: ActorId, patch: Partial<TopologyActor>) => void;
+  /** wholesale replace (import / load) */
+  replaceTopology: (patch: Pick<TopologySlice, "actors" | "zones" | "pool" | "goal">) => void;
   hydrateTopology: (patch: Partial<Pick<TopologySlice, "actors" | "zones" | "pool" | "goal">>) => void;
+}
+
+// ---------- SLICE 4: Editor / Authoring UI (Phase 4) ----------
+// Distinct from runtime/spatial. Holds interaction mode + multi-selection +
+// context menu + unsaved-changes flag. Never persisted to runtime.
+export type EditorMode = "select" | "pan" | "edit";
+export interface ContextMenuState {
+  x: number;
+  y: number;
+  nodeId: ActorId | null;
+}
+export interface EditorSlice {
+  mode: EditorMode;
+  selectedIds: ActorId[];
+  contextMenu: ContextMenuState | null;
+  dirty: boolean;
+  setMode: (m: EditorMode) => void;
+  setSelection: (ids: ActorId[]) => void;
+  toggleSelection: (id: ActorId, additive: boolean) => void;
+  clearSelection: () => void;
+  openContextMenu: (m: ContextMenuState) => void;
+  closeContextMenu: () => void;
+  markDirty: () => void;
+  markClean: () => void;
 }
 
 // ---------- SLICE 2: Runtime (live status; read-mostly in UI) ----------
@@ -167,4 +198,4 @@ export interface SpatialSlice {
   ) => void;
 }
 
-export type RootStore = TopologySlice & RuntimeSlice & SpatialSlice;
+export type RootStore = TopologySlice & RuntimeSlice & SpatialSlice & EditorSlice;
