@@ -8,12 +8,16 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Project "white" is #fbfbfd (a hair off pure white) - overrides
+        // Tailwind's default `white` so every bg-white/text-white/
+        // border-white across the orchestration workspace uses it.
+        white: "#fbfbfd",
         bg: {
           app: "#F1EFE8",
           canvas: "#FAF8F2",
-          panel: "#FFFFFF",
-          surface: "#FFFFFF",
-          elevated: "#FFFFFF",
+          panel: "#fbfbfd",
+          surface: "#fbfbfd",
+          elevated: "#fbfbfd",
           hover: "#F2F1EC",
           sunken: "#EEEBE3",
           recessed: "#E7E4DA",

@@ -5,9 +5,9 @@ export const tokens = {
   bg: {
     app: "#F1EFE8",
     canvas: "#FAF8F2",
-    panel: "#FFFFFF",
-    surface: "#FFFFFF",
-    elevated: "#FFFFFF",
+    panel: "#fbfbfd",
+    surface: "#fbfbfd",
+    elevated: "#fbfbfd",
     hover: "#F2F1EC",
     sunken: "#EEEBE3",
     recessed: "#E7E4DA",

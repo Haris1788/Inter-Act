@@ -91,7 +91,7 @@
 ::-webkit-scrollbar-thumb {
   background: #d6d4ce;
   border-radius: 5px;
-  border: 2px solid #ffffff;
+  border: 2px solid #fbfbfd;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #b8b6af;
