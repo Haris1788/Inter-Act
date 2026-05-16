@@ -86,12 +86,6 @@ const BrainLLM = (
   </svg>
 );
 
-const BrainRL = (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <path d="M4 18l4-6 4 4 4-8 4 6" />
-  </svg>
-);
-
 // ── Zones ────────────────────────────────────────────────────────────────────
 
 const ZoneSource = (
@@ -187,12 +181,11 @@ const PALETTE: PaletteSection[] = [
     ],
   },
   {
-    label: "Brains",
+    label: "Control",
     items: [
-      { kind: "row", name: "Scripted",        meta: "default", icon: BrainScripted },
-      { kind: "row", name: "Scheduler",       meta: "FIFO",    icon: BrainScheduler },
-      { kind: "row", name: "LLM coordinator", meta: "qwen",    icon: BrainLLM },
-      { kind: "row", name: "RL policy",       meta: "v3",      icon: BrainRL },
+      { kind: "row", name: "Scripted",            meta: "default", icon: BrainScripted },
+      { kind: "row", name: "Scheduler · FIFO",    meta: "FIFO",    icon: BrainScheduler },
+      { kind: "row", name: "LLM assist · qwen2.5", meta: "qwen",  icon: BrainLLM },
     ],
   },
   {
