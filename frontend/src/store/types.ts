@@ -113,6 +113,10 @@ export interface EditorSlice {
   logsHeight: number;
   toggleLogsCollapsed: () => void;
   setLogsHeight: (px: number) => void;
+  // Editable workspace name (single authoritative source; persisted by
+  // save/autosave, not by the component). Renaming marks the doc dirty.
+  workspaceName: string;
+  setWorkspaceName: (name: string) => void;
   setMode: (m: EditorMode) => void;
   setSelection: (ids: ActorId[]) => void;
   toggleSelection: (id: ActorId, additive: boolean) => void;

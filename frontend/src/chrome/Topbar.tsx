@@ -7,6 +7,7 @@ import { WorkspaceName } from "./WorkspaceName";
 import { DeployModal } from "./DeployModal";
 import { serializeTopology, docToState } from "@/lib/topologySchema";
 import { exportTopologyFile, importTopologyFile } from "@/lib/persistence";
+import { saveWorkspace } from "@/runtime/save";
 import { useTopologyValidation, useLifecycle } from "@/store/derived";
 import type { Tone } from "@/lib/lifecycle";
 import { PRESETS, applyPreset, resetDemo } from "@/runtime/presets";
@@ -33,7 +34,31 @@ export function Topbar() {
   const dirty = useDirty();
   const [deployOpen, setDeployOpen] = useState(false);
   const [presetsOpen, setPresetsOpen] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const presetsRef = useRef<HTMLDivElement>(null);
+
+  function doSave() {
+    saveWorkspace();
+    setSaved(true);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 1500);
+  }
+
+  // ⌘S / Ctrl+S triggers the same save (the button shows the shortcut).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        doSave();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    };
+  }, []);
   const { deployable, warnings } = useTopologyValidation();
   const lifecycle = useLifecycle();
 
@@ -113,34 +138,56 @@ export function Topbar() {
 
       {/* CENTER */}
       <div className="mx-auto flex min-w-0 shrink-0 items-center gap-1.5 text-12.5 text-ink-3">
-        {/* Save */}
+        {/* Save - wired; flips to "Saved ✓" briefly on success */}
         <button
+          onClick={doSave}
+          title="Save workspace (⌘S)"
           className={cn(
-            "inline-flex h-[30px] items-center gap-1.5 rounded-md border border-transparent",
-            "px-2.5 text-12.5 text-ink-2 transition-colors hover:bg-bg-hover",
+            "inline-flex h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-12.5",
+            "transition-colors duration-200",
+            saved
+              ? "border-[#B8DEC5] bg-[#E7F4EC] text-[#1D6B38]"
+              : "border-transparent text-ink-2 hover:bg-bg-hover",
           )}
         >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-          >
-            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-            <polyline points="17 21 17 13 7 13 7 21" />
-            <polyline points="7 3 7 8 15 8" />
-          </svg>
-          Save
-          <span
-            className={cn(
-              "font-mono text-10.5 text-ink-4",
-              "rounded border border-line bg-bg-surface px-1",
-            )}
-          >
-            ⌘S
-          </span>
+          {saved ? (
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+            >
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <polyline points="17 21 17 13 7 13 7 21" />
+              <polyline points="7 3 7 8 15 8" />
+            </svg>
+          )}
+          {saved ? "Saved" : "Save"}
+          {!saved && (
+            <span
+              className={cn(
+                "font-mono text-10.5 text-ink-4",
+                "rounded border border-line bg-bg-surface px-1",
+              )}
+            >
+              ⌘S
+            </span>
+          )}
         </button>
 
         {/* Undo */}

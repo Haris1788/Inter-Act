@@ -3,10 +3,12 @@
 // authority when connected - we never override live topology with a cache).
 import { useEffect } from "react";
 import { useStore } from "@/store";
-import { serializeTopology, docToState } from "@/lib/topologySchema";
-import { saveLocal, loadLocal } from "@/lib/persistence";
+import { docToState } from "@/lib/topologySchema";
+import { loadLocal } from "@/lib/persistence";
+import { saveWorkspace } from "./save";
 
-const DEBOUNCE_MS = 800;
+// Autosave ~1s after the last change (topology OR workspace name).
+const DEBOUNCE_MS = 1000;
 
 export function useAutosave() {
   useEffect(() => {
@@ -52,15 +54,12 @@ export function useAutosave() {
         state.actors === prev.actors &&
         state.zones === prev.zones &&
         state.pool === prev.pool &&
-        state.goal === prev.goal
+        state.goal === prev.goal &&
+        state.workspaceName === prev.workspaceName
       )
         return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        const s = useStore.getState();
-        saveLocal(serializeTopology(s));
-        s.markClean();
-      }, DEBOUNCE_MS);
+      timer = setTimeout(saveWorkspace, DEBOUNCE_MS);
     });
 
     return () => {

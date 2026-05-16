@@ -1,5 +1,6 @@
 import type { StateCreator } from "zustand";
 import type { RootStore, EditorSlice } from "./types";
+import { loadWorkspaceName } from "@/lib/persistence";
 
 // Authoring/UI state. Independent of runtime + spatial slices (the strict
 // topology/runtime/spatial separation is unaffected - this is editor chrome).
@@ -17,6 +18,14 @@ export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (
   focusRequest: null,
   logsCollapsed: false,
   logsHeight: 220,
+  workspaceName: loadWorkspaceName(),
+
+  setWorkspaceName: (name) =>
+    set((s) => {
+      const next = name;
+      if (next === s.workspaceName) return {};
+      return { workspaceName: next, dirty: true };
+    }),
 
   toggleLogsCollapsed: () =>
     set((s) => ({ logsCollapsed: !s.logsCollapsed })),

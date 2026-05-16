@@ -1,37 +1,28 @@
 import { useEffect, useRef, useState } from "react";
+import { useStore } from "@/store";
 
-// Editable workspace name — replaces hardcoded prototype org/project naming.
-// Generic default, localStorage-persisted, double-click to rename.
-const KEY = "interact.workspace";
-const DEFAULT = "Untitled workspace";
-
-function load(): string {
-  try {
-    return localStorage.getItem(KEY) || DEFAULT;
-  } catch {
-    return DEFAULT;
-  }
-}
-
+// Editable workspace name. Single authoritative source = the store
+// (persisted by save/autosave, not here). Single click to rename;
+// Enter / blur commits, Escape cancels.
 export function WorkspaceName() {
-  const [name, setName] = useState(DEFAULT);
+  const name = useStore((s) => s.workspaceName);
+  const setWorkspaceName = useStore((s) => s.setWorkspaceName);
+
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => setName(load()), []);
   useEffect(() => {
     if (editing) inputRef.current?.select();
   }, [editing]);
 
+  function start() {
+    setDraft(name);
+    setEditing(true);
+  }
   function commit() {
-    const next = draft.trim() || DEFAULT;
-    setName(next);
-    try {
-      localStorage.setItem(KEY, next);
-    } catch {
-      /* storage unavailable — name stays for this session only */
-    }
+    const next = draft.trim();
+    if (next) setWorkspaceName(next);
     setEditing(false);
   }
 
@@ -40,6 +31,7 @@ export function WorkspaceName() {
       {editing ? (
         <input
           ref={inputRef}
+          autoFocus
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
@@ -47,15 +39,12 @@ export function WorkspaceName() {
             if (e.key === "Enter") commit();
             if (e.key === "Escape") setEditing(false);
           }}
-          className="w-[180px] rounded-sm border border-line bg-bg-surface px-1.5 py-0.5 text-12 font-semibold text-ink outline-none"
+          className="w-[180px] rounded-sm border border-line bg-bg-surface px-1.5 py-0.5 text-12 font-semibold text-ink outline-none focus:border-cta"
         />
       ) : (
         <button
-          onDoubleClick={() => {
-            setDraft(name);
-            setEditing(true);
-          }}
-          title="Double-click to rename workspace"
+          onClick={start}
+          title="Click to rename workspace"
           className="text-12 font-semibold text-ink hover:text-ink-2"
         >
           {name}

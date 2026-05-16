@@ -2,6 +2,25 @@
 import { type TopologyDoc, parseTopology } from "./topologySchema";
 
 const KEY = "interact.topology.v1";
+const WORKSPACE_KEY = "interact.workspace";
+
+export const DEFAULT_WORKSPACE_NAME = "Untitled workspace";
+
+export function loadWorkspaceName(): string {
+  try {
+    return localStorage.getItem(WORKSPACE_KEY) || DEFAULT_WORKSPACE_NAME;
+  } catch {
+    return DEFAULT_WORKSPACE_NAME;
+  }
+}
+
+export function saveWorkspaceName(name: string): void {
+  try {
+    localStorage.setItem(WORKSPACE_KEY, name || DEFAULT_WORKSPACE_NAME);
+  } catch {
+    /* storage unavailable - name persists for this session only */
+  }
+}
 
 export function saveLocal(doc: TopologyDoc): void {
   try {
