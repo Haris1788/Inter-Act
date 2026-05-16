@@ -12,12 +12,17 @@ import { PRESETS, applyPreset, resetDemo } from "@/runtime/presets";
 
 function toneDot(tone: Tone): string {
   switch (tone) {
-    case "ok":   return "bg-ok";
-    case "warn":  return "bg-warn";
-    case "err":   return "bg-err";
-    case "info":  return "bg-info";
+    case "ok":
+      return "bg-ok";
+    case "warn":
+      return "bg-warn";
+    case "err":
+      return "bg-err";
+    case "info":
+      return "bg-info";
     case "idle":
-    default:      return "bg-ink-5";
+    default:
+      return "bg-ink-5";
   }
 }
 
@@ -34,7 +39,10 @@ export function Topbar() {
   useEffect(() => {
     if (!presetsOpen) return;
     function onDown(e: MouseEvent) {
-      if (presetsRef.current && !presetsRef.current.contains(e.target as Node)) {
+      if (
+        presetsRef.current &&
+        !presetsRef.current.contains(e.target as Node)
+      ) {
         setPresetsOpen(false);
       }
     }
@@ -49,7 +57,8 @@ export function Topbar() {
     };
   }, [presetsOpen]);
 
-  const onExport = () => exportTopologyFile(serializeTopology(useStore.getState()));
+  const onExport = () =>
+    exportTopologyFile(serializeTopology(useStore.getState()));
   const onImport = async () => {
     try {
       const doc = await importTopologyFile();
@@ -57,7 +66,7 @@ export function Topbar() {
       s.replaceTopology(docToState(doc));
       s.markDirty();
     } catch {
-      /* user cancelled / invalid file — non-fatal */
+      /* user cancelled / invalid file - non-fatal */
     }
   };
   return (
@@ -83,7 +92,9 @@ export function Topbar() {
           <span className="text-12 text-ink-5">/</span>
           <span className="text-12 font-semibold text-ink">atlas-floor-3</span>
           <span className="text-12 text-ink-5">/</span>
-          <span className="font-mono text-12 text-ink-2">orchestration.yaml</span>
+          <span className="font-mono text-12 text-ink-2">
+            orchestration.yaml
+          </span>
           <ConnectionChip />
           {/* Lifecycle status chip */}
           <span
@@ -114,7 +125,14 @@ export function Topbar() {
             "px-2.5 text-12.5 text-ink-2 transition-colors hover:bg-bg-hover",
           )}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+          >
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
             <polyline points="17 21 17 13 7 13 7 21" />
             <polyline points="7 3 7 8 15 8" />
@@ -135,7 +153,16 @@ export function Topbar() {
           title="Undo"
           className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-ink-3 hover:bg-bg-hover hover:text-ink"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <path d="M3 7v6h6" />
             <path d="M21 17a9 9 0 0 0-15-6.7L3 13" />
           </svg>
@@ -146,7 +173,16 @@ export function Topbar() {
           title="Redo"
           className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-ink-3 hover:bg-bg-hover hover:text-ink"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <path d="M21 7v6h-6" />
             <path d="M3 17a9 9 0 0 1 15-6.7L21 13" />
           </svg>
@@ -179,7 +215,16 @@ export function Topbar() {
             )}
           >
             Presets
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <polyline points="6 9 12 15 18 9" />
             </svg>
           </button>
@@ -188,7 +233,10 @@ export function Topbar() {
               {PRESETS.map((p) => (
                 <button
                   key={p.id}
-                  onClick={() => { applyPreset(p.id); setPresetsOpen(false); }}
+                  onClick={() => {
+                    applyPreset(p.id);
+                    setPresetsOpen(false);
+                  }}
                   className="flex w-full flex-col gap-0.5 px-3 py-2 text-left hover:bg-bg-hover"
                 >
                   <span className="text-12.5 text-ink">{p.label}</span>
@@ -197,7 +245,10 @@ export function Topbar() {
               ))}
               <div className="mx-2 my-1 h-px bg-line" />
               <button
-                onClick={() => { resetDemo(); setPresetsOpen(false); }}
+                onClick={() => {
+                  resetDemo();
+                  setPresetsOpen(false);
+                }}
                 className="flex w-full px-3 py-2 text-left text-12.5 text-ink-3 hover:bg-bg-hover"
               >
                 Reset demo
@@ -219,14 +270,19 @@ export function Topbar() {
           <span
             className={cn(
               "inline-block h-1.5 w-1.5 rounded-full",
-              deployable && warnings === 0 ? "bg-ok" : !deployable ? "bg-err" : "bg-warn",
+              deployable && warnings === 0
+                ? "bg-ok"
+                : !deployable
+                  ? "bg-err"
+                  : "bg-warn",
             )}
             style={{
-              boxShadow: deployable && warnings === 0
-                ? "0 0 0 2px #E6EBE0"
-                : !deployable
-                  ? "0 0 0 2px #F5E0E0"
-                  : "0 0 0 2px #F0E6D0",
+              boxShadow:
+                deployable && warnings === 0
+                  ? "0 0 0 2px #E6EBE0"
+                  : !deployable
+                    ? "0 0 0 2px #F5E0E0"
+                    : "0 0 0 2px #F0E6D0",
             }}
           />
           {deployable && warnings === 0
@@ -235,7 +291,9 @@ export function Topbar() {
               ? "Not deployable"
               : `${warnings} hint${warnings !== 1 ? "s" : ""}`}
           {" · "}
-          <span className="font-mono text-11 text-ink-4">{actorCount} actors registered</span>
+          <span className="font-mono text-11 text-ink-4">
+            {actorCount} actors registered
+          </span>
         </button>
 
         {/* Deploy */}
@@ -248,7 +306,14 @@ export function Topbar() {
             "hover:bg-cta-2",
           )}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
             <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
           </svg>
           Build &amp; Deploy
@@ -259,7 +324,14 @@ export function Topbar() {
           title="Notifications"
           className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-ink-3 hover:bg-bg-hover hover:text-ink"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+          >
             <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
             <path d="M13.7 21a2 2 0 0 1-3.4 0" />
           </svg>

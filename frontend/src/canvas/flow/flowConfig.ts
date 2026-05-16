@@ -31,9 +31,9 @@ export const flowDefaults = {
   // No snap-to-grid: precision-first. Freeform drag + 1px arrow-nudge stay
   // consistent (a coarse snap fought fine placement and re-snapped nudged
   // actors on the next drag).
-  // A click shouldn't start a drag — improves selection/inline-edit precision.
+  // A click shouldn't start a drag - improves selection/inline-edit precision.
   nodeDragThreshold: 4,
-  // Cull off-viewport nodes — keeps large topologies smooth.
+  // Cull off-viewport nodes - keeps large topologies smooth.
   onlyRenderVisibleElements: true as const,
 } as const;
 

@@ -1,4 +1,4 @@
-// Node creation pipeline — palette descriptor → TopologyActor.
+// Node creation pipeline - palette descriptor → TopologyActor.
 // Frontend authoring only; no backend involvement.
 
 import type { TopologyActor, Vec2 } from "@/store/types";
@@ -13,12 +13,48 @@ export interface PaletteDescriptor {
 
 // dataTransfer key → descriptor. Keys are emitted by the sidebar drag source.
 export const PALETTE: Record<string, PaletteDescriptor> = {
-  "arm-6dof": { kind: "arm", type: "Arm · 6DoF", capabilities: ["pick", "place", "dock"], brain: "Scripted", spec: "reach 1.2 m · 5 kg" },
-  "arm-scara": { kind: "arm", type: "Arm · SCARA", capabilities: ["pick", "place", "dock"], brain: "Scripted", spec: "fast cycle" },
-  "arm-delta": { kind: "arm", type: "Arm · Delta", capabilities: ["pick", "place", "dock"], brain: "Scripted", spec: "high-speed" },
-  "agv-shuttle": { kind: "agv", type: "Shuttle AGV", capabilities: ["transit", "dock", "carry"], brain: "Scheduler · FIFO", spec: "fast · cap 1" },
-  "agv-forklift": { kind: "agv", type: "Forklift AGV", capabilities: ["transit", "dock", "carry"], brain: "Scheduler · FIFO", spec: "heavy · pallet" },
-  "agv-tow": { kind: "agv", type: "Tow AGV", capabilities: ["transit", "dock", "carry"], brain: "Scheduler · FIFO", spec: "balanced" },
+  "arm-6dof": {
+    kind: "arm",
+    type: "Arm · 6DoF",
+    capabilities: ["pick", "place", "dock"],
+    brain: "Scripted",
+    spec: "reach 1.2 m · 5 kg",
+  },
+  "arm-scara": {
+    kind: "arm",
+    type: "Arm · SCARA",
+    capabilities: ["pick", "place", "dock"],
+    brain: "Scripted",
+    spec: "fast cycle",
+  },
+  "arm-delta": {
+    kind: "arm",
+    type: "Arm · Delta",
+    capabilities: ["pick", "place", "dock"],
+    brain: "Scripted",
+    spec: "high-speed",
+  },
+  "agv-shuttle": {
+    kind: "agv",
+    type: "Shuttle AGV",
+    capabilities: ["transit", "dock", "carry"],
+    brain: "Scheduler · FIFO",
+    spec: "fast · cap 1",
+  },
+  "agv-forklift": {
+    kind: "agv",
+    type: "Forklift AGV",
+    capabilities: ["transit", "dock", "carry"],
+    brain: "Scheduler · FIFO",
+    spec: "heavy · pallet",
+  },
+  "agv-tow": {
+    kind: "agv",
+    type: "Tow AGV",
+    capabilities: ["transit", "dock", "carry"],
+    brain: "Scheduler · FIFO",
+    spec: "balanced",
+  },
 };
 
 const ARM_SIZE = { w: 210, h: 150 };

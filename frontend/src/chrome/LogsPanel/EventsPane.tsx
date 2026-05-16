@@ -6,12 +6,12 @@ import type { EventKind, OperationalEvent } from "@/store/types";
 // ── Kind chip styling ──────────────────────────────────────────────────────────
 
 const KIND_LABELS: Record<EventKind, string> = {
-  health:    "health",
-  asset:     "asset",
-  dock:      "dock",
-  object:    "object",
-  deploy:    "deploy",
-  link:      "link",
+  health: "health",
+  asset: "asset",
+  dock: "dock",
+  object: "object",
+  deploy: "deploy",
+  link: "link",
   lifecycle: "lifecycle",
 };
 
@@ -28,10 +28,14 @@ const ALL_KINDS: EventKind[] = [
 /** Background + text for a kind chip based on tone. */
 function toneChipClass(tone: OperationalEvent["tone"]): string {
   switch (tone) {
-    case "ok":   return "bg-ok-bg text-ok";
-    case "warn":  return "bg-warn-bg text-warn";
-    case "err":   return "bg-err-bg text-err";
-    case "info":  return "bg-info-bg text-info";
+    case "ok":
+      return "bg-ok-bg text-ok";
+    case "warn":
+      return "bg-warn-bg text-warn";
+    case "err":
+      return "bg-err-bg text-err";
+    case "info":
+      return "bg-info-bg text-info";
   }
 }
 
@@ -39,13 +43,20 @@ function toneChipClass(tone: OperationalEvent["tone"]): string {
 function kindFilterClass(kind: EventKind, active: boolean): string {
   if (!active) return "bg-bg-sunken text-ink-4 hover:text-ink-3";
   switch (kind) {
-    case "health":    return "bg-ok-bg text-ok border border-ok/30";
-    case "asset":     return "bg-info-bg text-info border border-info/30";
-    case "dock":      return "bg-ok-bg text-ok border border-ok/30";
-    case "object":    return "bg-info-bg text-info border border-info/30";
-    case "deploy":    return "bg-warn-bg text-warn border border-warn/30";
-    case "link":      return "bg-info-bg text-info border border-info/30";
-    case "lifecycle": return "bg-err-bg text-err border border-err/30";
+    case "health":
+      return "bg-ok-bg text-ok border border-ok/30";
+    case "asset":
+      return "bg-info-bg text-info border border-info/30";
+    case "dock":
+      return "bg-ok-bg text-ok border border-ok/30";
+    case "object":
+      return "bg-info-bg text-info border border-info/30";
+    case "deploy":
+      return "bg-warn-bg text-warn border border-warn/30";
+    case "link":
+      return "bg-info-bg text-info border border-info/30";
+    case "lifecycle":
+      return "bg-err-bg text-err border border-err/30";
   }
 }
 
@@ -63,10 +74,7 @@ export function EventsPane() {
   );
   const [actorFilter, setActorFilter] = useState<string>("all");
 
-  const actorIds = useMemo(
-    () => Object.keys(actors).sort(),
-    [actors],
-  );
+  const actorIds = useMemo(() => Object.keys(actors).sort(), [actors]);
 
   function toggleKind(kind: EventKind) {
     setActiveKinds((prev) => {
@@ -95,11 +103,13 @@ export function EventsPane() {
   const filtered = useMemo(() => {
     // allEvents is oldest→newest; reverse for newest-first display
     const reversed = [...allEvents].reverse();
-    return reversed.filter((ev) => {
-      if (!activeKinds.has(ev.kind)) return false;
-      if (actorFilter !== "all" && ev.actorId !== actorFilter) return false;
-      return true;
-    }).slice(0, VISIBLE_CAP);
+    return reversed
+      .filter((ev) => {
+        if (!activeKinds.has(ev.kind)) return false;
+        if (actorFilter !== "all" && ev.actorId !== actorFilter) return false;
+        return true;
+      })
+      .slice(0, VISIBLE_CAP);
   }, [allEvents, activeKinds, actorFilter]);
 
   // ── render ────────────────────────────────────────────────────────────────
@@ -171,9 +181,7 @@ export function EventsPane() {
         {filtered.length === 0 ? (
           <p className="px-4 py-3 text-ink-5 text-11.5">No events</p>
         ) : (
-          filtered.map((ev) => (
-            <EventRow key={ev.id} event={ev} />
-          ))
+          filtered.map((ev) => <EventRow key={ev.id} event={ev} />)
         )}
       </div>
     </div>
@@ -217,11 +225,14 @@ function EventRow({ event }: EventRowProps) {
         )}
         aria-hidden={!event.actorId}
       >
-        {event.actorId ?? "—"}
+        {event.actorId ?? "-"}
       </span>
 
       {/* Text */}
-      <span className="break-words text-ink-2" style={{ whiteSpace: "pre-wrap" }}>
+      <span
+        className="break-words text-ink-2"
+        style={{ whiteSpace: "pre-wrap" }}
+      >
         {event.text}
       </span>
     </div>

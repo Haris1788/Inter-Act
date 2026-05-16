@@ -6,7 +6,9 @@ import { useCallback, useEffect } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { computeFit } from "@/lib/stageCoords";
 
-export function useFitViewport(containerRef: React.RefObject<HTMLElement | null>) {
+export function useFitViewport(
+  containerRef: React.RefObject<HTMLElement | null>,
+) {
   const rf = useReactFlow();
 
   const applyFit = useCallback(
@@ -41,7 +43,7 @@ export function useFitViewport(containerRef: React.RefObject<HTMLElement | null>
     };
   }, [applyFit, containerRef]);
 
-  // Fit-to-stage callback for toolbar button — re-applies the exact prototype
+  // Fit-to-stage callback for toolbar button - re-applies the exact prototype
   // fit math (centers the 1320x720 stage in the current pane).
   const fitToStage = useCallback(() => {
     const el = containerRef.current;

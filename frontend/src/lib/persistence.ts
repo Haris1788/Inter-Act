@@ -7,7 +7,7 @@ export function saveLocal(doc: TopologyDoc): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(doc));
   } catch {
-    // storage full / unavailable — non-fatal for an authoring autosave
+    // storage full / unavailable - non-fatal for an authoring autosave
   }
 }
 
@@ -31,7 +31,9 @@ export function clearLocal(): void {
 }
 
 export function exportTopologyFile(doc: TopologyDoc): void {
-  const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify(doc, null, 2)], {
+    type: "application/json",
+  });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

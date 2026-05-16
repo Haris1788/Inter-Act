@@ -1,7 +1,7 @@
 import { cn } from "@/lib/cn";
 import { Field } from "./Field";
 
-const EM = "—";
+const EM = "-";
 
 interface DockRow {
   name: string;
@@ -16,9 +16,16 @@ const DOCK_ROWS: DockRow[] = [
     dist: "approaching · 0.4 m",
     active: true,
     icon: (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
-        <circle cx="6" cy="18" r="2"/>
-        <path d="M6 16V9l6-3v5l5 1v6"/>
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+      >
+        <circle cx="6" cy="18" r="2" />
+        <path d="M6 16V9l6-3v5l5 1v6" />
       </svg>
     ),
   },
@@ -27,9 +34,16 @@ const DOCK_ROWS: DockRow[] = [
     dist: "reachable · 7.2 m",
     active: false,
     icon: (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
-        <rect x="4" y="14" width="16" height="3" rx="1"/>
-        <path d="M9 14V8h6v6"/>
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+      >
+        <rect x="4" y="14" width="16" height="3" rx="1" />
+        <path d="M9 14V8h6v6" />
       </svg>
     ),
   },
@@ -38,8 +52,15 @@ const DOCK_ROWS: DockRow[] = [
     dist: "reachable · 3.1 m",
     active: false,
     icon: (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
-        <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/>
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+      >
+        <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
       </svg>
     ),
   },
@@ -53,7 +74,9 @@ export function SectionDocking({ live }: SectionDockingProps) {
   return (
     <div className="px-[14px] pt-[14px] pb-1">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">Docking</span>
+        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">
+          Docking
+        </span>
         {!live && <span className="text-11 text-ink-4">3 compatible</span>}
         {live && <span className="text-10.5 text-ink-5">not connected</span>}
       </div>
@@ -78,7 +101,12 @@ export function SectionDocking({ live }: SectionDockingProps) {
                   {row.icon}
                 </span>
                 <span className="text-ink font-medium">{row.name}</span>
-                <span className={cn("font-mono text-10.5", row.active ? "text-cta font-semibold" : "text-ink-3")}>
+                <span
+                  className={cn(
+                    "font-mono text-10.5",
+                    row.active ? "text-cta font-semibold" : "text-ink-3",
+                  )}
+                >
                   {row.dist}
                 </span>
               </div>
@@ -93,7 +121,9 @@ export function SectionDocking({ live }: SectionDockingProps) {
                   defaultValue="±20"
                   readOnly
                 />
-                <span className="text-11 text-ink-4 font-mono ml-[6px]">mm</span>
+                <span className="text-11 text-ink-4 font-mono ml-[6px]">
+                  mm
+                </span>
               </div>
             </Field>
             <Field label="Approach speed">
@@ -103,7 +133,9 @@ export function SectionDocking({ live }: SectionDockingProps) {
                   defaultValue="0.30"
                   readOnly
                 />
-                <span className="text-11 text-ink-4 font-mono ml-[6px]">m/s</span>
+                <span className="text-11 text-ink-4 font-mono ml-[6px]">
+                  m/s
+                </span>
               </div>
             </Field>
           </div>

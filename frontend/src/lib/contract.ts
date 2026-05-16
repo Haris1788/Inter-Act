@@ -3,7 +3,13 @@
 // (See research: state_update, arm_health, asset_health, object_update,
 //  objects_reset, log_message, script_chosen, task_status/complete.)
 
-import type { ActorId, ActorStatus, BusKind, LogLine, Vec2 } from "@/store/types";
+import type {
+  ActorId,
+  ActorStatus,
+  BusKind,
+  LogLine,
+  Vec2,
+} from "@/store/types";
 import type { RootStore } from "@/store";
 
 // ---- id mapping ----------------------------------------------------------
@@ -80,11 +86,14 @@ export function toLogLine(p: {
 // ---- coordination/bus classification ------------------------------------
 // The backend has no bid/contract events. The decentralised "message bus" is
 // derived from log_message + script_chosen: only lines that read as actor
-// coordination surface as bus pills (direct-docking model — no handover).
+// coordination surface as bus pills (direct-docking model - no handover).
 const BUS_RULES: { re: RegExp; kind: BusKind }[] = [
   { re: /\bdock|docking|approach|undock/i, kind: "dock" },
   { re: /\bpick|grab|announce|seeking|request/i, kind: "announce" },
-  { re: /\bplace|deliver|complete|done|hand(ed)?\s?off|transfer/i, kind: "accept" },
+  {
+    re: /\bplace|deliver|complete|done|hand(ed)?\s?off|transfer/i,
+    kind: "accept",
+  },
   { re: /\bbid|select|assign|chose|chosen/i, kind: "bid" },
 ];
 
@@ -102,7 +111,7 @@ export function classifyBus(
 
 // ---- owner → stage position ---------------------------------------------
 // arm/asset → that actor's node center; zone → zone chip; transfer_point /
-// handover_N → NULL (no transfer node exists in the decentralised model — the
+// handover_N → NULL (no transfer node exists in the decentralised model - the
 // driver treats it as a transient dock between the two carriers instead).
 export function resolveOwnerPosition(
   store: RootStore,
@@ -111,19 +120,24 @@ export function resolveOwnerPosition(
 ): Vec2 | null {
   if (ownerType === "arm" || ownerType === "asset") {
     const a = store.actors[ownerId];
-    if (a) return { x: a.position.x + a.size.w / 2, y: a.position.y + a.size.h / 2 };
+    if (a)
+      return { x: a.position.x + a.size.w / 2, y: a.position.y + a.size.h / 2 };
     return null;
   }
   if (ownerType === "zone") {
-    const z = store.zones[ownerId] ?? store.zones[ownerId.replace(/-zone$/, "")];
+    const z =
+      store.zones[ownerId] ?? store.zones[ownerId.replace(/-zone$/, "")];
     if (z) return { x: z.position.x, y: z.position.y };
     // intake/output fall back to source/sink by role
     const role = /in|feed|intake/i.test(ownerId) ? "source" : "sink";
     const byRole = Object.values(store.zones).find((zz) => zz.role === role);
     return byRole ? { x: byRole.position.x, y: byRole.position.y } : null;
   }
-  // transfer_point / handover_N — no node in the new model.
+  // transfer_point / handover_N - no node in the new model.
   return null;
 }
 
-export const midpoint = (a: Vec2, b: Vec2): Vec2 => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+export const midpoint = (a: Vec2, b: Vec2): Vec2 => ({
+  x: (a.x + b.x) / 2,
+  y: (a.y + b.y) / 2,
+});

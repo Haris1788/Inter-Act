@@ -9,7 +9,7 @@ const REGIONS = [
   },
   {
     label: "Center canvas",
-    desc: "Orchestration canvas — React Flow topology editor with runtime state overlay.",
+    desc: "Orchestration canvas - React Flow topology editor with runtime state overlay.",
   },
   {
     label: "Right panel",
@@ -26,7 +26,7 @@ export function OnboardingOverlay() {
   const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // localStorage can throw in private/sandboxed contexts — never crash the app.
+    // localStorage can throw in private/sandboxed contexts - never crash the app.
     try {
       if (!localStorage.getItem(STORAGE_KEY)) setVisible(true);
     } catch {
@@ -53,7 +53,7 @@ export function OnboardingOverlay() {
     try {
       localStorage.setItem(STORAGE_KEY, "1");
     } catch {
-      /* storage unavailable — overlay simply re-shows next load */
+      /* storage unavailable - overlay simply re-shows next load */
     }
     setVisible(false);
   }
@@ -82,7 +82,7 @@ export function OnboardingOverlay() {
                 id="onboarding-title"
                 className="m-0 text-14 font-semibold text-ink leading-snug"
               >
-                INTER.act — orchestration workspace
+                INTER.act - orchestration workspace
               </h2>
               <p className="mt-1 text-12 text-ink-3 leading-relaxed">
                 Author a topology of arms and AGVs, visualize runtime
@@ -128,7 +128,7 @@ export function OnboardingOverlay() {
         {/* Footer note + action */}
         <div className="px-6 pb-5 pt-1">
           <p className="text-11 text-ink-4 leading-snug mb-4 pl-2 border-l-2 border-line">
-            Standalone mode runs on mock fixtures — see the mock/live chip in
+            Standalone mode runs on mock fixtures - see the mock/live chip in
             the toolbar. Live mode binds the real Flask/Socket.IO backend.
           </p>
           <div className="flex items-center justify-between gap-3">

@@ -1,5 +1,10 @@
 import { useState } from "react";
-import { useSelectedActorId, useActor, useActorRuntime, useDataSource } from "@/store/selectors";
+import {
+  useSelectedActorId,
+  useActor,
+  useActorRuntime,
+  useDataSource,
+} from "@/store/selectors";
 import { InspHead } from "./InspHead";
 import { InspTabs, type Tab } from "./InspTabs";
 import { SectionIdentity } from "./SectionIdentity";
@@ -14,7 +19,7 @@ import { ActionsRow } from "./ActionsRow";
 
 const FALLBACK_ID = "veh-1";
 
-/** Subtle uppercase band divider — separates authored config from operational runtime. */
+/** Subtle uppercase band divider - separates authored config from operational runtime. */
 function BandDivider({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-[8px] px-[14px] pt-[12px] pb-[2px]">
@@ -46,9 +51,17 @@ export function Inspector() {
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-12 text-ink-4">
           {live ? (
             <>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="opacity-30">
-                <circle cx="12" cy="12" r="9"/>
-                <path d="M12 8v4l2 2"/>
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                className="opacity-30"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 8v4l2 2" />
               </svg>
               <span>Select an actor</span>
             </>
@@ -68,14 +81,14 @@ export function Inspector() {
       <div className="overflow-y-auto flex-1 py-1">
         {activeTab === "Properties" && (
           <>
-            {/* ── Configuration band — authored / topology ── */}
+            {/* ── Configuration band - authored / topology ── */}
             <BandDivider label="Configuration" />
             <SectionIdentity actor={actor} live={live} />
             <SectionCapabilities actor={actor} live={live} />
             <SectionMotion live={live} />
             <SectionBrain actor={actor} live={live} />
 
-            {/* ── Runtime & Docking band — operational ── */}
+            {/* ── Runtime & Docking band - operational ── */}
             <BandDivider label="Runtime & Docking" />
             <SectionDocking live={live} />
             <SectionTaskQueue taskQueue={runtime.taskQueue} live={live} />
@@ -87,9 +100,7 @@ export function Inspector() {
             <SectionRuntime metrics={runtime.metrics} live={live} />
           </div>
         )}
-        {activeTab === "History" && (
-          <SectionHistory actorId={effectiveId} />
-        )}
+        {activeTab === "History" && <SectionHistory actorId={effectiveId} />}
         {activeTab === "YAML" && (
           <div className="px-[14px] pt-[14px] font-mono text-11 text-ink-3">
             {`id: ${actor.id}\ntype: ${actor.type}\nlabel: ${actor.label}`}

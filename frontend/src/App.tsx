@@ -9,7 +9,7 @@ import { LogsPanel } from "@/chrome/LogsPanel";
 import { CanvasViewport } from "@/canvas/CanvasViewport";
 import { OnboardingOverlay } from "@/chrome/OnboardingOverlay";
 
-// App shell — mirrors styles-v2.css `.app` / `.main` grid exactly:
+// App shell - mirrors styles-v2.css `.app` / `.main` grid exactly:
 //   .app  : grid-rows 48px 1fr
 //   .main : grid-cols 260px 1fr 320px / grid-rows 1fr 220px
 //           areas "left canvas right" / "left logs right"

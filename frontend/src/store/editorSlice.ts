@@ -2,8 +2,10 @@ import type { StateCreator } from "zustand";
 import type { RootStore, EditorSlice } from "./types";
 
 // Authoring/UI state. Independent of runtime + spatial slices (the strict
-// topology/runtime/spatial separation is unaffected — this is editor chrome).
-export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (set) => ({
+// topology/runtime/spatial separation is unaffected - this is editor chrome).
+export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (
+  set,
+) => ({
   mode: "select",
   selectedIds: [],
   contextMenu: null,
@@ -35,7 +37,7 @@ export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (
   markClean: () => set((s) => (s.dirty ? { dirty: false } : {})),
 
   // Records the deploy/prepare baseline for divergence detection. Does NOT
-  // clear `dirty` — that flag is local-persistence state; deploy-needed is
+  // clear `dirty` - that flag is local-persistence state; deploy-needed is
   // derived from snapshot divergence, not from autosave.
   recordDeploy: (docJson) =>
     set({ deployedJson: docJson, deployedAt: new Date().toISOString() }),
@@ -46,5 +48,7 @@ export const createEditorSlice: StateCreator<RootStore, [], [], EditorSlice> = (
     set({ deployPhase, deployMessage: message ?? "" }),
 
   requestFocus: (id) =>
-    set((s) => ({ focusRequest: { id, nonce: (s.focusRequest?.nonce ?? 0) + 1 } })),
+    set((s) => ({
+      focusRequest: { id, nonce: (s.focusRequest?.nonce ?? 0) + 1 },
+    })),
 });

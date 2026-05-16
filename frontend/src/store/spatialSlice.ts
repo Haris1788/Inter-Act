@@ -1,12 +1,22 @@
 import type { StateCreator } from "zustand";
 import type { AgvKinematics, RootStore, SpatialSlice } from "./types";
 
-const DEFAULT_KIN: AgvKinematics = { pos: { x: 0, y: 0 }, heading: 0, speed: 220, target: null };
+const DEFAULT_KIN: AgvKinematics = {
+  pos: { x: 0, y: 0 },
+  heading: 0,
+  speed: 220,
+  target: null,
+};
 
 // Ephemeral, frame-rate state. Never persisted, never written to YAML.
 // `tick` interpolates AGV motion and fades runtime traces/glows.
 // Stays slice-pure: position resolution lives in the driver, not here.
-export const createSpatialSlice: StateCreator<RootStore, [], [], SpatialSlice> = (set) => ({
+export const createSpatialSlice: StateCreator<
+  RootStore,
+  [],
+  [],
+  SpatialSlice
+> = (set) => ({
   agvKinematics: {},
   trajectories: [],
   dockGlows: [],
@@ -31,14 +41,15 @@ export const createSpatialSlice: StateCreator<RootStore, [], [], SpatialSlice> =
           changed = true;
           continue;
         }
-        // Accel/decel easing — operational, not gamey. Velocity ramps up over
+        // Accel/decel easing - operational, not gamey. Velocity ramps up over
         // the first ~18% of the leg and eases down over the last ~22%, with a
         // floor so the AGV never stalls. Falls back to constant speed if the
         // leg origin is unknown.
         const origin = k.origin ?? null;
         let vf = 1;
         if (origin) {
-          const legLen = Math.hypot(k.target.x - origin.x, k.target.y - origin.y) || dist;
+          const legLen =
+            Math.hypot(k.target.x - origin.x, k.target.y - origin.y) || dist;
           const traveled = Math.max(0, legLen - dist);
           const p = Math.min(1, Math.max(0, traveled / legLen));
           const accel = Math.min(1, p / 0.18);
@@ -62,7 +73,11 @@ export const createSpatialSlice: StateCreator<RootStore, [], [], SpatialSlice> =
           .map((t) =>
             t.fadeMsLeft == null
               ? t
-              : { ...t, fadeMsLeft: t.fadeMsLeft - dtMs, opacity: Math.max(0, (t.fadeMsLeft - dtMs) / 1800) * 0.6 },
+              : {
+                  ...t,
+                  fadeMsLeft: t.fadeMsLeft - dtMs,
+                  opacity: Math.max(0, (t.fadeMsLeft - dtMs) / 1800) * 0.6,
+                },
           )
           .filter((t) => t.fadeMsLeft == null || t.fadeMsLeft > 0);
         changed = true;
@@ -74,13 +89,19 @@ export const createSpatialSlice: StateCreator<RootStore, [], [], SpatialSlice> =
           .map((g) =>
             g.fadeMsLeft == null
               ? g
-              : { ...g, fadeMsLeft: g.fadeMsLeft - dtMs, intensity: Math.max(0, (g.fadeMsLeft - dtMs) / 1400) },
+              : {
+                  ...g,
+                  fadeMsLeft: g.fadeMsLeft - dtMs,
+                  intensity: Math.max(0, (g.fadeMsLeft - dtMs) / 1400),
+                },
           )
           .filter((g) => g.fadeMsLeft == null || g.fadeMsLeft > 0);
         changed = true;
       }
 
-      return changed ? { agvKinematics: nextK, trajectories: traj, dockGlows: glows } : {};
+      return changed
+        ? { agvKinematics: nextK, trajectories: traj, dockGlows: glows }
+        : {};
     }),
 
   setAgvKinematics: (id, patch) =>
@@ -93,21 +114,37 @@ export const createSpatialSlice: StateCreator<RootStore, [], [], SpatialSlice> =
 
   setAgvTarget: (id, target, speed) =>
     set((s) => {
-      const cur = s.agvKinematics[id] ?? { pos: target ?? { x: 0, y: 0 }, heading: 0, speed: 220, target: null };
+      const cur = s.agvKinematics[id] ?? {
+        pos: target ?? { x: 0, y: 0 },
+        heading: 0,
+        speed: 220,
+        target: null,
+      };
       return {
         agvKinematics: {
           ...s.agvKinematics,
           // record the leg origin so tick() can ease accel/decel
-          [id]: { ...cur, target, origin: { ...cur.pos }, speed: speed ?? cur.speed },
+          [id]: {
+            ...cur,
+            target,
+            origin: { ...cur.pos },
+            speed: speed ?? cur.speed,
+          },
         },
       };
     }),
 
   emitTrajectory: (t) =>
-    set((s) => ({ trajectories: [...s.trajectories.filter((x) => x.id !== t.id), t].slice(-12) })),
+    set((s) => ({
+      trajectories: [...s.trajectories.filter((x) => x.id !== t.id), t].slice(
+        -12,
+      ),
+    })),
 
   emitDockGlow: (g) =>
-    set((s) => ({ dockGlows: [...s.dockGlows.filter((x) => x.id !== g.id), g].slice(-8) })),
+    set((s) => ({
+      dockGlows: [...s.dockGlows.filter((x) => x.id !== g.id), g].slice(-8),
+    })),
 
   clearSpatialRuntime: () =>
     set((s) => ({

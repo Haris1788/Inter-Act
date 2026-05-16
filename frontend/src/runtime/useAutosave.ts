@@ -1,6 +1,6 @@
 // Debounced local autosave + one-shot restore of the authored topology.
 // Mock mode only restores from localStorage (the live backend is the
-// authority when connected — we never override live topology with a cache).
+// authority when connected - we never override live topology with a cache).
 import { useEffect } from "react";
 import { useStore } from "@/store";
 import { serializeTopology, docToState } from "@/lib/topologySchema";
@@ -20,7 +20,7 @@ export function useAutosave() {
       if (restored) return true;
       const s = useStore.getState();
       if (s.dataSource === "live") {
-        restored = true; // live wins permanently — abandon restore
+        restored = true; // live wins permanently - abandon restore
         return true;
       }
       if (s.dataSource === "mock" && s.linkStatus === "connected") {
@@ -38,7 +38,10 @@ export function useAutosave() {
     // Attempt immediately, then on every connection-state change until settled.
     tryRestore();
     const unsubConn = useStore.subscribe((state, prev) => {
-      if (state.dataSource !== prev.dataSource || state.linkStatus !== prev.linkStatus) {
+      if (
+        state.dataSource !== prev.dataSource ||
+        state.linkStatus !== prev.linkStatus
+      ) {
         tryRestore();
       }
     });

@@ -64,7 +64,10 @@ export function CoordPane() {
   const actorRuntime = useStore((s) => s.actorRuntime);
 
   const sortedRows = useMemo(
-    () => [...rows].sort((a, b) => SEVERITY_ORDER[a.level] - SEVERITY_ORDER[b.level]),
+    () =>
+      [...rows].sort(
+        (a, b) => SEVERITY_ORDER[a.level] - SEVERITY_ORDER[b.level],
+      ),
     [rows],
   );
 
@@ -78,10 +81,11 @@ export function CoordPane() {
   }, [actors, actorRuntime]);
 
   const degradedCount = useMemo(
-    () => actorList.filter((a) => {
-      const s: ActorStatus = actorRuntime[a.id]?.status ?? "idle";
-      return s === "down" || s === "warn";
-    }).length,
+    () =>
+      actorList.filter((a) => {
+        const s: ActorStatus = actorRuntime[a.id]?.status ?? "idle";
+        return s === "down" || s === "warn";
+      }).length,
     [actorList, actorRuntime],
   );
 
@@ -141,11 +145,13 @@ export function CoordPane() {
             </span>
 
             {/* State */}
-            <span className={cn(
-              "font-mono text-10.5",
-              status === "down" && !phase ? "text-ink-5" : "text-ink-3",
-            )}>
-              {phase || (status === "down" ? "offline" : "—")}
+            <span
+              className={cn(
+                "font-mono text-10.5",
+                status === "down" && !phase ? "text-ink-5" : "text-ink-3",
+              )}
+            >
+              {phase || (status === "down" ? "offline" : "-")}
             </span>
 
             {/* Metric */}
@@ -173,7 +179,8 @@ export function CoordPane() {
                 errors > 0 ? "text-err" : "text-ink-5",
               )}
             >
-              {errors} error{errors !== 1 ? "s" : ""} · {warnings} hint{warnings !== 1 ? "s" : ""}
+              {errors} error{errors !== 1 ? "s" : ""} · {warnings} hint
+              {warnings !== 1 ? "s" : ""}
             </span>
           </h4>
 

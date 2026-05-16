@@ -1,4 +1,4 @@
-// Topology validation — pure, frontend engineering checks (NO AI, NO routing).
+// Topology validation - pure, frontend engineering checks (NO AI, NO routing).
 // Decentralised model: actors + zones; no handover/transfer pads.
 import type { TopologyActor, TopologyZone, ValidationRow } from "@/store/types";
 
@@ -24,38 +24,70 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
 
   // ── errors ──────────────────────────────────────────────────────────────
   if (list.length === 0) {
-    rows.push({ id: "v-empty", level: "warn", text: "Empty topology — add actors to compose an orchestration" });
+    rows.push({
+      id: "v-empty",
+      level: "warn",
+      text: "Empty topology - add actors to compose an orchestration",
+    });
   }
 
-  // duplicate ids (import can introduce; factory cannot) — a hard error
+  // duplicate ids (import can introduce; factory cannot) - a hard error
   const seen = new Set<string>();
   for (const a of list) {
     if (seen.has(a.id))
-      rows.push({ id: `v-dup-${a.id}`, level: "error", text: `Duplicate actor id: ${a.id}` });
+      rows.push({
+        id: `v-dup-${a.id}`,
+        level: "error",
+        text: `Duplicate actor id: ${a.id}`,
+      });
     seen.add(a.id);
   }
 
   for (const a of list) {
     if (!a.capabilities || a.capabilities.length === 0)
-      rows.push({ id: `v-cap-${a.id}`, level: "warn", text: `${a.id} exposes no capabilities` });
+      rows.push({
+        id: `v-cap-${a.id}`,
+        level: "warn",
+        text: `${a.id} exposes no capabilities`,
+      });
   }
   for (const a of arms) {
     const c = a.capabilities ?? [];
     if (!c.includes("pick") && !c.includes("place"))
-      rows.push({ id: `v-armcap-${a.id}`, level: "warn", text: `${a.id} (arm) has neither pick nor place` });
+      rows.push({
+        id: `v-armcap-${a.id}`,
+        level: "warn",
+        text: `${a.id} (arm) has neither pick nor place`,
+      });
   }
 
   // ── warnings / hints ────────────────────────────────────────────────────
   if (list.length > 0 && !zoneList.some((z) => z.role === "source"))
-    rows.push({ id: "v-src", level: "warn", text: "No source zone — nothing feeds the orchestration" });
+    rows.push({
+      id: "v-src",
+      level: "warn",
+      text: "No source zone - nothing feeds the orchestration",
+    });
   if (list.length > 0 && !zoneList.some((z) => z.role === "sink"))
-    rows.push({ id: "v-sink", level: "warn", text: "No sink zone — nowhere to deliver" });
+    rows.push({
+      id: "v-sink",
+      level: "warn",
+      text: "No sink zone - nowhere to deliver",
+    });
   if (arms.length > 0 && agvs.length === 0)
-    rows.push({ id: "v-noagv", level: "info", text: "No mobile agents — arms cannot hand off without an AGV" });
+    rows.push({
+      id: "v-noagv",
+      level: "info",
+      text: "No mobile agents - arms cannot hand off without an AGV",
+    });
 
   // ── ok / info ───────────────────────────────────────────────────────────
   if (list.length > 0 && rows.every((r) => r.level === "info"))
-    rows.unshift({ id: "v-ok", level: "ok", text: "Every actor exposes a non-empty capability set" });
+    rows.unshift({
+      id: "v-ok",
+      level: "ok",
+      text: "Every actor exposes a non-empty capability set",
+    });
   rows.push({
     id: "v-count",
     level: "info",

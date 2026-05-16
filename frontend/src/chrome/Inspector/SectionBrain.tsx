@@ -3,7 +3,7 @@ import { Field } from "./Field";
 import { Seg } from "./Seg";
 import { Slider } from "./Slider";
 
-const EM = "—";
+const EM = "-";
 
 interface SectionBrainProps {
   actor: TopologyActor;
@@ -14,11 +14,15 @@ export function SectionBrain({ actor, live }: SectionBrainProps) {
   return (
     <div className="px-[14px] pt-[14px] pb-1">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">Brain</span>
+        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">
+          Brain
+        </span>
       </div>
       <Field label="Model">
-        {/* actor.brain is topology data — always available */}
-        <span className="font-mono text-11.5 text-ink-2">{actor.brain || EM}</span>
+        {/* actor.brain is topology data - always available */}
+        <span className="font-mono text-11.5 text-ink-2">
+          {actor.brain || EM}
+        </span>
       </Field>
       <Field label="Policy">
         {live ? (
@@ -34,7 +38,10 @@ export function SectionBrain({ actor, live }: SectionBrainProps) {
         {live ? (
           <span className="font-mono text-11.5 text-ink-4">{EM}</span>
         ) : (
-          <Seg options={["passive", "cooperative", "aggressive"]} active="cooperative" />
+          <Seg
+            options={["passive", "cooperative", "aggressive"]}
+            active="cooperative"
+          />
         )}
       </Field>
       <Field label="Priority">

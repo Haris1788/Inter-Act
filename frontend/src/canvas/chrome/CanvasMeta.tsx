@@ -1,4 +1,4 @@
-// Canvas meta pill — top-right: environment indicator.
+// Canvas meta pill - top-right: environment indicator.
 // Mirrors .canvas-meta / .pill from styles-v2.css.
 
 export function CanvasMeta() {

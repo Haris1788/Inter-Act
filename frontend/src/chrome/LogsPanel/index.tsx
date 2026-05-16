@@ -22,12 +22,12 @@ export function LogsPanel() {
       <LogsHead activeTab={activeTab} onTab={setActiveTab} />
 
       {isEvents ? (
-        /* Events tab — full-width timeline */
+        /* Events tab - full-width timeline */
         <div className="min-h-0 flex-1 flex flex-col">
           <EventsPane />
         </div>
       ) : (
-        /* All other tabs — 2-col grid: 1.5fr log-stream | 1fr coord-pane */
+        /* All other tabs - 2-col grid: 1.5fr log-stream | 1fr coord-pane */
         <div
           className="min-h-0 flex-1"
           style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr" }}

@@ -1,7 +1,7 @@
 import type { TopologyActor } from "@/store/types";
 import { Field } from "./Field";
 
-const EM = "—";
+const EM = "-";
 
 interface SectionIdentityProps {
   actor: TopologyActor;
@@ -12,7 +12,9 @@ export function SectionIdentity({ actor, live }: SectionIdentityProps) {
   return (
     <div className="px-[14px] pt-[14px] pb-1">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">Identity</span>
+        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">
+          Identity
+        </span>
       </div>
       <Field label="Actor ID">
         <span className="font-mono text-11.5 text-ink-2">{actor.id}</span>

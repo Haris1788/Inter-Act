@@ -1,5 +1,5 @@
 // Hex palette mirror of tailwind.config.ts / styles-v2.css :root.
-// Konva and inline SVG cannot read Tailwind classes — they import from here so
+// Konva and inline SVG cannot read Tailwind classes - they import from here so
 // canvas-rendered colors stay identical to DOM-rendered colors.
 export const tokens = {
   bg: {

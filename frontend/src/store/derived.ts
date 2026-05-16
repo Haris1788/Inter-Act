@@ -1,5 +1,5 @@
 // Derived, cross-slice read-only views (Phase 5 coherence/lifecycle).
-// Composing reads across slices in a hook is fine — the strict separation is
+// Composing reads across slices in a hook is fine - the strict separation is
 // about state OWNERSHIP/writes, not derived selectors.
 import { useMemo } from "react";
 import { useStore } from "./index";
@@ -11,7 +11,10 @@ import { parseTopology, type TopologyDoc } from "@/lib/topologySchema";
 import type { OperationalEvent } from "./types";
 
 /** Per-actor operational history (observability). Memoized. */
-export function useActorEvents(actorId: string | null, limit = 40): OperationalEvent[] {
+export function useActorEvents(
+  actorId: string | null,
+  limit = 40,
+): OperationalEvent[] {
   const events = useStore((s) => s.events);
   return useMemo(() => {
     if (!actorId) return [];
@@ -38,7 +41,9 @@ export function useCoherence(): CoherenceResult {
   const actors = useStore((s) => s.actors);
   // Coherence only needs the SET of runtime ids, not their telemetry. Subscribe
   // to a stable string key so 60fps runtime patches don't re-render every node.
-  const runtimeKey = useStore((s) => Object.keys(s.actorRuntime).sort().join(","));
+  const runtimeKey = useStore((s) =>
+    Object.keys(s.actorRuntime).sort().join(","),
+  );
   const dataSource = useStore((s) => s.dataSource);
   const deployed = useDeployedDoc();
   return useMemo(
@@ -57,8 +62,10 @@ export function useLifecycle(): LifecycleView {
   const validation = useTopologyValidation();
   const coherence = useCoherence();
   const actorCount = useStore((s) => Object.keys(s.actors).length);
-  // stable boolean — avoids Topbar re-render on every metric tick
-  const anyDown = useStore((s) => Object.values(s.actorRuntime).some((r) => r.status === "down"));
+  // stable boolean - avoids Topbar re-render on every metric tick
+  const anyDown = useStore((s) =>
+    Object.values(s.actorRuntime).some((r) => r.status === "down"),
+  );
   const deployedJson = useStore((s) => s.deployedJson);
   const dataSource = useStore((s) => s.dataSource);
   const linkStatus = useStore((s) => s.linkStatus);
@@ -66,10 +73,11 @@ export function useLifecycle(): LifecycleView {
 
   return useMemo(() => {
     const everDeployed = deployedJson != null;
-    // "deploy needed" is divergence from the deploy snapshot — NOT the
+    // "deploy needed" is divergence from the deploy snapshot - NOT the
     // autosave dirty flag (which is about local persistence, not deployment).
     const dirtySinceDeploy =
-      everDeployed && (coherence.summary.modified > 0 || coherence.summary.draft > 0);
+      everDeployed &&
+      (coherence.summary.modified > 0 || coherence.summary.draft > 0);
     return deriveLifecycle({
       deployable: validation.deployable,
       hasActors: actorCount > 0,
@@ -81,5 +89,14 @@ export function useLifecycle(): LifecycleView {
       coherence,
       deployPhase,
     });
-  }, [validation, coherence, actorCount, anyDown, deployedJson, dataSource, linkStatus, deployPhase]);
+  }, [
+    validation,
+    coherence,
+    actorCount,
+    anyDown,
+    deployedJson,
+    dataSource,
+    linkStatus,
+    deployPhase,
+  ]);
 }

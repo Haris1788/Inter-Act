@@ -8,7 +8,7 @@ export type ActorKind = "arm" | "agv";
 // (degraded-state visualization).
 export type ActorStatus = "ok" | "busy" | "warn" | "idle" | "down";
 
-// Phase 2 — which driver is feeding the store, and live link health.
+// Phase 2 - which driver is feeding the store, and live link health.
 export type DataSource = "mock" | "live";
 export type LinkStatus = "connecting" | "connected" | "disconnected";
 
@@ -67,8 +67,12 @@ export interface TopologySlice {
   duplicateActor: (id: ActorId) => ActorId | null;
   updateActor: (id: ActorId, patch: Partial<TopologyActor>) => void;
   /** wholesale replace (import / load) */
-  replaceTopology: (patch: Pick<TopologySlice, "actors" | "zones" | "pool" | "goal">) => void;
-  hydrateTopology: (patch: Partial<Pick<TopologySlice, "actors" | "zones" | "pool" | "goal">>) => void;
+  replaceTopology: (
+    patch: Pick<TopologySlice, "actors" | "zones" | "pool" | "goal">,
+  ) => void;
+  hydrateTopology: (
+    patch: Partial<Pick<TopologySlice, "actors" | "zones" | "pool" | "goal">>,
+  ) => void;
 }
 
 // ---------- SLICE 4: Editor / Authoring UI (Phase 4) ----------
@@ -97,7 +101,7 @@ export interface EditorSlice {
   contextMenu: ContextMenuState | null;
   dirty: boolean;
   // Lifecycle: snapshot of the topology at the last successful deploy/prepare
-  // (serialized TopologyDoc JSON) — the baseline for divergence detection.
+  // (serialized TopologyDoc JSON) - the baseline for divergence detection.
   deployedJson: string | null;
   deployedAt: string | null;
   deployPhase: DeployPhase;
@@ -113,7 +117,7 @@ export interface EditorSlice {
   recordDeploy: (docJson: string) => void;
   clearDeploySnapshot: () => void;
   setDeployPhase: (phase: DeployPhase, message?: string) => void;
-  // Phase 7 — request the canvas to center/zoom an actor (nonce so repeat
+  // Phase 7 - request the canvas to center/zoom an actor (nonce so repeat
   // focus of the same id still fires). Consumed by the RF viewport effect.
   focusRequest: { id: ActorId; nonce: number } | null;
   requestFocus: (id: ActorId) => void;
@@ -126,8 +130,20 @@ export interface ActorRuntime {
   bid: number | null;
   winning: boolean;
   uptime: string;
-  metrics: { cpu: number; memMb: number; battery: number; busLatencyMs: number };
-  taskQueue: { id: string; ix: string; label: string; sub: string; etaS: number; active: boolean }[];
+  metrics: {
+    cpu: number;
+    memMb: number;
+    battery: number;
+    busLatencyMs: number;
+  };
+  taskQueue: {
+    id: string;
+    ix: string;
+    label: string;
+    sub: string;
+    etaS: number;
+    active: boolean;
+  }[];
 }
 
 export type BusKind = "announce" | "bid" | "accept" | "dock";
@@ -154,7 +170,7 @@ export interface ValidationRow {
   text: string;
 }
 
-// Phase 8 — structured operational event (observability). Derived from real
+// Phase 8 - structured operational event (observability). Derived from real
 // socket/deploy transitions; NOT fabricated analytics. Bounded ring buffer.
 export type EventKind =
   | "health"
@@ -180,10 +196,10 @@ export interface RuntimeSlice {
   logLines: LogLine[];
   validation: ValidationRow[];
   contracts: { id: string; from: ActorId; to: ActorId }[];
-  /** Phase 2 — live link state, shown in the topbar; never persisted. */
+  /** Phase 2 - live link state, shown in the topbar; never persisted. */
   dataSource: DataSource;
   linkStatus: LinkStatus;
-  /** Phase 8 — bounded operational event timeline (observability). */
+  /** Phase 8 - bounded operational event timeline (observability). */
   events: OperationalEvent[];
   pushBusMessage: (m: BusMessage) => void;
   pushLogLine: (l: LogLine) => void;
@@ -194,7 +210,12 @@ export interface RuntimeSlice {
     patch: Partial<
       Pick<
         RuntimeSlice,
-        "actorRuntime" | "busMessages" | "logLines" | "validation" | "contracts" | "busRate"
+        | "actorRuntime"
+        | "busMessages"
+        | "logLines"
+        | "validation"
+        | "contracts"
+        | "busRate"
       >
     >,
   ) => void;
@@ -206,7 +227,7 @@ export interface AgvKinematics {
   heading: number;
   speed: number;
   target: Vec2 | null;
-  /** leg start — set when a target is assigned; enables accel/decel easing */
+  /** leg start - set when a target is assigned; enables accel/decel easing */
   origin?: Vec2 | null;
 }
 
@@ -216,7 +237,7 @@ export interface Trajectory {
   path: string;
   phantom: boolean;
   opacity: number;
-  /** Phase 2 — runtime traces fade out; null = persistent (mock). */
+  /** Phase 2 - runtime traces fade out; null = persistent (mock). */
   fadeMsLeft?: number | null;
 }
 
@@ -233,7 +254,7 @@ export interface SpatialSlice {
   dockGlows: DockGlow[];
   reachability: { id: string; path: string; opacity: number }[];
   tick: (dtMs: number) => void;
-  // Phase 2 — runtime-driven, ephemeral. Driven by object_update events.
+  // Phase 2 - runtime-driven, ephemeral. Driven by object_update events.
   setAgvKinematics: (id: ActorId, patch: Partial<AgvKinematics>) => void;
   setAgvTarget: (id: ActorId, target: Vec2 | null, speed?: number) => void;
   emitTrajectory: (t: Trajectory) => void;
@@ -241,9 +262,15 @@ export interface SpatialSlice {
   clearSpatialRuntime: () => void;
   hydrateSpatial: (
     patch: Partial<
-      Pick<SpatialSlice, "agvKinematics" | "trajectories" | "dockGlows" | "reachability">
+      Pick<
+        SpatialSlice,
+        "agvKinematics" | "trajectories" | "dockGlows" | "reachability"
+      >
     >,
   ) => void;
 }
 
-export type RootStore = TopologySlice & RuntimeSlice & SpatialSlice & EditorSlice;
+export type RootStore = TopologySlice &
+  RuntimeSlice &
+  SpatialSlice &
+  EditorSlice;

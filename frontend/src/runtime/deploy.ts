@@ -1,6 +1,6 @@
 // Build & Deploy. Honest lifecycle: validate → prepare payload → (live only)
 // POST /restart_pipeline + reconcile. The backend has no endpoint that
-// accepts an authored topology — that is applied offline via
+// accepts an authored topology - that is applied offline via
 // pipeline.yaml → generate_compose. `runDeploy` never claims otherwise.
 
 import type { TopologyActor, TopologyZone, TopologyGoal } from "@/store/types";
@@ -47,7 +47,11 @@ export function buildDeployPayload(s: DeployState): DeployPayload {
       brain: a.brain,
       position: a.position,
     })),
-    zones: Object.values(s.zones).map((z) => ({ id: z.id, role: z.role, label: z.label })),
+    zones: Object.values(s.zones).map((z) => ({
+      id: z.id,
+      role: z.role,
+      label: z.label,
+    })),
     goal: s.goal,
   };
 }
@@ -68,7 +72,7 @@ async function post(path: string): Promise<boolean> {
 
 export interface RunDeployOptions {
   /** when live, also POST /restart_pipeline (restarts the backend's on-disk
-   *  pipeline — does NOT push authored topology; that goes through the
+   *  pipeline - does NOT push authored topology; that goes through the
    *  offline pipeline.yaml → generate_compose flow). Honest by design. */
   applyRestart: boolean;
 }
@@ -82,10 +86,17 @@ export interface RunDeployOutcome {
 // Honest deployment lifecycle. Validates → prepares payload + records the
 // deploy snapshot (baseline for divergence) → optionally restarts the live
 // backend pipeline and reconciles against /config + /arms/health. In mock
-// mode it stops at "prepared" — it never claims a deploy that did not happen.
-const ACTIVE_PHASES = new Set(["validating", "preparing", "restarting", "reconciling"]);
+// mode it stops at "prepared" - it never claims a deploy that did not happen.
+const ACTIVE_PHASES = new Set([
+  "validating",
+  "preparing",
+  "restarting",
+  "reconciling",
+]);
 
-export async function runDeploy(opts: RunDeployOptions): Promise<RunDeployOutcome> {
+export async function runDeploy(
+  opts: RunDeployOptions,
+): Promise<RunDeployOutcome> {
   const st = () => useStore.getState();
 
   // Defense-in-depth re-entry guard: ignore concurrent invocations so deploy
@@ -105,9 +116,21 @@ export async function runDeploy(opts: RunDeployOptions): Promise<RunDeployOutcom
   const v = validateTopology({ actors: st().actors, zones: st().zones });
   const payload = buildDeployPayload(st());
   if (!v.deployable) {
-    st().setDeployPhase("failed", `Not deployable · ${v.errors || v.warnings} issue(s)`);
-    st().pushEvent({ kind: "deploy", text: "Deploy blocked — validation failed", tone: "err" });
-    return { ok: false, payload, finalPhase: "failed", note: "Validation blocked deploy" };
+    st().setDeployPhase(
+      "failed",
+      `Not deployable · ${v.errors || v.warnings} issue(s)`,
+    );
+    st().pushEvent({
+      kind: "deploy",
+      text: "Deploy blocked - validation failed",
+      tone: "err",
+    });
+    return {
+      ok: false,
+      payload,
+      finalPhase: "failed",
+      note: "Validation blocked deploy",
+    };
   }
 
   st().setDeployPhase("preparing", "Preparing orchestration payload…");
@@ -119,21 +142,34 @@ export async function runDeploy(opts: RunDeployOptions): Promise<RunDeployOutcom
     st().setDeployPhase("restarting", "Restarting backend pipeline…");
     const ok = await post("/restart_pipeline");
     if (!ok) {
-      // No snapshot recorded — the deploy did not land.
+      // No snapshot recorded - the deploy did not land.
       st().setDeployPhase("failed", "Backend /restart_pipeline failed");
-      st().pushEvent({ kind: "deploy", text: "Restart failed — /restart_pipeline error", tone: "err" });
-      return { ok: false, payload, finalPhase: "failed", note: "restart_pipeline failed" };
+      st().pushEvent({
+        kind: "deploy",
+        text: "Restart failed - /restart_pipeline error",
+        tone: "err",
+      });
+      return {
+        ok: false,
+        payload,
+        finalPhase: "failed",
+        note: "restart_pipeline failed",
+      };
     }
     st().setDeployPhase("reconciling", "Reconciling runtime…");
-    // Poll until the backend reports actors again (arms OR assets — an
+    // Poll until the backend reports actors again (arms OR assets - an
     // AGV-only topology has no arms). Timeout → failed, not silent.
     let ready = false;
     for (let i = 0; i < 6; i++) {
       await sleep(1200);
       try {
         const [ar, as] = await Promise.all([
-          fetch("/arms/health").then((r) => (r.ok ? r.json() : null)).catch(() => null),
-          fetch("/assets/state").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+          fetch("/arms/health")
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null),
+          fetch("/assets/state")
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null),
         ]);
         const armN = ar?.arms ? Object.keys(ar.arms).length : 0;
         const assetN = as?.assets ? Object.keys(as.assets).length : 0;
@@ -146,23 +182,28 @@ export async function runDeploy(opts: RunDeployOptions): Promise<RunDeployOutcom
       }
     }
     if (ready) st().recordDeploy(snapshotJson); // baseline only on confirmed land
-    st().setDeployPhase(ready ? "ready" : "failed", ready ? "Runtime ready" : "Runtime did not converge");
+    st().setDeployPhase(
+      ready ? "ready" : "failed",
+      ready ? "Runtime ready" : "Runtime did not converge",
+    );
     st().pushEvent({
       kind: "deploy",
       text: ready
-        ? "Deploy reconciled — runtime ready"
-        : "Deploy reconcile timed out — runtime did not converge",
+        ? "Deploy reconciled - runtime ready"
+        : "Deploy reconcile timed out - runtime did not converge",
       tone: ready ? "ok" : "warn",
     });
     return {
       ok: ready,
       payload,
       finalPhase: ready ? "ready" : "failed",
-      note: ready ? "Backend pipeline restarted and reconciled" : "Reconcile timed out",
+      note: ready
+        ? "Backend pipeline restarted and reconciled"
+        : "Reconcile timed out",
     };
   }
 
-  // Mock / no-restart: honest stop — payload prepared, not deployed. The
+  // Mock / no-restart: honest stop - payload prepared, not deployed. The
   // snapshot is still recorded as the divergence baseline (so "modified ·
   // deploy needed" works) without claiming a deploy happened.
   st().recordDeploy(snapshotJson);

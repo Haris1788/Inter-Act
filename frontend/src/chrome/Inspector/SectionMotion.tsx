@@ -6,13 +6,15 @@ interface SectionMotionProps {
   live: boolean;
 }
 
-const EM = "—";
+const EM = "-";
 
 export function SectionMotion({ live }: SectionMotionProps) {
   return (
     <div className="px-[14px] pt-[14px] pb-1">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">Motion</span>
+        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">
+          Motion
+        </span>
         {!live && <span className="text-11 text-ink-4">reset</span>}
         {live && <span className="text-10.5 text-ink-5">authored only</span>}
       </div>

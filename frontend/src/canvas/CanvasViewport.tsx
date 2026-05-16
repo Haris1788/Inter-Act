@@ -1,8 +1,8 @@
-// CanvasViewport — React Flow topology authoring layer + canvas chrome.
+// CanvasViewport - React Flow topology authoring layer + canvas chrome.
 //
 // Layer stack:
-//   z-[1]  ReactFlow (pan/zoom/nodes) — single transform authority
-//   z-[2]  KonvaOverlay (runtime spatial — halos, glows, trajectories)
+//   z-[1]  ReactFlow (pan/zoom/nodes) - single transform authority
+//   z-[2]  KonvaOverlay (runtime spatial - halos, glows, trajectories)
 //   z-[3]  LabelsOverlay (cap-tags, dock-state labels)
 //   z-[4+] Canvas chrome (toolbar, meta, zoom, fleet, goal, bus, context menu)
 //
@@ -57,7 +57,7 @@ function FlowInner() {
   const { fitToStage } = useFitViewport(containerRef);
 
   // Focus-on-selection: center + gently zoom the requested actor. Smooth,
-  // restrained — operational navigation at scale, not a camera fly.
+  // restrained - operational navigation at scale, not a camera fly.
   useEffect(() => {
     if (!focusRequest) return;
     void rf.fitView({
@@ -123,7 +123,11 @@ function FlowInner() {
       if (!key) return;
       e.preventDefault();
       const center = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      const actor = createActorFromPalette(key, center, useStore.getState().actors);
+      const actor = createActorFromPalette(
+        key,
+        center,
+        useStore.getState().actors,
+      );
       if (!actor) return;
       addActor(actor);
       markDirty();
@@ -137,13 +141,25 @@ function FlowInner() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      )
+        return;
       const s = useStore.getState();
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "d") {
         e.preventDefault();
-        const ids = s.selectedIds.length ? s.selectedIds : s.selectedActorId ? [s.selectedActorId] : [];
-        const dups = ids.map((id) => s.duplicateActor(id)).filter(Boolean) as string[];
+        const ids = s.selectedIds.length
+          ? s.selectedIds
+          : s.selectedActorId
+            ? [s.selectedActorId]
+            : [];
+        const dups = ids
+          .map((id) => s.duplicateActor(id))
+          .filter(Boolean) as string[];
         if (dups.length) {
           s.setSelection(dups);
           s.markDirty();
@@ -151,7 +167,11 @@ function FlowInner() {
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
-        const ids = s.selectedIds.length ? s.selectedIds : s.selectedActorId ? [s.selectedActorId] : [];
+        const ids = s.selectedIds.length
+          ? s.selectedIds
+          : s.selectedActorId
+            ? [s.selectedActorId]
+            : [];
         if (!ids.length) return;
         e.preventDefault();
         ids.forEach((id) => removeActor(id));
@@ -166,7 +186,11 @@ function FlowInner() {
       }
       // Arrow-nudge selected actors (precision placement). Shift = 10px.
       if (e.key.startsWith("Arrow")) {
-        const ids = s.selectedIds.length ? s.selectedIds : s.selectedActorId ? [s.selectedActorId] : [];
+        const ids = s.selectedIds.length
+          ? s.selectedIds
+          : s.selectedActorId
+            ? [s.selectedActorId]
+            : [];
         if (!ids.length) return;
         e.preventDefault();
         const d = e.shiftKey ? 10 : 1;
@@ -174,7 +198,8 @@ function FlowInner() {
         const dy = e.key === "ArrowUp" ? -d : e.key === "ArrowDown" ? d : 0;
         for (const id of ids) {
           const a = s.actors[id];
-          if (a) s.moveActor(id, { x: a.position.x + dx, y: a.position.y + dy });
+          if (a)
+            s.moveActor(id, { x: a.position.x + dx, y: a.position.y + dy });
         }
         s.markDirty();
         return;
@@ -198,7 +223,7 @@ function FlowInner() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // handler reads via useStore.getState() — stable, no deps needed
+    // handler reads via useStore.getState() - stable, no deps needed
   }, []);
 
   // Interaction mode → RF behavior. select: drag nodes; pan: hand-drag canvas;
@@ -234,7 +259,7 @@ function FlowInner() {
         className="h-full w-full"
         style={{ background: "transparent" }}
       >
-        {/* Topology overview — permanent spatial navigation widget
+        {/* Topology overview - permanent spatial navigation widget
             (bottom-right). Replaces the removed Fleet card; fleet/runtime
             telemetry now lives only in the lower operational panel. */}
         <MiniMap
@@ -249,7 +274,9 @@ function FlowInner() {
           nodeStrokeWidth={2}
           nodeColor={(n) =>
             n.type === "actorNode"
-              ? ((n.data as { kind?: string })?.kind === "agv" ? "#5F8F58" : "#18181B")
+              ? (n.data as { kind?: string })?.kind === "agv"
+                ? "#5F8F58"
+                : "#18181B"
               : "#C9C6BD"
           }
           nodeStrokeColor="transparent"

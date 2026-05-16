@@ -1,7 +1,7 @@
 import type { ActorRuntime } from "@/store/types";
 import { Gauge } from "./Gauge";
 
-const EM = "—";
+const EM = "-";
 
 interface SectionRuntimeProps {
   metrics: ActorRuntime["metrics"];
@@ -23,7 +23,9 @@ export function SectionRuntime({ metrics, live }: SectionRuntimeProps) {
   return (
     <div className="px-[14px] pt-[14px] pb-1">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">Runtime</span>
+        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">
+          Runtime
+        </span>
         {live ? (
           <span className="text-10.5 text-ink-5">not connected</span>
         ) : (

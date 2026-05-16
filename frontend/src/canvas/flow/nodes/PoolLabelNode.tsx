@@ -1,4 +1,4 @@
-// Pool label pill — floats at pool center (top-edge of the pool stadium).
+// Pool label pill - floats at pool center (top-edge of the pool stadium).
 // The prototype places .pool-label at left:660px; top:410px with
 // translate(-50%,-50%), so the pool top-center is the anchor.
 // Like ZoneNode, this uses RF origin [0.5, 0.5] so position == center.
@@ -18,7 +18,9 @@ export const PoolLabelNode = memo(function PoolLabelNode({ data }: NodeProps) {
       style={{ whiteSpace: "nowrap" }}
     >
       <span className="font-semibold text-ink">{pool.label}</span>
-      <span className="normal-case tracking-[0.02em] text-ink-4">{pool.sub}</span>
+      <span className="normal-case tracking-[0.02em] text-ink-4">
+        {pool.sub}
+      </span>
     </div>
   );
 });

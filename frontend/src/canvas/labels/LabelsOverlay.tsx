@@ -1,4 +1,4 @@
-// LabelsOverlay — Domain 4 DOM labels.
+// LabelsOverlay - Domain 4 DOM labels.
 //
 // A pointer-events-none absolute wrapper containing an inner div driven by
 // the RF viewport transform so cap-tags, dock-state and annotation stay locked
@@ -6,7 +6,7 @@
 //
 // Labels authored in 1320×720 stage space (left/top in px, centred with
 // translate(-50%,-50%) matching the prototype .cap-tag / .dock-state rules).
-// NO CSS transition — that would cause lag on pan.
+// NO CSS transition - that would cause lag on pan.
 //
 // Domain 3 owns the pool-label React Flow node; we render only:
 //   - .cap-tag ×2  ("capability · pick" and "capability · place")
@@ -20,10 +20,7 @@ export function LabelsOverlay() {
   const { x, y, zoom } = useViewportTransform();
 
   return (
-    <div
-      className="pointer-events-none absolute inset-0"
-      aria-hidden="true"
-    >
+    <div className="pointer-events-none absolute inset-0" aria-hidden="true">
       {/*
        * Inner div carries the viewport transform.
        * All child elements use left/top in stage-px; they are then scaled +
@@ -36,20 +33,14 @@ export function LabelsOverlay() {
           top: 0,
           transformOrigin: "0 0",
           transform: `translate(${x}px,${y}px) scale(${zoom})`,
-          // No CSS transition — prevents lag during pan.
+          // No CSS transition - prevents lag during pan.
         }}
       >
         {/* ── capability · pick (arm-1 at stage 285, 90) ── */}
-        <CapTag
-          label="pick"
-          style={{ left: 285, top: 90 }}
-        />
+        <CapTag label="pick" style={{ left: 285, top: 90 }} />
 
         {/* ── capability · place (arm-2 at stage 1035, 90) ── */}
-        <CapTag
-          label="place"
-          style={{ left: 1035, top: 90 }}
-        />
+        <CapTag label="place" style={{ left: 1035, top: 90 }} />
 
         {/* ── dock-state (arm-1 docking ring at stage 310, 355) ── */}
         <DockState
@@ -75,7 +66,7 @@ export function LabelsOverlay() {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-components — kept in this file (small, co-located with their parent).
+// Sub-components - kept in this file (small, co-located with their parent).
 // ---------------------------------------------------------------------------
 
 interface CapTagProps {
@@ -120,7 +111,7 @@ function DockState({ text, style }: DockStateProps) {
       )}
       style={{ left: style.left, top: style.top }}
     >
-      {/* pulsing dot — matches .dock-state::before */}
+      {/* pulsing dot - matches .dock-state::before */}
       <span
         className="inline-block w-[6px] h-[6px] rounded-full bg-cta animate-pulse-dot"
         aria-hidden="true"

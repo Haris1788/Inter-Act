@@ -1,4 +1,4 @@
-// AgvTokenLayer — Live AGV motion tokens rendered in Konva stage-space.
+// AgvTokenLayer - Live AGV motion tokens rendered in Konva stage-space.
 //
 // For each AGV in useAgvKinematics() with a non-null pos, draws a matte
 // industrial marker at that position, locked to React Flow pan/zoom via the
@@ -8,12 +8,12 @@
 //   - Token: rounded rect 18×14 px (stage units), tokens.cta stroke, subtle
 //     warm fill, heading tick line pointing in the direction of travel.
 //   - In-transit (target non-null): soft radial trail halo; pulse phase driven
-//     by a dedicated rAF (cosmetic only — position integration is in the store).
+//     by a dedicated rAF (cosmetic only - position integration is in the store).
 //   - Settled (target null): no trail; reduced opacity on heading tick.
 //   - Tether: thin low-opacity line from token centre to the AGV's RF home
 //     card centre (actor.position + size/2) while in transit.
 //
-// This layer is listening={false} and does NOT integrate positions — it only
+// This layer is listening={false} and does NOT integrate positions - it only
 // reads current store state each render frame.
 
 import { useEffect, useRef, useState } from "react";
@@ -42,7 +42,7 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
   const kinematics = useAgvKinematics();
   const actors = useActors();
 
-  // Cosmetic pulse phase — only used for the trail glow, harmless if no AGVs
+  // Cosmetic pulse phase - only used for the trail glow, harmless if no AGVs
   // are in transit. A single shared phase is fine; all tokens pulse together
   // which reads as a system heartbeat rather than per-unit animation.
   const [pulsePhase, setPulsePhase] = useState(0);
@@ -54,7 +54,9 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
     function animate(ts: number) {
       const dt = lastTsRef.current === null ? 0 : ts - lastTsRef.current;
       lastTsRef.current = ts;
-      phaseRef.current = (phaseRef.current + (dt / 1000) * PULSE_SPEED * Math.PI * 2) % (Math.PI * 2);
+      phaseRef.current =
+        (phaseRef.current + (dt / 1000) * PULSE_SPEED * Math.PI * 2) %
+        (Math.PI * 2);
       setPulsePhase(phaseRef.current);
       rafRef.current = requestAnimationFrame(animate);
     }
@@ -72,7 +74,13 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
   const pulse = (Math.sin(pulsePhase) * 0.5 + 0.5) * 0.55 + 0.15; // 0.15..0.70
 
   return (
-    <Layer listening={false} x={tx.x} y={tx.y} scaleX={tx.zoom} scaleY={tx.zoom}>
+    <Layer
+      listening={false}
+      x={tx.x}
+      y={tx.y}
+      scaleX={tx.zoom}
+      scaleY={tx.zoom}
+    >
       {entries.map(([id, k]) => {
         const { pos, heading, target } = k;
         const inTransit = target !== null;
@@ -86,18 +94,20 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
         const tickDx = Math.cos(heading) * TICK_LEN;
         const tickDy = Math.sin(heading) * TICK_LEN;
 
-        // Token colours — matte warm-industrial palette
-        const fillColor = inTransit ? "rgba(24,24,27,0.07)" : "rgba(24,24,27,0.04)";
-        const strokeColor = tokens.cta; // #18181B — same as arm halos
+        // Token colours - matte warm-industrial palette
+        const fillColor = inTransit
+          ? "rgba(24,24,27,0.07)"
+          : "rgba(24,24,27,0.04)";
+        const strokeColor = tokens.cta; // #18181B - same as arm halos
         const strokeWidth = inTransit ? 1.2 : 0.9;
         const tickOpacity = inTransit ? 0.65 : 0.28;
 
-        // Trail halo opacity — pulsed when in transit, hidden when settled
+        // Trail halo opacity - pulsed when in transit, hidden when settled
         const trailOpacity = inTransit ? pulse * 0.45 : 0;
 
         return (
           <Group key={id} x={pos.x} y={pos.y}>
-            {/* Tether line to home card — only while in transit */}
+            {/* Tether line to home card - only while in transit */}
             {inTransit && homeX !== null && homeY !== null && (
               <Line
                 points={[0, 0, homeX - pos.x, homeY - pos.y]}
@@ -127,7 +137,7 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
               />
             )}
 
-            {/* AGV token body — rounded rect centred at (0,0) */}
+            {/* AGV token body - rounded rect centred at (0,0) */}
             <Rect
               x={-TOKEN_W / 2}
               y={-TOKEN_H / 2}

@@ -16,7 +16,7 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
-    // NOT "assets" — that path is a backend API prefix (/assets/<id>/state).
+    // NOT "assets" - that path is a backend API prefix (/assets/<id>/state).
     // Keeping SPA bundles under /spa-assets/ lets nginx cleanly split static
     // files from proxied API routes.
     assetsDir: "spa-assets",

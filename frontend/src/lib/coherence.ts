@@ -10,11 +10,24 @@ export interface CoherenceResult {
   byId: Record<string, Coherence>;
   /** actors live in the runtime registry but not in the authored topology */
   runtimeOnly: string[];
-  summary: { draft: number; modified: number; deployed: number; stale: number; runtimeOnly: number };
+  summary: {
+    draft: number;
+    modified: number;
+    deployed: number;
+    stale: number;
+    runtimeOnly: number;
+  };
 }
 
 function actorFingerprint(a: TopologyActor): string {
-  return JSON.stringify([a.id, a.kind, a.type, a.label, a.capabilities, a.position]);
+  return JSON.stringify([
+    a.id,
+    a.kind,
+    a.type,
+    a.label,
+    a.capabilities,
+    a.position,
+  ]);
 }
 
 export function computeCoherence(
@@ -37,13 +50,19 @@ export function computeCoherence(
       byId[a.id] = "modified";
       continue;
     }
-    // deployed & unchanged — but is it actually running?
+    // deployed & unchanged - but is it actually running?
     byId[a.id] = live && !runtimeIds.has(a.id) ? "stale" : "deployed";
   }
 
   const runtimeOnly = [...runtimeIds].filter((id) => !authored[id]);
 
-  const summary = { draft: 0, modified: 0, deployed: 0, stale: 0, runtimeOnly: runtimeOnly.length };
+  const summary = {
+    draft: 0,
+    modified: 0,
+    deployed: 0,
+    stale: 0,
+    runtimeOnly: runtimeOnly.length,
+  };
   for (const c of Object.values(byId)) summary[c]++;
 
   return { byId, runtimeOnly, summary };

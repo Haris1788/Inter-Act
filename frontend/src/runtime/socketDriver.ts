@@ -14,7 +14,10 @@ import {
 // Live runtime. Adapts to the EXISTING backend contract (no new events).
 // Same-origin: nginx proxies /socket.io and the REST API to Flask; the Vite
 // dev server proxies them too (vite.config.ts).
-async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T | null> {
+async function getJSON<T>(
+  url: string,
+  signal?: AbortSignal,
+): Promise<T | null> {
   try {
     const r = await fetch(url, { signal });
     if (!r.ok) return null;
@@ -30,11 +33,11 @@ export function createSocketDriver(): RuntimeDriver {
   let last = 0;
   let busWindow: number[] = [];
   let lastBusSec = 0;
-  // event_seq guard per object (mirror backend stale-drop). Capped — old
+  // event_seq guard per object (mirror backend stale-drop). Capped - old
   // object ids are evicted FIFO so a long run can't grow these unbounded.
   const OBJ_CAP = 500;
   const objSeq = new Map<string, number>();
-  // last emitted status per actor — dedup so observability records only real
+  // last emitted status per actor - dedup so observability records only real
   // transitions, never per-poll repeats.
   const lastStatus = new Map<string, string>();
   // actorId → downstream actorIds (from /config asset_graph).
@@ -52,35 +55,72 @@ export function createSocketDriver(): RuntimeDriver {
         if (cfg) {
           const { actors, zones, adjacency: adj } = normalizeConfig(cfg);
           adjacency = adj;
-          if (Object.keys(actors).length) st().hydrateTopology({ actors, zones });
+          if (Object.keys(actors).length)
+            st().hydrateTopology({ actors, zones });
         }
         const [state, objects, arms, assets] = await Promise.all([
-          getJSON<{ arms: { arm_id: number; angle: number; status: string }[] }>("/state"),
-          getJSON<{ objects: { object_id: string; owner_type: string; owner_id: string; event_seq: number }[] }>("/objects"),
-          getJSON<{ arms: Record<string, { health: string; error: string | null }> }>("/arms/health"),
-          getJSON<{ assets: Record<string, { status: string; carried_object: string | null }> }>("/assets/state"),
+          getJSON<{
+            arms: { arm_id: number; angle: number; status: string }[];
+          }>("/state"),
+          getJSON<{
+            objects: {
+              object_id: string;
+              owner_type: string;
+              owner_id: string;
+              event_seq: number;
+            }[];
+          }>("/objects"),
+          getJSON<{
+            arms: Record<string, { health: string; error: string | null }>;
+          }>("/arms/health"),
+          getJSON<{
+            assets: Record<
+              string,
+              { status: string; carried_object: string | null }
+            >;
+          }>("/assets/state"),
         ]);
         state?.arms?.forEach((a) =>
-          st().setActorRuntime(armActorId(a.arm_id), { status: armHealthToStatus(a.status), phase: a.status }),
+          st().setActorRuntime(armActorId(a.arm_id), {
+            status: armHealthToStatus(a.status),
+            phase: a.status,
+          }),
         );
         if (arms?.arms)
           for (const [id, h] of Object.entries(arms.arms))
-            st().setActorRuntime(armActorId(id), { status: armHealthToStatus(h.health), phase: h.health });
+            st().setActorRuntime(armActorId(id), {
+              status: armHealthToStatus(h.health),
+              phase: h.health,
+            });
         if (assets?.assets)
           for (const [id, a] of Object.entries(assets.assets))
-            st().setActorRuntime(assetActorId(id), { status: assetStatusToStatus(a.status), phase: a.status });
+            st().setActorRuntime(assetActorId(id), {
+              status: assetStatusToStatus(a.status),
+              phase: a.status,
+            });
         // Never regress the dedup guard below an event_seq already seen from
         // an in-flight live event that arrived before this bootstrap resolved.
         objects?.objects?.forEach((o) =>
-          objSeq.set(o.object_id, Math.max(o.event_seq, objSeq.get(o.object_id) ?? -1)),
+          objSeq.set(
+            o.object_id,
+            Math.max(o.event_seq, objSeq.get(o.object_id) ?? -1),
+          ),
         );
       };
 
-      socket = io({ path: "/socket.io", transports: ["websocket", "polling"], reconnection: true });
+      socket = io({
+        path: "/socket.io",
+        transports: ["websocket", "polling"],
+        reconnection: true,
+      });
 
       socket.on("connect", () => {
         st().setConnection("live", "connected");
-        st().pushEvent({ kind: "link", text: "Runtime link established", tone: "ok" });
+        st().pushEvent({
+          kind: "link",
+          text: "Runtime link established",
+          tone: "ok",
+        });
         // Resilience: a backend restart resets its event_seq counter. Clearing
         // the per-object dedup maps on every (re)connect prevents post-restart
         // object events being wrongly dropped as stale. Bootstrap reseeds them.
@@ -92,38 +132,59 @@ export function createSocketDriver(): RuntimeDriver {
       });
       socket.on("disconnect", () => {
         st().setConnection("live", "disconnected");
-        st().pushEvent({ kind: "link", text: "Runtime link lost", tone: "warn" });
-      });
-      socket.io.on("reconnect_attempt", () => st().setConnection("live", "connecting"));
-
-      socket.on("state_update", (p: { arms?: { arm_id: number; status: string }[] }) => {
-        p.arms?.forEach((a) =>
-          st().setActorRuntime(armActorId(a.arm_id), { status: armHealthToStatus(a.status), phase: a.status }),
-        );
-      });
-
-      socket.on("arm_health", (p: { arm_id: number; health: string; error?: string | null }) => {
-        const id = armActorId(p.arm_id);
-        const status = armHealthToStatus(p.health);
-        st().setActorRuntime(id, {
-          status,
-          phase: p.error ? `${p.health} · ${p.error}` : p.health,
+        st().pushEvent({
+          kind: "link",
+          text: "Runtime link lost",
+          tone: "warn",
         });
-        // Observability: only record actual transitions (no per-poll spam).
-        if (lastStatus.get(id) !== status) {
-          lastStatus.set(id, status);
-          st().pushEvent({
-            kind: "health",
-            actorId: id,
-            text: `${id} → ${p.health}${p.error ? ` (${p.error})` : ""}`,
-            tone: status === "down" ? "err" : status === "warn" ? "warn" : "ok",
-          });
-        }
       });
+      socket.io.on("reconnect_attempt", () =>
+        st().setConnection("live", "connecting"),
+      );
+
+      socket.on(
+        "state_update",
+        (p: { arms?: { arm_id: number; status: string }[] }) => {
+          p.arms?.forEach((a) =>
+            st().setActorRuntime(armActorId(a.arm_id), {
+              status: armHealthToStatus(a.status),
+              phase: a.status,
+            }),
+          );
+        },
+      );
+
+      socket.on(
+        "arm_health",
+        (p: { arm_id: number; health: string; error?: string | null }) => {
+          const id = armActorId(p.arm_id);
+          const status = armHealthToStatus(p.health);
+          st().setActorRuntime(id, {
+            status,
+            phase: p.error ? `${p.health} · ${p.error}` : p.health,
+          });
+          // Observability: only record actual transitions (no per-poll spam).
+          if (lastStatus.get(id) !== status) {
+            lastStatus.set(id, status);
+            st().pushEvent({
+              kind: "health",
+              actorId: id,
+              text: `${id} → ${p.health}${p.error ? ` (${p.error})` : ""}`,
+              tone:
+                status === "down" ? "err" : status === "warn" ? "warn" : "ok",
+            });
+          }
+        },
+      );
 
       socket.on(
         "asset_health",
-        (p: { asset_id: string; status: string; carried_object?: string | null; error?: string | null }) => {
+        (p: {
+          asset_id: string;
+          status: string;
+          carried_object?: string | null;
+          error?: string | null;
+        }) => {
           const id = assetActorId(p.asset_id);
           const status = assetStatusToStatus(p.status);
           st().setActorRuntime(id, { status, phase: p.status });
@@ -133,7 +194,8 @@ export function createSocketDriver(): RuntimeDriver {
               kind: "asset",
               actorId: id,
               text: `${id} → ${p.status}${p.carried_object ? ` · carrying ${p.carried_object}` : ""}`,
-              tone: status === "down" ? "err" : status === "warn" ? "warn" : "ok",
+              tone:
+                status === "down" ? "err" : status === "warn" ? "warn" : "ok",
             });
           }
         },
@@ -172,10 +234,16 @@ export function createSocketDriver(): RuntimeDriver {
             const home = resolveOwnerPosition(s, "asset", agvId);
             const downstream = (adjacency[agvId] ?? [])[0];
             const target =
-              (downstream && resolveOwnerPosition(s, s.actors[downstream]?.kind === "agv" ? "asset" : "arm", downstream)) ||
+              (downstream &&
+                resolveOwnerPosition(
+                  s,
+                  s.actors[downstream]?.kind === "agv" ? "asset" : "arm",
+                  downstream,
+                )) ||
               resolveOwnerPosition(s, p.owner_type, p.owner_id);
             if (home && target) {
-              if (!s.agvKinematics[agvId]) s.setAgvKinematics(agvId, { pos: home });
+              if (!s.agvKinematics[agvId])
+                s.setAgvKinematics(agvId, { pos: home });
               s.setAgvTarget(agvId, target, 240);
               s.emitTrajectory({
                 id: `tr-${p.object_id}`,
@@ -188,7 +256,7 @@ export function createSocketDriver(): RuntimeDriver {
           }
 
           // Dock moment: ownership crossed an arm↔asset boundary (direct
-          // docking — there is no transfer node in this model).
+          // docking - there is no transfer node in this model).
           const crossedDock =
             prevKey &&
             ((prevKey.startsWith("arm:") && p.owner_type === "asset") ||
@@ -197,11 +265,25 @@ export function createSocketDriver(): RuntimeDriver {
           if (crossedDock) {
             const at =
               resolveOwnerPosition(s, p.owner_type, p.owner_id) ??
-              (p.carrier_asset ? resolveOwnerPosition(s, "asset", assetActorId(p.carrier_asset)) : null);
-            if (at) s.emitDockGlow({ id: `dg-${p.object_id}`, at, intensity: 0.8, fadeMsLeft: 1400 });
+              (p.carrier_asset
+                ? resolveOwnerPosition(
+                    s,
+                    "asset",
+                    assetActorId(p.carrier_asset),
+                  )
+                : null);
+            if (at)
+              s.emitDockGlow({
+                id: `dg-${p.object_id}`,
+                at,
+                intensity: 0.8,
+                fadeMsLeft: 1400,
+              });
             s.pushEvent({
               kind: "dock",
-              actorId: p.carrier_asset ? assetActorId(p.carrier_asset) : undefined,
+              actorId: p.carrier_asset
+                ? assetActorId(p.carrier_asset)
+                : undefined,
               text: `dock · ${p.object_id} → ${p.owner_id}`,
               tone: "info",
             });
@@ -218,7 +300,12 @@ export function createSocketDriver(): RuntimeDriver {
 
       socket.on(
         "log_message",
-        (p: { timestamp?: string; source?: string; message?: string; level?: string | null }) => {
+        (p: {
+          timestamp?: string;
+          source?: string;
+          message?: string;
+          level?: string | null;
+        }) => {
           const s = st();
           s.pushLogLine(toLogLine(p));
           const now = performance.now();
@@ -239,17 +326,26 @@ export function createSocketDriver(): RuntimeDriver {
           const sec = Math.floor(now / 1000);
           if (sec !== lastBusSec) {
             lastBusSec = sec;
-            if (busWindow.length !== s.busRate) s.hydrateRuntime({ busRate: busWindow.length });
+            if (busWindow.length !== s.busRate)
+              s.hydrateRuntime({ busRate: busWindow.length });
           }
         },
       );
 
       socket.on(
         "script_chosen",
-        (p: { actor_id: number | string; arm_id?: number | null; script: string; timestamp?: string }) => {
+        (p: {
+          actor_id: number | string;
+          arm_id?: number | null;
+          script: string;
+          timestamp?: string;
+        }) => {
           // arm → numeric arm_id wins ("arm-N"); asset → actor_id is its
           // verbatim string id. One derivation, used for both writes.
-          const id = p.arm_id != null ? armActorId(p.arm_id) : assetActorId(String(p.actor_id));
+          const id =
+            p.arm_id != null
+              ? armActorId(p.arm_id)
+              : assetActorId(String(p.actor_id));
           st().setActorRuntime(id, { phase: p.script });
           st().pushBusMessage({
             id: `sc-${p.timestamp ?? ""}-${Math.random().toString(36).slice(2, 6)}`,
@@ -268,14 +364,20 @@ export function createSocketDriver(): RuntimeDriver {
         },
       );
 
-      const onTask = (p: { arm_id?: number; action?: string; status?: string }) => {
+      const onTask = (p: {
+        arm_id?: number;
+        action?: string;
+        status?: string;
+      }) => {
         if (p.arm_id == null) return;
-        st().setActorRuntime(armActorId(p.arm_id), { phase: p.action ?? p.status ?? "" });
+        st().setActorRuntime(armActorId(p.arm_id), {
+          phase: p.action ?? p.status ?? "",
+        });
       };
       socket.on("task_status", onTask);
       socket.on("task_complete", onTask);
 
-      // Spatial rAF — same loop the mock driver uses; drives interpolation +
+      // Spatial rAF - same loop the mock driver uses; drives interpolation +
       // trace/glow fade. Spatial-only; never re-renders RF topology nodes.
       const loop = (t: number) => {
         if (last) store.getState().tick(t - last);

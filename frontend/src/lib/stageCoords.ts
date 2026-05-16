@@ -6,8 +6,8 @@ export const STAGE_W = 1320;
 export const STAGE_H = 720;
 
 // Chrome insets that overlay the canvas pane in the React layout:
-//   T — goal bar (top-center, ~y64 + height)   B — message-bus strip (h46)
-//   L/R — floating toolbar / zoom / fleet card breathing room
+//   T - goal bar (top-center, ~y64 + height)   B - message-bus strip (h46)
+//   L/R - floating toolbar / zoom / fleet card breathing room
 // (The prototype's original PAD_R:220 assumed an inspector overlapping the
 //  canvas; here the inspector is its own grid column, so we center instead.)
 export const PAD = { L: 24, R: 24, T: 120, B: 64 } as const;
@@ -23,5 +23,5 @@ export function computeFit(paneW: number, paneH: number) {
   return { x, y, zoom };
 }
 
-// Bounding rect of the authored stage — used for React Flow fitView.
+// Bounding rect of the authored stage - used for React Flow fitView.
 export const STAGE_RECT = { x: 0, y: 0, width: STAGE_W, height: STAGE_H };

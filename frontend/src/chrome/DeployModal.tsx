@@ -82,7 +82,14 @@ function StepDot({ state }: { state: StepState }) {
   if (state === "done") {
     return (
       <span className="w-[18px] h-[18px] rounded-full bg-[#1D6B38] flex items-center justify-center flex-shrink-0">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#FAFAF7" strokeWidth="3">
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#FAFAF7"
+          strokeWidth="3"
+        >
           <path d="M5 13l4 4L19 7" />
         </svg>
       </span>
@@ -91,7 +98,14 @@ function StepDot({ state }: { state: StepState }) {
   if (state === "failed") {
     return (
       <span className="w-[18px] h-[18px] rounded-full bg-[#B91C1C] flex items-center justify-center flex-shrink-0">
-        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#FAFAF7" strokeWidth="3">
+        <svg
+          width="8"
+          height="8"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#FAFAF7"
+          strokeWidth="3"
+        >
           <path d="M18 6 6 18M6 6l12 12" />
         </svg>
       </span>
@@ -125,16 +139,22 @@ function ValidationGate({ deployable, errors, warnings }: ValidationGateProps) {
   if (!deployable) {
     return (
       <div className="mx-5 mt-4 px-3 py-2 rounded-md border border-[#FECACA] bg-[#FEF2F2] text-12 text-[#B91C1C]">
-        <span className="font-medium">Cannot deploy — </span>
-        {errors > 0 ? `${errors} error${errors !== 1 ? "s" : ""} must be resolved` : "topology is not deployable"}
-        {warnings > 0 ? `, ${warnings} warning${warnings !== 1 ? "s" : ""}` : ""}
+        <span className="font-medium">Cannot deploy - </span>
+        {errors > 0
+          ? `${errors} error${errors !== 1 ? "s" : ""} must be resolved`
+          : "topology is not deployable"}
+        {warnings > 0
+          ? `, ${warnings} warning${warnings !== 1 ? "s" : ""}`
+          : ""}
       </div>
     );
   }
 
   return (
     <div className="mx-5 mt-4 px-3 py-2 rounded-md border border-[#FEF3C7] bg-[#FFFBEB] text-12 text-[#92400E]">
-      <span className="font-medium">{warnings} warning{warnings !== 1 ? "s" : ""} — </span>
+      <span className="font-medium">
+        {warnings} warning{warnings !== 1 ? "s" : ""} -{" "}
+      </span>
       topology is deployable
     </div>
   );
@@ -153,7 +173,13 @@ function formatDeployedAt(iso: string | null): string {
 
 // ── Main modal ────────────────────────────────────────────────────────────────
 
-export function DeployModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function DeployModal({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const [running, setRunning] = useState(false);
@@ -247,8 +273,13 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
   // Steps to render
   const visibleSteps = ALL_STEPS.filter((s) => !s.liveOnly || isLive);
 
-  // Active phases — button disabled
-  const activePhases: DeployPhase[] = ["validating", "preparing", "restarting", "reconciling"];
+  // Active phases - button disabled
+  const activePhases: DeployPhase[] = [
+    "validating",
+    "preparing",
+    "restarting",
+    "reconciling",
+  ];
   const isInFlight = activePhases.includes(phase) || running;
 
   // Button label
@@ -256,7 +287,8 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
   if (isInFlight) buttonLabel = "Running…";
   else if (phase === "ready") buttonLabel = "Deploy again";
   else if (phase === "prepared") buttonLabel = "Prepare again";
-  else if (phase === "failed") buttonLabel = isLive ? "Retry deploy" : "Retry prepare";
+  else if (phase === "failed")
+    buttonLabel = isLive ? "Retry deploy" : "Retry prepare";
 
   // Status line under stepper
   const showStatusLine = phase !== "idle";
@@ -290,7 +322,9 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
           <div className="px-5 pt-5 pb-4 border-b border-line">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 className="m-0 text-14 font-semibold text-ink leading-snug">Build &amp; Deploy</h2>
+                <h2 className="m-0 text-14 font-semibold text-ink leading-snug">
+                  Build &amp; Deploy
+                </h2>
                 <p className="mt-[3px] text-12 text-ink-3 leading-snug">
                   {isLive
                     ? "Topology will be prepared and the backend pipeline restarted."
@@ -302,7 +336,14 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
                 className="flex-shrink-0 w-[26px] h-[26px] rounded-sm inline-flex items-center justify-center text-ink-3 hover:bg-bg-hover hover:text-ink"
                 aria-label="Close"
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
                   <path d="M18 6 6 18M6 6l12 12" />
                 </svg>
               </button>
@@ -312,7 +353,14 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
             <div className="mt-3 flex flex-wrap gap-[6px]">
               {armCount > 0 && (
                 <span className="inline-flex items-center gap-[5px] h-[22px] px-2 rounded-[5px] text-11 font-medium bg-[#EFF4FF] text-[#1B47A5] border border-[#C3D3F7]">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <svg
+                    width="11"
+                    height="11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
                     <rect x="3" y="9" width="18" height="7" rx="1.5" />
                     <path d="M5 9V7h14v2" />
                   </svg>
@@ -321,7 +369,14 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
               )}
               {agvCount > 0 && (
                 <span className="inline-flex items-center gap-[5px] h-[22px] px-2 rounded-[5px] text-11 font-medium bg-[#E7F4EC] text-[#1D6B38] border border-[#B8DEC5]">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <svg
+                    width="11"
+                    height="11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
                     <rect x="2" y="11" width="20" height="8" rx="2" />
                     <circle cx="7" cy="19" r="2" />
                     <circle cx="17" cy="19" r="2" />
@@ -331,7 +386,8 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
                 </span>
               )}
               <span className="inline-flex items-center gap-[5px] h-[22px] px-2 rounded-[5px] text-11 font-medium bg-[#E7E6E2] text-ink-2 border border-line">
-                {payload.zones.length} zone{payload.zones.length !== 1 ? "s" : ""}
+                {payload.zones.length} zone
+                {payload.zones.length !== 1 ? "s" : ""}
               </span>
               {payload.goal?.text && (
                 <span
@@ -342,8 +398,12 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
                 </span>
               )}
               {/* Data source indicator */}
-              <span className={`inline-flex items-center gap-[5px] h-[22px] px-2 rounded-[5px] text-11 font-medium border ${isLive ? "bg-[#E7F4EC] text-[#1D6B38] border-[#B8DEC5]" : "bg-[#E7E6E2] text-ink-2 border-line"}`}>
-                <span className={`w-[6px] h-[6px] rounded-full ${isLive ? "bg-[#1D6B38]" : "bg-ink-3"}`} />
+              <span
+                className={`inline-flex items-center gap-[5px] h-[22px] px-2 rounded-[5px] text-11 font-medium border ${isLive ? "bg-[#E7F4EC] text-[#1D6B38] border-[#B8DEC5]" : "bg-[#E7E6E2] text-ink-2 border-line"}`}
+              >
+                <span
+                  className={`w-[6px] h-[6px] rounded-full ${isLive ? "bg-[#1D6B38]" : "bg-ink-3"}`}
+                />
                 {isLive ? "live" : "mock"}
               </span>
             </div>
@@ -368,10 +428,18 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
             </div>
             <div className="flex items-center gap-0">
               {visibleSteps.map((step, i) => {
-                const state = resolveStepState(step.id, phase, isLive, failedAtStep);
+                const state = resolveStepState(
+                  step.id,
+                  phase,
+                  isLive,
+                  failedAtStep,
+                );
                 const isLast = i === visibleSteps.length - 1;
                 return (
-                  <div key={step.id} className="flex items-center flex-1 min-w-0">
+                  <div
+                    key={step.id}
+                    className="flex items-center flex-1 min-w-0"
+                  >
                     <div className="flex flex-col items-center gap-[5px] flex-shrink-0">
                       <StepDot state={state} />
                       <span
@@ -379,10 +447,10 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
                           state === "active"
                             ? "text-ink"
                             : state === "done"
-                            ? "text-[#1D6B38]"
-                            : state === "failed"
-                            ? "text-[#B91C1C]"
-                            : "text-ink-3"
+                              ? "text-[#1D6B38]"
+                              : state === "failed"
+                                ? "text-[#B91C1C]"
+                                : "text-ink-3"
                         }`}
                       >
                         {step.label}
@@ -407,10 +475,10 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
                   isFailed
                     ? "border-[#FECACA] bg-[#FEF2F2] text-[#B91C1C]"
                     : isReady
-                    ? "border-[#B8DEC5] bg-[#E7F4EC] text-[#1D6B38]"
-                    : isPrepared
-                    ? "border-[#C3D3F7] bg-[#EFF4FF] text-[#1B47A5]"
-                    : "border-line bg-[#FAF8F2] text-ink-2"
+                      ? "border-[#B8DEC5] bg-[#E7F4EC] text-[#1D6B38]"
+                      : isPrepared
+                        ? "border-[#C3D3F7] bg-[#EFF4FF] text-[#1B47A5]"
+                        : "border-line bg-[#FAF8F2] text-ink-2"
                 }`}
               >
                 {deployMessage || " "}
@@ -422,8 +490,7 @@ export function DeployModal({ open, onClose }: { open: boolean; onClose: () => v
               <p className="mt-2 pl-2.5 border-l-2 border-line text-11 text-ink-4 leading-snug">
                 Payload recorded. To apply: edit{" "}
                 <span className="font-mono">pipeline.yaml</span> and run{" "}
-                <span className="font-mono">generate_compose.py</span>{" "}
-                →{" "}
+                <span className="font-mono">generate_compose.py</span> →{" "}
                 <span className="font-mono">docker compose up --build</span>.
               </p>
             )}

@@ -1,11 +1,15 @@
-// Actor node rendered inside React Flow — covers both arm and agv/dense variants.
+// Actor node rendered inside React Flow - covers both arm and agv/dense variants.
 // Width: arm=210px, agv=184px. Visuals pixel-faithful to .actor.arm / .actor.agv.dense
 // in styles-v2.css. RF default node styling is disabled via nodeDefaults in flowConfig.
 
 import { memo, useState, useRef, useCallback } from "react";
 import { type NodeProps } from "@xyflow/react";
 import { cn } from "@/lib/cn";
-import { useActorRuntime, useSelectedActorId, useSelectedIds } from "@/store/selectors";
+import {
+  useActorRuntime,
+  useSelectedActorId,
+  useSelectedIds,
+} from "@/store/selectors";
 import { useStore } from "@/store";
 import { useCoherence } from "@/store/derived";
 import type { TopologyActor } from "@/store/types";
@@ -18,7 +22,14 @@ function GlyphSvg({ kind, type }: { kind: string; type: string }) {
   if (kind === "arm") {
     if (type.includes("SCARA")) {
       return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+        >
           <rect x="4" y="14" width="16" height="3" rx="1" />
           <path d="M9 14V8h6v6" />
           <path d="M12 8V4" />
@@ -27,7 +38,14 @@ function GlyphSvg({ kind, type }: { kind: string; type: string }) {
     }
     if (type.includes("Delta")) {
       return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+        >
           <path d="M4 6h16" />
           <path d="M6 6l6 12 6-12" />
           <circle cx="12" cy="18" r="1.5" />
@@ -36,7 +54,14 @@ function GlyphSvg({ kind, type }: { kind: string; type: string }) {
     }
     // 6DoF default
     return (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      >
         <circle cx="6" cy="18" r="2" />
         <path d="M6 16V9l6-3v5l5 1v6" />
         <circle cx="17" cy="17" r="2" />
@@ -47,7 +72,14 @@ function GlyphSvg({ kind, type }: { kind: string; type: string }) {
   // AGV variants
   if (type.includes("Forklift")) {
     return (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      >
         <path d="M3 17h11V7h4l3 4v6h-2" />
         <circle cx="7" cy="19" r="1.5" />
         <circle cx="17" cy="19" r="1.5" />
@@ -56,7 +88,14 @@ function GlyphSvg({ kind, type }: { kind: string; type: string }) {
   }
   if (type.includes("Tow")) {
     return (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      >
         <rect x="3" y="11" width="11" height="5" rx="1" />
         <path d="M14 13h4l3 3" />
         <circle cx="7" cy="18" r="1.4" />
@@ -66,7 +105,14 @@ function GlyphSvg({ kind, type }: { kind: string; type: string }) {
   }
   // Shuttle default
   return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+    >
       <rect x="3" y="9" width="18" height="7" rx="1.5" />
       <circle cx="8" cy="18" r="1.7" />
       <circle cx="16" cy="18" r="1.7" />
@@ -126,11 +172,16 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
         // hover
         "hover:shadow-e3",
         // primary selected ring
-        isSelected && "border-cta shadow-[0_0_0_1px_#18181B,0_6px_22px_rgba(24,24,27,0.08),0_2px_4px_rgba(24,24,27,0.04)]",
+        isSelected &&
+          "border-cta shadow-[0_0_0_1px_#18181B,0_6px_22px_rgba(24,24,27,0.08),0_2px_4px_rgba(24,24,27,0.04)]",
         // multi-select ring (lighter than primary)
-        isMultiSelected && "border-cta shadow-[0_0_0_1px_rgba(24,24,27,0.35),0_2px_8px_rgba(24,24,27,0.05)]",
+        isMultiSelected &&
+          "border-cta shadow-[0_0_0_1px_rgba(24,24,27,0.35),0_2px_8px_rgba(24,24,27,0.05)]",
         // winning ring (agv)
-        isWinning && !isSelected && !isMultiSelected && "border-cta shadow-[0_0_0_1px_#18181B,0_1px_0_rgba(24,24,27,0.03),0_3px_10px_rgba(24,24,27,0.05)]",
+        isWinning &&
+          !isSelected &&
+          !isMultiSelected &&
+          "border-cta shadow-[0_0_0_1px_#18181B,0_1px_0_rgba(24,24,27,0.03),0_3px_10px_rgba(24,24,27,0.05)]",
         // normal border when neither
         !isSelected && !isMultiSelected && !isWinning && "border-line",
       )}
@@ -165,9 +216,9 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
           {actor.type}
         </span>
         <span className="ml-auto font-mono text-11 text-ink-3">{actor.id}</span>
-        {/* coherence dot — subtle corner indicator */}
+        {/* coherence dot - subtle corner indicator */}
         <CoherenceDot state={coherenceState} />
-        {/* bid pill — only on agv */}
+        {/* bid pill - only on agv */}
         {isAgv && bid !== null && bid !== undefined && (
           <span
             className={cn(
@@ -187,7 +238,9 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
       <div
         className={cn(
           "flex items-center",
-          isAgv ? "gap-[9px] px-[10px] pb-[7px] pt-0" : "gap-[10px] px-[11px] pb-[8px] pt-[2px]",
+          isAgv
+            ? "gap-[9px] px-[10px] pb-[7px] pt-0"
+            : "gap-[10px] px-[11px] pb-[8px] pt-[2px]",
         )}
       >
         <span
@@ -208,8 +261,14 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
               onChange={(e) => setEditValue(e.target.value)}
               onBlur={commitEdit}
               onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
-                if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitEdit();
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelEdit();
+                }
               }}
               onMouseDown={(e) => e.stopPropagation()}
               onDoubleClick={(e) => e.stopPropagation()}
@@ -225,16 +284,21 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
                 "cursor-text font-semibold text-ink",
                 isAgv ? "text-12.5" : "text-13",
               )}
-              onDoubleClick={(e) => { e.stopPropagation(); startEdit(); }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                startEdit();
+              }}
             >
               {actor.label}
             </div>
           )}
-          <div className="mt-[2px] font-mono text-10.5 text-ink-3">{actor.spec}</div>
+          <div className="mt-[2px] font-mono text-10.5 text-ink-3">
+            {actor.spec}
+          </div>
         </div>
       </div>
 
-      {/* CAP STRIP — arms only */}
+      {/* CAP STRIP - arms only */}
       {!isAgv && (
         <div className="flex flex-wrap gap-1 px-[11px] pb-[9px]">
           {actor.capabilities.map((cap) => (
@@ -275,7 +339,9 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
         </span>
         {/* metric */}
         {isAgv && runtime?.metrics?.battery != null ? (
-          <span className="font-mono text-10.5 text-ink-3">{runtime.metrics.battery}% bat</span>
+          <span className="font-mono text-10.5 text-ink-3">
+            {runtime.metrics.battery}% bat
+          </span>
         ) : (
           <span className="font-mono text-10.5 text-ink-3">
             {actor.spec.split("·")[0]?.trim()}
@@ -293,11 +359,24 @@ function CoherenceDot({ state }: { state: CoherenceState }) {
     // deployed = calm; no marker needed (or a very quiet ok dot)
     return null;
   }
-  const styles: Record<string, { dot: string; label: string; title: string }> = {
-    draft:    { dot: "border border-ink-4 bg-transparent",  label: "draft",    title: "Authored but never deployed" },
-    modified: { dot: "bg-warn",                              label: "modified", title: "Changed since last deploy" },
-    stale:    { dot: "bg-err",                               label: "stale",    title: "In deploy snapshot but not running" },
-  };
+  const styles: Record<string, { dot: string; label: string; title: string }> =
+    {
+      draft: {
+        dot: "border border-ink-4 bg-transparent",
+        label: "draft",
+        title: "Authored but never deployed",
+      },
+      modified: {
+        dot: "bg-warn",
+        label: "modified",
+        title: "Changed since last deploy",
+      },
+      stale: {
+        dot: "bg-err",
+        label: "stale",
+        title: "In deploy snapshot but not running",
+      },
+    };
   const s = styles[state];
   if (!s) return null;
   return (
@@ -305,7 +384,12 @@ function CoherenceDot({ state }: { state: CoherenceState }) {
       className="inline-flex items-center gap-[3px] font-mono text-[9px] leading-none text-ink-3"
       title={s.title}
     >
-      <span className={cn("inline-block h-[5px] w-[5px] rounded-full flex-shrink-0", s.dot)} />
+      <span
+        className={cn(
+          "inline-block h-[5px] w-[5px] rounded-full flex-shrink-0",
+          s.dot,
+        )}
+      />
       {s.label}
     </span>
   );

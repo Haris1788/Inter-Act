@@ -30,13 +30,15 @@ export function SectionCapabilities({ actor, live }: SectionCapabilitiesProps) {
   return (
     <div className="px-[14px] pt-[14px] pb-1">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">Capabilities</span>
+        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">
+          Capabilities
+        </span>
         <span className="text-11 text-ink-4">
           {live ? `${caps.length} declared` : "advertise"}
         </span>
       </div>
       {caps.length === 0 ? (
-        <span className="text-11.5 text-ink-4">—</span>
+        <span className="text-11.5 text-ink-4">-</span>
       ) : (
         <div className="grid grid-cols-2 gap-x-2 gap-y-1">
           {caps.map((cap) => (

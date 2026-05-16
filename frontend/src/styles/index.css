@@ -5,7 +5,7 @@
 @tailwind utilities;
 
 /* ==========================================================
-   INTER.act v2 — global base ported from styles-v2.css
+   INTER.act v2 - global base ported from styles-v2.css
    Tokens live in tailwind.config.ts; this file holds the few
    rules that are not expressible as utilities (base sizing,
    keyframes, scrollbar) plus the canvas dot-grid.
@@ -57,7 +57,7 @@
   }
 }
 
-/* status pulse — kept as CSS keyframes (GPU-composited; never JS) */
+/* status pulse - kept as CSS keyframes (GPU-composited; never JS) */
 @keyframes pulse {
   0%,
   100% {
@@ -80,7 +80,7 @@
   }
 }
 
-/* scrollbar — ported verbatim */
+/* scrollbar - ported verbatim */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -97,7 +97,7 @@
   background: #b8b6af;
 }
 
-/* React Flow surface should be transparent — our dot-grid shows through */
+/* React Flow surface should be transparent - our dot-grid shows through */
 .react-flow__background {
   background: transparent;
 }
