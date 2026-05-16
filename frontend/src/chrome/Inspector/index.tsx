@@ -17,8 +17,6 @@ import { SectionRuntime } from "./SectionRuntime";
 import { SectionHistory } from "./SectionHistory";
 import { ActionsRow } from "./ActionsRow";
 
-const FALLBACK_ID = "veh-1";
-
 /** Subtle uppercase band divider - separates authored config from operational runtime. */
 function BandDivider({ label }: { label: string }) {
   return (
@@ -36,38 +34,28 @@ export function Inspector() {
   const live = dataSource === "live";
 
   const selectedId = useSelectedActorId();
-  // In mock mode keep the veh-1 fallback so the prototype is always populated.
-  // In live mode show an empty state until the user selects an actor.
-  const effectiveId = selectedId ?? (live ? null : FALLBACK_ID);
-
-  const actor = useActor(effectiveId ?? "");
-  const runtime = useActorRuntime(effectiveId ?? "");
+  const actor = useActor(selectedId ?? "");
+  const runtime = useActorRuntime(selectedId ?? "");
 
   const [activeTab, setActiveTab] = useState<Tab>("Properties");
 
-  if (!effectiveId || !actor || !runtime) {
+  if (!selectedId || !actor || !runtime) {
     return (
       <aside className="flex h-full flex-col border-l border-line bg-bg-panel">
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-12 text-ink-4">
-          {live ? (
-            <>
-              <svg
-                width="22"
-                height="22"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                className="opacity-30"
-              >
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 8v4l2 2" />
-              </svg>
-              <span>Select an actor</span>
-            </>
-          ) : (
-            <span>No actor selected</span>
-          )}
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            className="opacity-30"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 8v4l2 2" />
+          </svg>
+          <span>Select an actor</span>
         </div>
       </aside>
     );
@@ -85,7 +73,7 @@ export function Inspector() {
             <BandDivider label="Configuration" />
             <SectionIdentity actor={actor} live={live} />
             <SectionCapabilities actor={actor} live={live} />
-            <SectionMotion live={live} />
+            <SectionMotion actor={actor} live={live} />
             <SectionBrain actor={actor} live={live} />
 
             {/* ── Runtime & Docking band - operational ── */}
@@ -100,7 +88,7 @@ export function Inspector() {
             <SectionRuntime metrics={runtime.metrics} live={live} />
           </div>
         )}
-        {activeTab === "History" && <SectionHistory actorId={effectiveId} />}
+        {activeTab === "History" && <SectionHistory actorId={selectedId} />}
         {activeTab === "YAML" && (
           <div className="px-[14px] pt-[14px] font-mono text-11 text-ink-3">
             {`id: ${actor.id}\ntype: ${actor.type}\nlabel: ${actor.label}`}

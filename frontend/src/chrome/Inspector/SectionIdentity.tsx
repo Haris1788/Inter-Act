@@ -8,7 +8,7 @@ interface SectionIdentityProps {
   live: boolean;
 }
 
-export function SectionIdentity({ actor, live }: SectionIdentityProps) {
+export function SectionIdentity({ actor }: SectionIdentityProps) {
   return (
     <div className="px-[14px] pt-[14px] pb-1">
       <div className="flex items-center justify-between mb-2">
@@ -23,13 +23,7 @@ export function SectionIdentity({ actor, live }: SectionIdentityProps) {
         <span className="text-12 text-ink">{actor.type}</span>
       </Field>
       <Field label="Container">
-        {live ? (
-          <span className="font-mono text-11.5 text-ink-4">{EM}</span>
-        ) : (
-          <span className="font-mono text-11.5 text-ink-2">
-            interact/veh:1.4 <span className="text-ink-5">·</span> :8010
-          </span>
-        )}
+        <span className="font-mono text-11.5 text-ink-4">{EM}</span>
       </Field>
       <Field label="Label">
         <div className="flex items-center h-[28px] px-2 bg-bg-surface border border-line rounded-sm">

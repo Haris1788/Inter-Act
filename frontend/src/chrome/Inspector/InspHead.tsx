@@ -1,6 +1,7 @@
 import { cn } from "@/lib/cn";
 import { useCoherence } from "@/store/derived";
 import type { TopologyActor, ActorRuntime } from "@/store/types";
+import { displayName } from "./displayName";
 
 interface InspHeadProps {
   actor: TopologyActor;
@@ -121,9 +122,13 @@ export function InspHead({ actor, runtime, live }: InspHeadProps) {
             </svg>
           </span>
           <div className="min-w-0">
-            <h3 className="m-0 text-14 font-semibold">{actor.id}</h3>
+            <h3 className="m-0 text-14 font-semibold">{displayName(actor)}</h3>
             <div className="font-mono text-11 text-ink-3">
-              {actor.type} · {actor.label}
+              {actor.type}
+              {/* Show raw id when label provided a different display name */}
+              {actor.label && actor.label !== actor.id && (
+                <span className="text-ink-4"> · {actor.id}</span>
+              )}
             </div>
           </div>
         </div>

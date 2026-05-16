@@ -1,7 +1,5 @@
 import type { TopologyActor } from "@/store/types";
 import { Field } from "./Field";
-import { Seg } from "./Seg";
-import { Slider } from "./Slider";
 
 const EM = "-";
 
@@ -10,7 +8,7 @@ interface SectionBrainProps {
   live: boolean;
 }
 
-export function SectionBrain({ actor, live }: SectionBrainProps) {
+export function SectionBrain({ actor }: SectionBrainProps) {
   return (
     <div className="px-[14px] pt-[14px] pb-1">
       <div className="flex items-center justify-between mb-2">
@@ -25,31 +23,16 @@ export function SectionBrain({ actor, live }: SectionBrainProps) {
         </span>
       </Field>
       <Field label="Policy">
-        {live ? (
-          <span className="font-mono text-11.5 text-ink-4">{EM}</span>
-        ) : (
-          <div className="flex items-center justify-between h-[28px] px-2 bg-bg-surface border border-line rounded-sm text-12 text-ink">
-            Scheduler · FIFO
-            <span className="text-ink-4">▾</span>
-          </div>
-        )}
+        {/* Policy maps to actor.brain; Negotiation/Priority are not in topology. */}
+        <span className="font-mono text-11.5 text-ink-2">
+          {actor.brain || EM}
+        </span>
       </Field>
       <Field label="Negotiation">
-        {live ? (
-          <span className="font-mono text-11.5 text-ink-4">{EM}</span>
-        ) : (
-          <Seg
-            options={["passive", "cooperative", "aggressive"]}
-            active="cooperative"
-          />
-        )}
+        <span className="font-mono text-11.5 text-ink-4">{EM}</span>
       </Field>
       <Field label="Priority">
-        {live ? (
-          <span className="font-mono text-11.5 text-ink-4">{EM}</span>
-        ) : (
-          <Slider fillPct={68} label="0.68" />
-        )}
+        <span className="font-mono text-11.5 text-ink-4">{EM}</span>
       </Field>
     </div>
   );

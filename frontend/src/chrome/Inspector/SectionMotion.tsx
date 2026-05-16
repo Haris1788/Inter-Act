@@ -1,14 +1,32 @@
+import type { TopologyActor } from "@/store/types";
 import { Field } from "./Field";
 import { Slider } from "./Slider";
 import { Seg } from "./Seg";
 
 interface SectionMotionProps {
+  actor: TopologyActor;
   live: boolean;
 }
 
 const EM = "-";
 
-export function SectionMotion({ live }: SectionMotionProps) {
+/** Derive nominal top-speed label from actor spec string, or fall back to EM. */
+function speedLabel(spec: string): string {
+  const m = spec.match(/(\d+(?:\.\d+)?)\s*m\/s/);
+  return m ? `${m[1]} m/s` : EM;
+}
+
+/** Map speed string to a 0-100 fill percentage (clamped, max=20 m/s). */
+function speedFillPct(spec: string): number {
+  const m = spec.match(/(\d+(?:\.\d+)?)\s*m\/s/);
+  if (!m) return 0;
+  return Math.min(100, Math.round((parseFloat(m[1]) / 20) * 100));
+}
+
+export function SectionMotion({ actor, live }: SectionMotionProps) {
+  const spd = speedLabel(actor.spec);
+  const spdFill = speedFillPct(actor.spec);
+
   return (
     <div className="px-[14px] pt-[14px] pb-1">
       <div className="flex items-center justify-between mb-2">
@@ -21,30 +39,17 @@ export function SectionMotion({ live }: SectionMotionProps) {
       <Field label="Top speed">
         {live ? (
           <span className="font-mono text-11.5 text-ink-4">{EM}</span>
+        ) : spd === EM ? (
+          <span className="font-mono text-11.5 text-ink-4">{EM}</span>
         ) : (
-          <Slider fillPct={82} label="10.0 m/s" />
+          <Slider fillPct={spdFill} label={spd} />
         )}
       </Field>
       <Field label="Acceleration">
-        {live ? (
-          <span className="font-mono text-11.5 text-ink-4">{EM}</span>
-        ) : (
-          <Slider fillPct={55} label="2.2 m/s²" />
-        )}
+        <span className="font-mono text-11.5 text-ink-4">{EM}</span>
       </Field>
       <Field label="Turning radius">
-        {live ? (
-          <span className="font-mono text-11.5 text-ink-4">{EM}</span>
-        ) : (
-          <div className="flex items-center h-[28px] px-2 bg-bg-surface border border-line rounded-sm gap-1">
-            <input
-              className="border-0 bg-transparent outline-none w-full text-12 text-ink font-mono"
-              defaultValue="0.60"
-              readOnly
-            />
-            <span className="text-11 text-ink-4 font-mono ml-[6px]">m</span>
-          </div>
-        )}
+        <span className="font-mono text-11.5 text-ink-4">{EM}</span>
       </Field>
       <Field label="Precision">
         {live ? (
