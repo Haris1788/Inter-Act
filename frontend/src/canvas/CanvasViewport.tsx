@@ -14,13 +14,18 @@ import { useCallback, useEffect, useRef } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
+  MiniMap,
   useReactFlow,
   type NodeChange,
   type Node,
 } from "@xyflow/react";
 
 import { useStore } from "@/store";
-import { useEditorMode, useFocusRequest } from "@/store/selectors";
+import {
+  useEditorMode,
+  useFocusRequest,
+  useSelectedActorId,
+} from "@/store/selectors";
 import { createActorFromPalette } from "@/runtime/nodeFactory";
 import { DRAG_MIME } from "@/lib/dragContract";
 import { useFlowNodes } from "./flow/useFlowNodes";
@@ -30,7 +35,6 @@ import { flowDefaults } from "./flow/flowConfig";
 import { CanvasToolbar } from "./chrome/CanvasToolbar";
 import { CanvasMeta } from "./chrome/CanvasMeta";
 import { ZoomCluster } from "./chrome/ZoomCluster";
-import { TopologyMinimap } from "./chrome/TopologyMinimap";
 import { ContextMenu } from "./chrome/ContextMenu";
 import { GoalBar } from "@/chrome/GoalBar";
 import { KonvaOverlay } from "@/canvas/overlay/KonvaOverlay";
@@ -41,6 +45,7 @@ function FlowInner() {
   const rf = useReactFlow();
   const mode = useEditorMode();
   const focusRequest = useFocusRequest();
+  const selectedId = useSelectedActorId();
 
   const setSelectedActor = useStore((s) => s.setSelectedActor);
   const moveActor = useStore((s) => s.moveActor);
@@ -257,10 +262,46 @@ function FlowInner() {
         fitView={false}
         className="h-full w-full"
         style={{ background: "transparent" }}
-      />
-      {/* Topology overview - faithful port of the prototype `.minimap`
-          (framed card + label + node SVG). Canvas chrome, not an RF child. */}
-      <TopologyMinimap />
+      >
+        {/* Real, functional overview: live nodes, viewport mask synced to
+            pan/zoom, click/drag to navigate. Styled as the prototype
+            "TOPOLOGY · OVERVIEW" card; the label strip is the chrome
+            element just below (covers the reserved top band). */}
+        <MiniMap
+          position="bottom-right"
+          pannable
+          zoomable
+          ariaLabel="Topology overview"
+          className="!rounded-md !border !border-line !bg-bg-surface !shadow-e2"
+          style={{ width: 180, height: 120, margin: 12 }}
+          maskColor="rgba(244,243,239,0.62)"
+          maskStrokeColor="rgba(201,198,189,0.75)"
+          nodeBorderRadius={3}
+          nodeStrokeWidth={1}
+          nodeColor={(n) =>
+            n.id === selectedId
+              ? "rgba(24,24,27,0.30)"
+              : n.type === "actorNode"
+                ? (n.data as { kind?: string })?.kind === "agv"
+                  ? "rgba(122,132,110,0.22)"
+                  : "rgba(96,94,88,0.24)"
+                : "rgba(201,198,189,0.16)"
+          }
+          nodeStrokeColor={(n) =>
+            n.id === selectedId ? "#18181B" : "rgba(96,94,88,0.55)"
+          }
+        />
+      </ReactFlow>
+
+      {/* Prototype card label - overlays the reserved 22px top band of the
+          MiniMap (which is offset via paddingTop) so it reads as a framed
+          "TOPOLOGY · OVERVIEW" card without blocking the live thumbnail. */}
+      <div
+        className="pointer-events-none absolute z-[5] flex items-center rounded-t-md border border-b-0 border-line bg-bg-surface px-2 text-[10px] uppercase tracking-[0.08em] text-ink-4"
+        style={{ right: 12, bottom: 110, width: 180, height: 22 }}
+      >
+        Topology · overview
+      </div>
 
       <div className="pointer-events-none absolute inset-0 z-[2]">
         <KonvaOverlay />
