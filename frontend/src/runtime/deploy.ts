@@ -83,8 +83,22 @@ export interface RunDeployOutcome {
 // deploy snapshot (baseline for divergence) → optionally restarts the live
 // backend pipeline and reconciles against /config + /arms/health. In mock
 // mode it stops at "prepared" — it never claims a deploy that did not happen.
+const ACTIVE_PHASES = new Set(["validating", "preparing", "restarting", "reconciling"]);
+
 export async function runDeploy(opts: RunDeployOptions): Promise<RunDeployOutcome> {
   const st = () => useStore.getState();
+
+  // Defense-in-depth re-entry guard: ignore concurrent invocations so deploy
+  // spam can't overlap two lifecycle state machines (the UI also disables the
+  // button, but a guard here protects any caller/race).
+  if (ACTIVE_PHASES.has(st().deployPhase)) {
+    return {
+      ok: false,
+      payload: buildDeployPayload(st()),
+      finalPhase: "failed",
+      note: "Deploy already in progress",
+    };
+  }
 
   st().setDeployPhase("validating", "Validating topology…");
   await sleep(280);
