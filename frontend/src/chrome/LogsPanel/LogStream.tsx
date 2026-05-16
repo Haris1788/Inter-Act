@@ -1,5 +1,5 @@
-import { useLogLines } from "@/store/selectors";
 import { cn } from "@/lib/cn";
+import type { LogLine } from "@/store/types";
 
 /** Map segment cls → Tailwind color class */
 function segClass(cls: string | undefined): string {
@@ -61,11 +61,13 @@ function lvlLabel(level: string): string {
   }
 }
 
-export function LogStream() {
-  const lines = useLogLines();
+interface LogStreamProps {
+  lines: LogLine[];
+}
 
+export function LogStream({ lines }: LogStreamProps) {
   return (
-    <div className="overflow-y-auto border-r border-line-soft py-2 font-mono text-11.5">
+    <div className="overflow-y-auto border-r border-line-soft py-2 font-mono text-11.5 flex-1">
       {lines.map((line) => (
         <div
           key={line.id}

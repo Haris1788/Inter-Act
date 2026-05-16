@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { useEvents, useActors } from "@/store/selectors";
+import { useActors } from "@/store/selectors";
 import { cn } from "@/lib/cn";
 import type { EventKind, OperationalEvent } from "@/store/types";
 
@@ -64,8 +64,12 @@ function kindFilterClass(kind: EventKind, active: boolean): string {
 
 const VISIBLE_CAP = 120;
 
-export function EventsPane() {
-  const allEvents = useEvents();
+interface EventsPaneProps {
+  /** Caller supplies the event list (supports paused snapshots). */
+  events: OperationalEvent[];
+}
+
+export function EventsPane({ events: allEvents }: EventsPaneProps) {
   const actors = useActors();
 
   // ── filter state (local; no store side-effects) ───────────────────────────

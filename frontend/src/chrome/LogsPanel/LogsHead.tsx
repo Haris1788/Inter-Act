@@ -1,21 +1,44 @@
 import { cn } from "@/lib/cn";
 
-const TABS = [
-  { id: "coordination", label: "Coordination", pill: "live" },
-  { id: "fleet", label: "Fleet", pill: "5" },
-  { id: "bus", label: "Message bus", pill: "429" },
-  { id: "validation", label: "Validation", pill: "0" },
-  { id: "events", label: "Events", pill: null },
-] as const;
+type TabId = "coordination" | "fleet" | "bus" | "validation" | "events";
 
-type TabId = (typeof TABS)[number]["id"];
+interface TabCounts {
+  coordination: number;
+  fleet: number;
+  bus: number;
+  validation: number;
+  events: number;
+}
 
 interface LogsHeadProps {
   activeTab: TabId;
   onTab: (id: TabId) => void;
+  counts: TabCounts;
+  paused: boolean;
+  onPause: () => void;
+  onClear: (() => void) | null; // null = not available for this tab → button hidden
+  collapsed: boolean;
+  onCollapse: () => void;
 }
 
-export function LogsHead({ activeTab, onTab }: LogsHeadProps) {
+const TABS: { id: TabId; label: string }[] = [
+  { id: "coordination", label: "Coordination" },
+  { id: "fleet", label: "Fleet" },
+  { id: "bus", label: "Message bus" },
+  { id: "validation", label: "Validation" },
+  { id: "events", label: "Events" },
+];
+
+export function LogsHead({
+  activeTab,
+  onTab,
+  counts,
+  paused,
+  onPause,
+  onClear,
+  collapsed,
+  onCollapse,
+}: LogsHeadProps) {
   return (
     <div
       className={cn(
@@ -24,6 +47,7 @@ export function LogsHead({ activeTab, onTab }: LogsHeadProps) {
     >
       {TABS.map((tab) => {
         const active = tab.id === activeTab;
+        const count = counts[tab.id];
         return (
           <button
             key={tab.id}
@@ -36,18 +60,16 @@ export function LogsHead({ activeTab, onTab }: LogsHeadProps) {
             )}
           >
             {tab.label}
-            {tab.pill !== null && (
-              <span
-                className={cn(
-                  "font-mono text-10 rounded px-[5px] py-[1px]",
-                  active
-                    ? "bg-ok-bg text-[#3D6A39]"
-                    : "bg-bg-sunken text-ink-2",
-                )}
-              >
-                {tab.pill}
-              </span>
-            )}
+            <span
+              className={cn(
+                "font-mono text-10 rounded px-[5px] py-[1px]",
+                active
+                  ? "bg-ok-bg text-[#3D6A39]"
+                  : "bg-bg-sunken text-ink-2",
+              )}
+            >
+              {count}
+            </span>
           </button>
         );
       })}
@@ -57,7 +79,7 @@ export function LogsHead({ activeTab, onTab }: LogsHeadProps) {
 
       {/* Right tools */}
       <div className="flex items-center gap-1.5 text-ink-3">
-        {/* Pill-running */}
+        {/* Runtime status pill */}
         <span
           className={cn(
             "inline-flex items-center gap-1.5 rounded px-2 py-[3px]",
@@ -71,44 +93,59 @@ export function LogsHead({ activeTab, onTab }: LogsHeadProps) {
           staging · runtime #284
         </span>
 
-        {/* Pause */}
+        {/* Pause — toggles frozen view */}
         <button
-          title="Pause"
-          className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md hover:bg-bg-hover hover:text-ink"
+          title={paused ? "Resume" : "Pause"}
+          onClick={onPause}
+          className={cn(
+            "inline-flex h-[30px] w-[30px] items-center justify-center rounded-md",
+            "hover:bg-bg-hover hover:text-ink",
+            paused && "bg-bg-hover text-ink",
+          )}
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-            <rect x="6" y="5" width="4" height="14" />
-            <rect x="14" y="5" width="4" height="14" />
-          </svg>
+          {paused ? (
+            /* Play icon when paused */
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <polygon points="5 3 19 12 5 21 5 3" />
+            </svg>
+          ) : (
+            /* Pause icon when running */
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <rect x="6" y="5" width="4" height="14" />
+              <rect x="14" y="5" width="4" height="14" />
+            </svg>
+          )}
         </button>
 
-        {/* Filter */}
-        <button
-          title="Filter"
-          className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md hover:bg-bg-hover hover:text-ink"
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-            <polygon points="3 4 21 4 14 13 14 19 10 21 10 13 3 4" />
-          </svg>
-        </button>
-
-        {/* Clear */}
-        <button
-          title="Clear"
-          className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md hover:bg-bg-hover hover:text-ink"
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-          </svg>
-        </button>
+        {/* Clear — only shown when the active tab supports it */}
+        {onClear !== null && (
+          <button
+            title="Clear"
+            onClick={onClear}
+            className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md hover:bg-bg-hover hover:text-ink"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+            </svg>
+          </button>
+        )}
 
         {/* Collapse */}
         <button
-          title="Collapse"
+          title={collapsed ? "Expand" : "Collapse"}
+          onClick={onCollapse}
           className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md hover:bg-bg-hover hover:text-ink"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            style={{ transform: collapsed ? "rotate(180deg)" : undefined }}
+          >
             <polyline points="6 9 12 15 18 9" />
           </svg>
         </button>
