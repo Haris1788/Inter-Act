@@ -19,8 +19,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from run_demo import ArmController, TransferPoint
 
 
-def _arm(arm_id, *, input_tp=None, output_tp=None, downstream_alive=None,
-         is_terminal=False, events=None, num_products=3, **kw):
+def _arm(
+    arm_id,
+    *,
+    input_tp=None,
+    output_tp=None,
+    downstream_alive=None,
+    is_terminal=False,
+    events=None,
+    num_products=3,
+    **kw
+):
     ev = [] if events is None else events
     return ArmController(
         arm_id=arm_id,
@@ -42,7 +51,7 @@ class TestTPBufferingUnderDownstreamFailure:
 
     def test_upstream_places_into_empty_tp_when_downstream_failed(self):
         """Core buffering case: TP is empty, downstream arm is failed.
-        Upstream must be able to place — that's what the buffer is for."""
+        Upstream must be able to place - that's what the buffer is for."""
         tp = TransferPoint("TP arm-3->arm-4")
         events = []
 
@@ -60,7 +69,7 @@ class TestTPBufferingUnderDownstreamFailure:
 
     def test_upstream_blocks_when_tp_occupied_and_downstream_failed(self):
         """TP is already full and downstream is failed.
-        Upstream must block — stacking is not allowed."""
+        Upstream must block - stacking is not allowed."""
         tp = TransferPoint("TP arm-3->arm-4")
         tp.place("Obj0")  # pre-occupy the slot
 
@@ -93,7 +102,7 @@ class TestTPBufferingUnderDownstreamFailure:
         arm4 = _arm(4, input_tp=tp, is_terminal=True)
         arm4.fail("simulated failure")
 
-        # First product — buffers in TP
+        # First product - buffers in TP
         arm3._process_one_product("Obj1")
         assert not tp.is_empty()
 
@@ -102,21 +111,20 @@ class TestTPBufferingUnderDownstreamFailure:
         assert picked == "Obj1"
         assert tp.is_empty()
 
-        # Second product — must succeed now
+        # Second product - must succeed now
         arm3._process_one_product("Obj2")
         assert not tp.is_empty()
         assert tp._object_id == "Obj2"
 
     def test_tp_capacity_controls_arm_readiness_signal(self):
         """arm-3 reports ready-for-input when its output TP is free, and NOT
-        ready when the TP is occupied — regardless of downstream module state."""
+        ready when the TP is occupied - regardless of downstream module state."""
         tp = TransferPoint("TP arm-3->arm-4")
 
         arm4 = _arm(4, input_tp=tp, is_terminal=True)
         arm4.fail("simulated failure")
 
-        arm3 = _arm(3, output_tp=tp,
-                    downstream_alive=lambda: arm4.is_ready_for_input())
+        arm3 = _arm(3, output_tp=tp, downstream_alive=lambda: arm4.is_ready_for_input())
 
         # TP empty → arm3 is ready for input even though downstream is failed
         assert arm3.tp_has_capacity() is True
@@ -136,19 +144,24 @@ class TestTPBufferingUnderDownstreamFailure:
         arm4 = _arm(4, input_tp=tp34, is_terminal=True)
         arm4.fail("simulated failure")
 
-        arm3 = _arm(3, input_tp=tp23, output_tp=tp34,
-                    downstream_alive=lambda: arm4.is_ready_for_input())
+        arm3 = _arm(
+            3,
+            input_tp=tp23,
+            output_tp=tp34,
+            downstream_alive=lambda: arm4.is_ready_for_input(),
+        )
 
         # Directly fill arm-3's output TP (simulates arm-3 having buffered one object)
         tp34.place("Obj1")
         assert not tp34.is_empty()
 
-        # arm-3 must not accept more input — its output slot is taken
+        # arm-3 must not accept more input - its output slot is taken
         assert arm3.is_ready_for_input() is False
 
         # arm-2 checks its own TP (tp23), which is still empty → one buffer slot free
-        arm2 = _arm(2, output_tp=tp23,
-                    downstream_alive=lambda: arm3.is_ready_for_input())
+        arm2 = _arm(
+            2, output_tp=tp23, downstream_alive=lambda: arm3.is_ready_for_input()
+        )
         assert arm2.tp_has_capacity() is True
 
         # Once arm-2's TP fills, arm-2 also blocks
@@ -162,7 +175,9 @@ class TestTPBufferingUnderDownstreamFailure:
         arm3_events = []
         arm4_events = []
 
-        arm4 = _arm(4, input_tp=tp, is_terminal=True, events=arm4_events, keep_alive=True)
+        arm4 = _arm(
+            4, input_tp=tp, is_terminal=True, events=arm4_events, keep_alive=True
+        )
         arm4.fail("test failure")
 
         arm3 = _arm(3, output_tp=tp, events=arm3_events)
@@ -174,7 +189,7 @@ class TestTPBufferingUnderDownstreamFailure:
         assert tp_evt[2].get("owner_type") == "transfer_point"
         assert tp_evt[2].get("owner_id") == "TP arm-3->arm-4"
 
-        # Object currently in TP — now simulate arm-4 picking it
+        # Object currently in TP - now simulate arm-4 picking it
         arm4.recover()
         time.sleep(0.05)
         # Manually pick (simulating arm-4 thread picking from its input_tp)

@@ -3,7 +3,7 @@
 Phase 7: frontend Kill/Recover and backend `/assets/<id>/fail` /
 `/assets/<id>/recover` (and the analogous `/arms/<id>/stop` /
 `/arms/<id>/start`) must actually stop and start the corresponding
-Docker container — not merely flip in-memory state.
+Docker container - not merely flip in-memory state.
 
 This module wraps `docker stop|start <container>` via subprocess. It
 relies on:
@@ -56,11 +56,15 @@ def _emit_log(source: str, message: str) -> None:
     """Best-effort SocketIO log fan-out for the browser log panel."""
     try:
         from app import socketio
-        socketio.emit("log_message", {
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-            "source": source,
-            "message": message,
-        })
+
+        socketio.emit(
+            "log_message",
+            {
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                "source": source,
+                "message": message,
+            },
+        )
     except Exception:
         pass
     print(message, flush=True)
@@ -69,7 +73,7 @@ def _emit_log(source: str, message: str) -> None:
 def _run_docker(action: str, name: str, timeout: int = 10) -> Optional[str]:
     """Run `docker <action> <name>`. Returns None on success or stderr on failure."""
     if not _docker_available():
-        msg = f"docker CLI/socket unavailable — skipping {action} {name}"
+        msg = f"docker CLI/socket unavailable - skipping {action} {name}"
         _emit_log("system", f"[SYSTEM] {msg}")
         return msg
     try:

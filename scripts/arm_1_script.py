@@ -1,5 +1,5 @@
 """
-Arm 1 Controller — independent brain for robotic arm 1.
+Arm 1 Controller - independent brain for robotic arm 1.
 
 Usage:
     python scripts/arm_1_script.py --angle 45

@@ -1,9 +1,9 @@
 """
-INTER.act Pipeline Demo — config-driven multi-arm handover simulation.
+INTER.act Pipeline Demo - config-driven multi-arm handover simulation.
 
 Reads arm count and pipeline settings from pipeline.yaml.
 Supports N arms in sequential (chain) or parallel (independent) mode.
-Failure policies: stop, skip, retry — configurable per arm or globally.
+Failure policies: stop, skip, retry - configurable per arm or globally.
 
 Usage:
     python scripts/run_demo.py
@@ -21,8 +21,16 @@ import yaml
 
 import requests as _http
 
-from utils import (send_command, send_object_event, send_log, reset_objects,
-                    send_health, send_stop_arm, is_arm_allowed_http, DEFAULT_HOST)
+from utils import (
+    send_command,
+    send_object_event,
+    send_log,
+    reset_objects,
+    send_health,
+    send_stop_arm,
+    is_arm_allowed_http,
+    DEFAULT_HOST,
+)
 
 # Phase 8: asset controllers (vehicle) live ONLY inside their respective
 # Docker containers. The demo-runner no longer instantiates VehicleController
@@ -30,6 +38,7 @@ from utils import (send_command, send_object_event, send_log, reset_objects,
 # helper so the runner can detect asset chains and route through HTTP bridges.
 try:
     from app.models import asset_state, pipeline_config as _pc
+
     _ASSET_RUNTIME_AVAILABLE = True
 except Exception:
     asset_state = None
@@ -55,8 +64,8 @@ ACTION_DURATION = 0.4
 
 # Path to pipeline config
 PIPELINE_CONFIG_PATH = os.environ.get(
-    'PIPELINE_CONFIG',
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'pipeline.yaml')
+    "PIPELINE_CONFIG",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pipeline.yaml"),
 )
 
 
@@ -92,7 +101,7 @@ class TransferPoint:
     In wait_and_pick, the emptiness check (while _object_id is None) and
     the cancel_check both run under the same lock acquisition. Since place()
     also acquires this lock, no product can arrive between the emptiness
-    check and the cancel decision — this is a single synchronized state
+    check and the cancel decision - this is a single synchronized state
     transition, not two separate unsynchronized checks.
     """
 
@@ -113,7 +122,7 @@ class TransferPoint:
         """Wait for a product, pick it atomically.
 
         Returns object_id on success, None on cancel or timeout.
-        The cancel_check only fires when the buffer IS empty — if a product
+        The cancel_check only fires when the buffer IS empty - if a product
         exists, it is returned before cancel_check is ever consulted. This
         guarantees drain-before-stop: any buffered product is always picked
         before a drain-stop decision is made.
@@ -141,7 +150,7 @@ class TransferPoint:
         """Wait until buffer is empty (downstream picked the product).
 
         Returns True if empty, False on cancel or timeout.
-        If the buffer is already empty, returns True immediately — the
+        If the buffer is already empty, returns True immediately - the
         cancel_check never fires. This enables passive buffering: an upstream
         arm can always place into an empty buffer regardless of downstream health.
         """
@@ -164,12 +173,14 @@ class TransferPoint:
 
 # ── Drain Stop Exception ─────────────────────────────────
 
+
 class _DrainComplete(Exception):
     """Raised when an arm stops because upstream/downstream is dead and no products remain.
 
-    This is NOT a failure — it's a graceful stop after draining the handover zone.
+    This is NOT a failure - it's a graceful stop after draining the handover zone.
     Caught separately from real errors to avoid triggering failure cascades.
     """
+
     pass
 
 
@@ -192,14 +203,29 @@ class ArmController(_ArmModuleBase):
 
     module_type = "arm"
 
-    def __init__(self, arm_id, host, speed_factor, input_tp, output_tp,
-                 num_products, log_fn, handover_place=None,
-                 set_angle_fn=None, object_event_fn=None,
-                 failure_policy=None,
-                 is_allowed_fn=None, on_started_fn=None, on_failed_fn=None,
-                 upstream_alive_fn=None, downstream_alive_fn=None,
-                 on_health_change_fn=None,
-                 label=None, keep_alive=False, is_terminal_fn=None):
+    def __init__(
+        self,
+        arm_id,
+        host,
+        speed_factor,
+        input_tp,
+        output_tp,
+        num_products,
+        log_fn,
+        handover_place=None,
+        set_angle_fn=None,
+        object_event_fn=None,
+        failure_policy=None,
+        is_allowed_fn=None,
+        on_started_fn=None,
+        on_failed_fn=None,
+        upstream_alive_fn=None,
+        downstream_alive_fn=None,
+        on_health_change_fn=None,
+        label=None,
+        keep_alive=False,
+        is_terminal_fn=None,
+    ):
         self.keep_alive = keep_alive
         if _ArmModuleBase is not object:
             super().__init__(module_id=f"arm-{arm_id}", label=label or f"Arm {arm_id}")
@@ -218,14 +244,18 @@ class ArmController(_ArmModuleBase):
         self._object_event = object_event_fn
         self.failure_policy = failure_policy or {"action": "stop"}
         # Dependency-aware callbacks
-        self._is_allowed = is_allowed_fn          # () -> bool: can this arm execute?
-        self._on_started = on_started_fn          # () -> None: mark arm as alive
-        self._on_failed = on_failed_fn            # (error) -> None: mark arm as dead, propagate
+        self._is_allowed = is_allowed_fn  # () -> bool: can this arm execute?
+        self._on_started = on_started_fn  # () -> None: mark arm as alive
+        self._on_failed = on_failed_fn  # (error) -> None: mark arm as dead, propagate
         # Drain-aware callbacks and state
-        self._upstream_alive = upstream_alive_fn   # () -> bool: is upstream arm alive?
-        self._downstream_alive = downstream_alive_fn  # () -> bool: is downstream arm alive?
-        self._on_health_change = on_health_change_fn  # (status, error) -> None: report health
-        self._draining = False                     # True once upstream/downstream failure detected
+        self._upstream_alive = upstream_alive_fn  # () -> bool: is upstream arm alive?
+        self._downstream_alive = (
+            downstream_alive_fn  # () -> bool: is downstream arm alive?
+        )
+        self._on_health_change = (
+            on_health_change_fn  # (status, error) -> None: report health
+        )
+        self._draining = False  # True once upstream/downstream failure detected
         self._is_terminal = is_terminal_fn or (lambda: False)
 
     def is_ready_for_input(self):
@@ -245,7 +275,7 @@ class ArmController(_ArmModuleBase):
             return False
         if not self.is_module_alive():
             return False
-        # Arms use TP-capacity semantics. The TP is a passive 1-slot buffer —
+        # Arms use TP-capacity semantics. The TP is a passive 1-slot buffer -
         # placement is allowed whenever the slot is free, regardless of whether
         # the downstream module itself is currently healthy.
         return self.tp_has_capacity()
@@ -267,20 +297,29 @@ class ArmController(_ArmModuleBase):
             send_command(self.host, self.arm_id, angle)
         time.sleep(MOVE_DURATION * self.speed)
 
-    def emit_object(self, obj_id, state, carrier_arm=None, owner_id=None, owner_type=None):
+    def emit_object(
+        self, obj_id, state, carrier_arm=None, owner_id=None, owner_type=None
+    ):
         if self._object_event:
             try:
                 self._object_event(
-                    obj_id, state, carrier_arm,
-                    owner_id=owner_id, owner_type=owner_type,
+                    obj_id,
+                    state,
+                    carrier_arm,
+                    owner_id=owner_id,
+                    owner_type=owner_type,
                     event_time=int(time.time() * 1000),
                 )
             except TypeError:
                 self._object_event(obj_id, state, carrier_arm)
         else:
             send_object_event(
-                self.host, obj_id, state, carrier_arm,
-                owner_id=owner_id, owner_type=owner_type,
+                self.host,
+                obj_id,
+                state,
+                carrier_arm,
+                owner_id=owner_id,
+                owner_type=owner_type,
                 event_time=int(time.time() * 1000),
             )
 
@@ -329,7 +368,10 @@ class ArmController(_ArmModuleBase):
             if stop_event is not None and stop_event.is_set():
                 return False
             if not wait_logged:
-                self.log(self.arm_id, f"[FLOW] arm-{self.arm_id} paused — waiting for recovery ({context})")
+                self.log(
+                    self.arm_id,
+                    f"[FLOW] arm-{self.arm_id} paused - waiting for recovery ({context})",
+                )
                 wait_logged = True
             time.sleep(0.25)
         if wait_logged:
@@ -353,10 +395,15 @@ class ArmController(_ArmModuleBase):
                 return False
             if self._upstream_alive():
                 if wait_logged:
-                    self.log(self.arm_id, f"[FLOW] arm-{self.arm_id} upstream recovered")
+                    self.log(
+                        self.arm_id, f"[FLOW] arm-{self.arm_id} upstream recovered"
+                    )
                 return True
             if not wait_logged:
-                self.log(self.arm_id, f"[FLOW] arm-{self.arm_id} waiting for upstream recovery")
+                self.log(
+                    self.arm_id,
+                    f"[FLOW] arm-{self.arm_id} waiting for upstream recovery",
+                )
                 wait_logged = True
             time.sleep(0.25)
         return False
@@ -397,7 +444,7 @@ class ArmController(_ArmModuleBase):
         if getattr(self, "keep_alive", False):
             stop_event = getattr(self, "_stop_event", None)
             if stop_event is not None:
-                self.log(self.arm_id, "idle — pipeline staying alive")
+                self.log(self.arm_id, "idle - pipeline staying alive")
                 while not stop_event.is_set():
                     time.sleep(0.5)
 
@@ -416,7 +463,7 @@ class ArmController(_ArmModuleBase):
             if self._hard_stopped():
                 return obj_id
             if not wait_logged:
-                self.log(self.arm_id, f"[FLOW] arm-{self.arm_id} blocked — TP full")
+                self.log(self.arm_id, f"[FLOW] arm-{self.arm_id} blocked - TP full")
                 wait_logged = True
             time.sleep(0.25)
 
@@ -444,7 +491,9 @@ class ArmController(_ArmModuleBase):
                 if self._upstream_alive and not self._upstream_alive():
                     if self._wait_for_upstream_recovery(timeout_s=30.0):
                         continue
-                    raise _DrainComplete("upstream unavailable too long, no more products")
+                    raise _DrainComplete(
+                        "upstream unavailable too long, no more products"
+                    )
             obj_id = picked_id
             self.log(self.arm_id, f"Picking {obj_id} from transfer point")
             self._current_object = obj_id
@@ -461,8 +510,11 @@ class ArmController(_ArmModuleBase):
         if self._hard_stopped():
             return obj_id
         self.emit_object(
-            obj_id, "carried", self.arm_id,
-            owner_id=f"arm-{self.arm_id}", owner_type="arm",
+            obj_id,
+            "carried",
+            self.arm_id,
+            owner_id=f"arm-{self.arm_id}",
+            owner_type="arm",
         )
         time.sleep(ACTION_DURATION * self.speed)
 
@@ -474,7 +526,7 @@ class ArmController(_ArmModuleBase):
         if self._hard_stopped():
             return obj_id
 
-        # Place: wait for TP capacity only — downstream module liveness is NOT checked.
+        # Place: wait for TP capacity only - downstream module liveness is NOT checked.
         # The TP is a passive 1-slot buffer; objects sit there until downstream recovers.
         if self.output_tp is not None:
             hold_logged = False
@@ -488,8 +540,10 @@ class ArmController(_ArmModuleBase):
                 if ok:
                     break
                 if not hold_logged:
-                    self.log(self.arm_id,
-                             f"[FLOW] arm-{self.arm_id} holding {obj_id} — TP occupied")
+                    self.log(
+                        self.arm_id,
+                        f"[FLOW] arm-{self.arm_id} holding {obj_id} - TP occupied",
+                    )
                     hold_logged = True
                 time.sleep(0.1)
 
@@ -502,7 +556,8 @@ class ArmController(_ArmModuleBase):
             if not tp_owner_id and hasattr(self.output_tp, "asset_id"):
                 tp_owner_id = f"TP arm-{self.arm_id}->{self.output_tp.asset_id}"
             self.emit_object(
-                obj_id, self.handover_place or "transfer_point",
+                obj_id,
+                self.handover_place or "transfer_point",
                 owner_id=tp_owner_id or self.handover_place,
                 owner_type="transfer_point",
             )
@@ -518,8 +573,10 @@ class ArmController(_ArmModuleBase):
             self.log(self.arm_id, f"Delivered {obj_id} to output!")
             self._current_object = None
             self.emit_object(
-                obj_id, "output",
-                owner_id="output-zone", owner_type="zone",
+                obj_id,
+                "output",
+                owner_id="output-zone",
+                owner_type="zone",
             )
             self.move_to(REST_ANGLE)
 
@@ -537,10 +594,16 @@ class ArmController(_ArmModuleBase):
             # happens in _process_one_product via wait_and_pick: if the
             # TP has product it's picked first; if empty, _DrainComplete.
             if self.input_tp is not None:
-                if not self._draining and self._upstream_alive and not self._upstream_alive():
+                if (
+                    not self._draining
+                    and self._upstream_alive
+                    and not self._upstream_alive()
+                ):
                     self._draining = True
                     self._report_state_change("draining")
-                    self.log(self.arm_id, "Upstream failed — draining remaining products")
+                    self.log(
+                        self.arm_id, "Upstream failed - draining remaining products"
+                    )
 
             # Downstream backpressure is handled inside _process_one_product.
             # Do not pre-fill a passive buffer when the next module is blocked.
@@ -550,7 +613,7 @@ class ArmController(_ArmModuleBase):
                 self._process_one_product(obj_id)
                 self.processed += 1
             except _DrainComplete as e:
-                # Graceful drain stop — report as stopped, no cascade
+                # Graceful drain stop - report as stopped, no cascade
                 self.log(self.arm_id, f"Drain complete: {e}")
                 self._report_drain_stop(str(e))
                 return
@@ -562,7 +625,9 @@ class ArmController(_ArmModuleBase):
                     delay = self.failure_policy.get("retry_delay", 2.0)
                     succeeded = False
                     for attempt in range(1, max_retries + 1):
-                        self.log(self.arm_id, f"Retry {attempt}/{max_retries} for {obj_id}")
+                        self.log(
+                            self.arm_id, f"Retry {attempt}/{max_retries} for {obj_id}"
+                        )
                         time.sleep(delay)
                         try:
                             self._process_one_product(obj_id)
@@ -573,7 +638,9 @@ class ArmController(_ArmModuleBase):
                             continue
                     if not succeeded:
                         self.error = str(e)
-                        self.log(self.arm_id, f"FAILED after {max_retries} retries: {e}")
+                        self.log(
+                            self.arm_id, f"FAILED after {max_retries} retries: {e}"
+                        )
                         if self._on_failed:
                             self._on_failed(str(e))
                         return
@@ -588,7 +655,7 @@ class ArmController(_ArmModuleBase):
                     self.log(self.arm_id, f"ISOLATED: {e}")
                     return
 
-                else:  # stop — propagates to downstream
+                else:  # stop - propagates to downstream
                     self.error = str(e)
                     self.log(self.arm_id, f"STOPPING: {e}")
                     if self._on_failed:
@@ -611,7 +678,7 @@ def stop_pipeline():
     """Stop every running module and signal the main demo loop to exit.
 
     Safe to call from any thread (e.g. the demo-runner /stop route handler).
-    Idempotent — calling when no pipeline is active is a no-op.
+    Idempotent - calling when no pipeline is active is a no-op.
     """
     _stop_pipeline_event.set()
     for m in list(_active_modules):
@@ -651,10 +718,11 @@ def thread_safe_log_asset(asset_id, message):
 # (`place`, `wait_and_pick`, `wait_until_empty`, `is_empty`) so the
 # ArmController body stays unchanged.
 
+
 def _docker_mode():
     """True when running inside a Docker container.
 
-    `/.dockerenv` is created by Docker on every container at boot — it is
+    `/.dockerenv` is created by Docker on every container at boot - it is
     the canonical, container-agnostic marker. Falling back to env-var
     detection broke after Phase 8 because the demo-runner container had no
     such variable set, sending HTTP bridges to localhost:8010 (which
@@ -665,7 +733,8 @@ def _docker_mode():
     if os.environ.get("ASSET_DNS_MODE") == "localhost":
         return False
     return os.path.exists("/.dockerenv") or os.environ.get(
-        "SERVER_HOST", "").startswith("http://backend")
+        "SERVER_HOST", ""
+    ).startswith("http://backend")
 
 
 def _asset_url(asset_id, port=8000):
@@ -735,8 +804,7 @@ class HttpOutputBridge:
                 )
                 if resp.status_code in (200, 201):
                     return
-                self._log(self.asset_id,
-                          f"POST /object → {resp.status_code}, retrying")
+                self._log(self.asset_id, f"POST /object → {resp.status_code}, retrying")
             except _http.exceptions.RequestException as exc:
                 self._log(self.asset_id, f"POST /object failed: {exc}")
             time.sleep(0.5)
@@ -744,7 +812,7 @@ class HttpOutputBridge:
     def wait_until_empty(self, timeout=30.0, cancel_check=None):
         """Returns True when the downstream asset is idle (slot free, ready to accept).
 
-        Uses /health state == 'idle' rather than downstream_ready — so an arm
+        Uses /health state == 'idle' rather than downstream_ready - so an arm
         can place into a vehicle buffer even while that asset's own
         downstream is blocked.
         """
@@ -760,7 +828,7 @@ class HttpOutputBridge:
                         return True
                     if asset_state_val in ("failed", "stopped"):
                         return False
-                    # busy / draining / recovering — wait and retry
+                    # busy / draining / recovering - wait and retry
             except Exception:
                 pass
             remaining = deadline - time.time()
@@ -791,8 +859,7 @@ class HttpInputBridge:
 
     def place(self, obj_id):
         try:
-            _http.post(f"{self.url}/object",
-                       json={"object_id": obj_id}, timeout=3)
+            _http.post(f"{self.url}/object", json={"object_id": obj_id}, timeout=3)
         except Exception:
             pass
 
@@ -823,11 +890,20 @@ class HttpInputBridge:
             return True
 
 
-def _build_arm_module(arm_cfg, num_products, speed_factor,
-                      set_angle_fn, object_event_fn, failure_cfg,
-                      make_is_allowed, make_on_started, make_on_failed,
-                      make_on_health_change, keep_alive=False,
-                      is_terminal_fn=None):
+def _build_arm_module(
+    arm_cfg,
+    num_products,
+    speed_factor,
+    set_angle_fn,
+    object_event_fn,
+    failure_cfg,
+    make_is_allowed,
+    make_on_started,
+    make_on_failed,
+    make_on_health_change,
+    keep_alive=False,
+    is_terminal_fn=None,
+):
     """Construct an ArmController as a Module.
 
     Phase 4: arms expose the same interface as vehicles. Internal
@@ -863,10 +939,18 @@ def _get_arm_failure_policy(arm_cfg, global_policy):
     return {"action": global_policy.get("default", "stop"), **global_policy}
 
 
-def _run_pipeline_core(speed_factor, num_products,
-                       set_angle_fn, object_event_fn, reset_objects_fn,
-                       log_fn=None, config=None,
-                       is_allowed_fn=None, on_health_fn=None, on_failed_fn=None):
+def _run_pipeline_core(
+    speed_factor,
+    num_products,
+    set_angle_fn,
+    object_event_fn,
+    reset_objects_fn,
+    log_fn=None,
+    config=None,
+    is_allowed_fn=None,
+    on_health_fn=None,
+    on_failed_fn=None,
+):
     """Build and run an N-arm pipeline from config.
 
     Health callbacks:
@@ -898,7 +982,9 @@ def _run_pipeline_core(speed_factor, num_products,
     arm_ids = [arm["id"] for arm in arms_cfg]
 
     print(f"=== INTER.act Pipeline Demo ===")
-    print(f"Arms: {n} | Mode: {mode} | Products: {num_products} | Speed: {speed_factor}x")
+    print(
+        f"Arms: {n} | Mode: {mode} | Products: {num_products} | Speed: {speed_factor}x"
+    )
     print()
 
     # Reset all arms
@@ -939,7 +1025,7 @@ def _run_pipeline_core(speed_factor, num_products,
     # Every component (arm, vehicle, future types) implements the `Module`
     # interface. The builder reads the flow order from config and connects
     # modules linearly via TransferPoints. There is no type-specific
-    # branching here — adding a new module type requires zero changes in
+    # branching here - adding a new module type requires zero changes in
     # this function, only a class implementing `Module`.
     if _ASSET_RUNTIME_AVAILABLE:
         asset_state.reset()
@@ -959,14 +1045,22 @@ def _run_pipeline_core(speed_factor, num_products,
             pass
 
     if mode == "parallel":
-        # Each arm is its own source+sink — no TP chain, no inter-module flow.
+        # Each arm is its own source+sink - no TP chain, no inter-module flow.
         terminal_arm_id = arm_ids[-1] if arm_ids else None
         modules = [
-            _build_arm_module(arm_cfg, num_products, speed_factor,
-                              set_angle_fn, object_event_fn, failure_cfg,
-                              make_is_allowed, make_on_started, make_on_failed,
-                              make_on_health_change,
-                              is_terminal_fn=(lambda aid=arm_cfg["id"], t=terminal_arm_id: aid == t))
+            _build_arm_module(
+                arm_cfg,
+                num_products,
+                speed_factor,
+                set_angle_fn,
+                object_event_fn,
+                failure_cfg,
+                make_is_allowed,
+                make_on_started,
+                make_on_failed,
+                make_on_health_change,
+                is_terminal_fn=(lambda aid=arm_cfg["id"], t=terminal_arm_id: aid == t),
+            )
             for arm_cfg in arms_cfg
         ]
     else:
@@ -996,12 +1090,23 @@ def _run_pipeline_core(speed_factor, num_products,
                     f"flow references arm-{arm_id_int} but config arms are "
                     f"{sorted(arm_map.keys())}"
                 )
-            modules.append(_build_arm_module(
-                arm_cfg, num_products, speed_factor,
-                set_angle_fn, object_event_fn, failure_cfg,
-                make_is_allowed, make_on_started, make_on_failed,
-                make_on_health_change,
-                is_terminal_fn=(lambda sid=sid, flow_ids=flow_ids: sid == flow_ids[-1])))
+            modules.append(
+                _build_arm_module(
+                    arm_cfg,
+                    num_products,
+                    speed_factor,
+                    set_angle_fn,
+                    object_event_fn,
+                    failure_cfg,
+                    make_is_allowed,
+                    make_on_started,
+                    make_on_failed,
+                    make_on_health_change,
+                    is_terminal_fn=(
+                        lambda sid=sid, flow_ids=flow_ids: sid == flow_ids[-1]
+                    ),
+                )
+            )
             arm_flow_indices.append(idx)
 
         if len(modules) != len(arms_cfg):
@@ -1017,7 +1122,7 @@ def _run_pipeline_core(speed_factor, num_products,
         for k in range(len(modules) - 1):
             src_arm = modules[k]
             dst_arm = modules[k + 1]
-            between = flow_ids[arm_flow_indices[k] + 1: arm_flow_indices[k + 1]]
+            between = flow_ids[arm_flow_indices[k] + 1 : arm_flow_indices[k + 1]]
             if src_arm.output_tp is not None or dst_arm.input_tp is not None:
                 raise RuntimeError(
                     f"boundary already wired: {src_arm.id} -> {dst_arm.id}"
@@ -1038,18 +1143,18 @@ def _run_pipeline_core(speed_factor, num_products,
                 first_asset = between[0]
                 last_asset = between[-1]
                 src_arm.output_tp = HttpOutputBridge(
-                    first_asset, log_fn=thread_safe_log_asset)
+                    first_asset, log_fn=thread_safe_log_asset
+                )
                 dst_arm.input_tp = HttpInputBridge(
-                    last_asset, log_fn=thread_safe_log_asset)
-                # No handover_N — placement event for an asset boundary is
+                    last_asset, log_fn=thread_safe_log_asset
+                )
+                # No handover_N - placement event for an asset boundary is
                 # owned by the asset container; suppress arm-side emission.
                 src_arm.handover_place = None
-                print(
-                    f"[LINK] {src_arm.id} -> {dst_arm.id}: http assets={between}"
-                )
+                print(f"[LINK] {src_arm.id} -> {dst_arm.id}: http assets={between}")
 
         # Neighbor-alive callbacks. For asset-bridged boundaries, the
-        # neighbour is a remote container — proxy through asset_state.
+        # neighbour is a remote container - proxy through asset_state.
         def _module_alive(m):
             return m is None or (m.is_module_alive() and m.is_alive())
 
@@ -1064,30 +1169,31 @@ def _run_pipeline_core(speed_factor, num_products,
             if k == 0:
                 m._upstream_alive = lambda: True
             else:
-                between_up = flow_ids[arm_flow_indices[k - 1] + 1: arm_flow_indices[k]]
+                between_up = flow_ids[arm_flow_indices[k - 1] + 1 : arm_flow_indices[k]]
                 if between_up:
                     last_up = between_up[-1]
-                    m._upstream_alive = (lambda aid=last_up:
-                                         _asset_alive_for(aid))
+                    m._upstream_alive = lambda aid=last_up: _asset_alive_for(aid)
                 else:
                     prev_m = modules[k - 1]
-                    m._upstream_alive = (lambda pm=prev_m: _module_alive(pm))
+                    m._upstream_alive = lambda pm=prev_m: _module_alive(pm)
 
             # Downstream
             if k == len(modules) - 1:
                 m._downstream_alive = lambda: True
             else:
-                between_down = flow_ids[arm_flow_indices[k] + 1: arm_flow_indices[k + 1]]
+                between_down = flow_ids[
+                    arm_flow_indices[k] + 1 : arm_flow_indices[k + 1]
+                ]
                 if between_down:
                     first_down = between_down[0]
-                    m._downstream_alive = (lambda aid=first_down:
-                                           _asset_ready_for(aid))
+                    m._downstream_alive = lambda aid=first_down: _asset_ready_for(aid)
                 else:
                     next_m = modules[k + 1]
-                    m._downstream_alive = (lambda nm=next_m:
-                                           nm.is_ready_for_input()
-                                           if hasattr(nm, "is_ready_for_input")
-                                           else _module_alive(nm))
+                    m._downstream_alive = lambda nm=next_m: (
+                        nm.is_ready_for_input()
+                        if hasattr(nm, "is_ready_for_input")
+                        else _module_alive(nm)
+                    )
 
     controllers = modules  # legacy alias for the summary block below
 
@@ -1112,7 +1218,7 @@ def _run_pipeline_core(speed_factor, num_products,
             # Use Thread.is_alive() (real thread liveness) so the main loop
             # exits ONLY on manual stop or when every worker thread has truly
             # terminated. A module reporting state=='failed' does NOT halt
-            # the pipeline — keep_alive idle wait keeps its thread alive
+            # the pipeline - keep_alive idle wait keeps its thread alive
             # until stop_pipeline() fires.
             threads_alive = [m for m in modules if m.is_alive()]
             if not threads_alive:
@@ -1120,12 +1226,16 @@ def _run_pipeline_core(speed_factor, num_products,
             now = time.time()
             if now - last_log >= 5.0:
                 module_alive = [m.id for m in modules if m.is_module_alive()]
-                print("[SYSTEM] Alive modules:", module_alive,
-                      "| threads:", len(threads_alive))
+                print(
+                    "[SYSTEM] Alive modules:",
+                    module_alive,
+                    "| threads:",
+                    len(threads_alive),
+                )
                 last_log = now
             time.sleep(0.5)
     except KeyboardInterrupt:
-        print("[SYSTEM] KeyboardInterrupt — stopping modules")
+        print("[SYSTEM] KeyboardInterrupt - stopping modules")
         for m in modules:
             m.stop_module()
 
@@ -1164,7 +1274,8 @@ def _run_pipeline_core(speed_factor, num_products,
 
 
 def run_pipeline(host, speed_factor, num_products):
-    """HTTP mode — used by CLI and demo-runner container."""
+    """HTTP mode - used by CLI and demo-runner container."""
+
     def http_set_angle(arm_id, angle):
         send_command(host, arm_id, angle)
 
@@ -1186,21 +1297,36 @@ def run_pipeline(host, speed_factor, num_products):
     def http_on_failed(arm_id, error):
         send_stop_arm(host, arm_id, error)
 
-    _run_pipeline_core(speed_factor, num_products,
-                       http_set_angle, http_object_event, http_reset,
-                       log_fn=http_log,
-                       is_allowed_fn=http_is_allowed,
-                       on_health_fn=http_on_health,
-                       on_failed_fn=http_on_failed)
+    _run_pipeline_core(
+        speed_factor,
+        num_products,
+        http_set_angle,
+        http_object_event,
+        http_reset,
+        log_fn=http_log,
+        is_allowed_fn=http_is_allowed,
+        on_health_fn=http_on_health,
+        on_failed_fn=http_on_failed,
+    )
 
 
-def run_pipeline_with_callbacks(set_angle_fn, object_event_fn,
-                                reset_objects_fn, speed_factor, num_products,
-                                log_fn=None):
-    """Direct callback mode — bypasses HTTP."""
-    _run_pipeline_core(speed_factor, num_products,
-                       set_angle_fn, object_event_fn, reset_objects_fn,
-                       log_fn=log_fn)
+def run_pipeline_with_callbacks(
+    set_angle_fn,
+    object_event_fn,
+    reset_objects_fn,
+    speed_factor,
+    num_products,
+    log_fn=None,
+):
+    """Direct callback mode - bypasses HTTP."""
+    _run_pipeline_core(
+        speed_factor,
+        num_products,
+        set_angle_fn,
+        object_event_fn,
+        reset_objects_fn,
+        log_fn=log_fn,
+    )
 
 
 def dry_run(speed_factor, num_products):
@@ -1213,18 +1339,20 @@ def dry_run(speed_factor, num_products):
     est_total = est_per_product * n + est_per_product * (num_products - 1)
 
     print(f"=== Dry Run ===")
-    print(f"Arms: {n} | Mode: {mode} | Products: {num_products} | Speed: {speed_factor}x")
+    print(
+        f"Arms: {n} | Mode: {mode} | Products: {num_products} | Speed: {speed_factor}x"
+    )
     print()
     print(f"Cycle: rest(90) -> pick(180) -> carry -> place(0) -> retract(90)")
-    print(f"  Move: {MOVE_DURATION * speed_factor:.1f}s | Action: {ACTION_DURATION * speed_factor:.1f}s")
+    print(
+        f"  Move: {MOVE_DURATION * speed_factor:.1f}s | Action: {ACTION_DURATION * speed_factor:.1f}s"
+    )
     print(f"  Cycle time: ~{est_per_product:.1f}s per arm per product")
     print()
 
     if mode == "sequential":
         flow = " -> ".join(
-            [f"Intake"] +
-            [f"[Arm {a['id']}]" for a in arms_cfg] +
-            [f"Output"]
+            [f"Intake"] + [f"[Arm {a['id']}]" for a in arms_cfg] + [f"Output"]
         )
         print(f"Flow: {flow}")
     else:

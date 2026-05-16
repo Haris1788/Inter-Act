@@ -1,12 +1,12 @@
 """
-Arm control routes — REST API for controlling robotic arms.
+Arm control routes - REST API for controlling robotic arms.
 
-POST /set_angle      — Set target angle for an arm
-POST /object_event   — Update object position in the pipeline
-GET  /state          — Get current state of all arms
-GET  /state/<id>     — Get current state of a single arm
-GET  /objects        — Get current object states (for reconnection)
-GET  /config         — Get full scene configuration
+POST /set_angle      - Set target angle for an arm
+POST /object_event   - Update object position in the pipeline
+GET  /state          - Get current state of all arms
+GET  /state/<id>     - Get current state of a single arm
+GET  /objects        - Get current object states (for reconnection)
+GET  /config         - Get full scene configuration
 """
 
 import os
@@ -29,14 +29,16 @@ from app.services.notifications import get_notification_service
 from app.services.arm_brain import get_arm_brain
 from app.services.arm_scripts import list_scripts, run_script
 
-arm_bp = Blueprint('arms', __name__)
+arm_bp = Blueprint("arms", __name__)
 
 # In-memory object state for the pipeline visualization (lock-protected)
-_object_states = {}  # {"Obj1": {"object_id": "Obj1", "state": "intake", "carrier_arm": None}}
+_object_states = (
+    {}
+)  # {"Obj1": {"object_id": "Obj1", "state": "intake", "carrier_arm": None}}
 _object_lock = threading.Lock()
 _object_versions = {}  # {"Obj1": last_event_time_ms}
-_object_owners = {}    # {"Obj1": "arm-1" | "TP arm-1->arm-2" | "veh-a" | ...}
-_event_seq = 0         # monotonic backend sequence for object_update ordering
+_object_owners = {}  # {"Obj1": "arm-1" | "TP arm-1->arm-2" | "veh-a" | ...}
+_event_seq = 0  # monotonic backend sequence for object_update ordering
 
 
 def _topology_snapshot():
@@ -99,7 +101,9 @@ def _adjacent_owner(topo, src_id, dst_id):
     return idx[dst_id] == idx[src_id] + 1
 
 
-def _valid_transition(topo, prev_owner_type, prev_owner_id, next_owner_type, next_owner_id):
+def _valid_transition(
+    topo, prev_owner_type, prev_owner_id, next_owner_type, next_owner_id
+):
     prev_kind = _canonical_owner(prev_owner_type, prev_owner_id)
     next_kind = _canonical_owner(next_owner_type, next_owner_id)
     if prev_kind is None or next_kind is None:
@@ -111,7 +115,9 @@ def _valid_transition(topo, prev_owner_type, prev_owner_id, next_owner_type, nex
 
     if prev_kind == "intake":
         if next_kind == "arm":
-            first_arm = next((sid for sid in topo["flow"] if sid.startswith("arm-")), None)
+            first_arm = next(
+                (sid for sid in topo["flow"] if sid.startswith("arm-")), None
+            )
             return (next_owner_id == first_arm, "intake must transition to first arm")
         return False, "intake can only transition to arm"
 
@@ -144,11 +150,17 @@ def _valid_transition(topo, prev_owner_type, prev_owner_id, next_owner_type, nex
         # If terminal-arm "carried" event was dropped/reordered, allow TP->output
         # only when this TP feeds the terminal arm.
         if next_kind == "output":
-            return (tp["to"] == topo["last_arm"], "only terminal inbound transfer point may transition to output")
+            return (
+                tp["to"] == topo["last_arm"],
+                "only terminal inbound transfer point may transition to output",
+            )
         if next_kind not in ("arm", "asset"):
             return False, "transfer_point can only transition to arm or asset"
         if tp["to"] != next_owner_id:
-            return False, "transfer_point can only transition to declared downstream owner"
+            return (
+                False,
+                "transfer_point can only transition to declared downstream owner",
+            )
         return True, None
 
     if prev_kind == "asset":
@@ -157,7 +169,10 @@ def _valid_transition(topo, prev_owner_type, prev_owner_id, next_owner_type, nex
             if not tp:
                 return False, "unknown transfer point"
             if tp["from"] != prev_owner_id:
-                return False, "asset can only transition to its own outbound transfer point"
+                return (
+                    False,
+                    "asset can only transition to its own outbound transfer point",
+                )
             return True, None
         if next_kind == "arm":
             if not _adjacent_owner(topo, prev_owner_id, next_owner_id):
@@ -193,7 +208,7 @@ def find_object_at(state):
     return None
 
 
-@arm_bp.route('/set_angle', methods=['POST'])
+@arm_bp.route("/set_angle", methods=["POST"])
 def set_angle():
     """Set the target angle for a specific arm.
 
@@ -207,21 +222,40 @@ def set_angle():
     """
     data = request.get_json(silent=True)
     if data is None:
-        return jsonify({"error": "Request body must be JSON", "code": "INVALID_BODY"}), 400
+        return (
+            jsonify({"error": "Request body must be JSON", "code": "INVALID_BODY"}),
+            400,
+        )
 
-    arm_id = data.get('arm_id')
-    angle = data.get('angle')
+    arm_id = data.get("arm_id")
+    angle = data.get("angle")
 
     if arm_id is None:
-        return jsonify({"error": "Missing required field: arm_id", "code": "MISSING_FIELD"}), 400
+        return (
+            jsonify(
+                {"error": "Missing required field: arm_id", "code": "MISSING_FIELD"}
+            ),
+            400,
+        )
     if angle is None:
-        return jsonify({"error": "Missing required field: angle", "code": "MISSING_FIELD"}), 400
+        return (
+            jsonify(
+                {"error": "Missing required field: angle", "code": "MISSING_FIELD"}
+            ),
+            400,
+        )
 
     # Validate types
     if not isinstance(arm_id, int):
-        return jsonify({"error": "arm_id must be an integer", "code": "VALIDATION_ERROR"}), 400
+        return (
+            jsonify({"error": "arm_id must be an integer", "code": "VALIDATION_ERROR"}),
+            400,
+        )
     if not isinstance(angle, (int, float)):
-        return jsonify({"error": "angle must be a number", "code": "VALIDATION_ERROR"}), 400
+        return (
+            jsonify({"error": "angle must be a number", "code": "VALIDATION_ERROR"}),
+            400,
+        )
 
     try:
         arm_state.set_angle(arm_id, float(angle))
@@ -229,15 +263,18 @@ def set_angle():
         return jsonify({"error": str(e), "code": "VALIDATION_ERROR"}), 400
 
     # Emit state update to all connected browser clients
-    socketio.emit('state_update', arm_state.get_all())
+    socketio.emit("state_update", arm_state.get_all())
 
     # Emit log message for the browser log panel
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    socketio.emit('log_message', {
-        'timestamp': timestamp,
-        'source': f'arm_{arm_id}',
-        'message': f'Set angle to {float(angle):.1f}\u00b0',
-    })
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    socketio.emit(
+        "log_message",
+        {
+            "timestamp": timestamp,
+            "source": f"arm_{arm_id}",
+            "message": f"Set angle to {float(angle):.1f}\u00b0",
+        },
+    )
 
     return jsonify({"status": "ok", "arm_id": arm_id, "angle": float(angle)})
 
@@ -248,7 +285,8 @@ def set_angle():
 # PURPOSE: Backend API endpoint to receive tasks and execute via Qwen brain
 # ═══════════════════════════════════════════════════════════════════════════
 
-@arm_bp.route('/execute_task', methods=['POST'])
+
+@arm_bp.route("/execute_task", methods=["POST"])
 def execute_task():
     """
     ┌─────────────────────────────────────────────────────────────────────┐
@@ -358,8 +396,8 @@ def execute_task():
         return jsonify({"error": "JSON required"}), 400
 
     # Extract fields
-    arm_id = data.get('arm_id')
-    task = data.get('task')
+    arm_id = data.get("arm_id")
+    task = data.get("task")
 
     # Validate: Both fields must be present
     if not arm_id or not task:
@@ -414,9 +452,7 @@ def execute_task():
     if result["status"] == "success":
         # Task succeeded! Send success notification
         notif.notify_success(
-            arm_id,
-            result.get("action", "execute"),
-            result.get("confidence", 1.0)
+            arm_id, result.get("action", "execute"), result.get("confidence", 1.0)
         )
         # Frontend shows: ✅ Arm 1 completed 'pick' successfully
     else:
@@ -424,7 +460,7 @@ def execute_task():
         notif.notify_failure(
             arm_id,
             result.get("reason", "Unknown error"),
-            result.get("action", "unknown")
+            result.get("action", "unknown"),
         )
         # Frontend shows: ❌ Arm 1 FAILED: Motor timeout
 
@@ -434,7 +470,7 @@ def execute_task():
     # ====================================================================
 
     # Emit via WebSocket (real-time to browser)
-    socketio.emit('task_result', result)
+    socketio.emit("task_result", result)
 
     # Return via HTTP (to caller of REST API)
     # Status code: 200 if success, 400+ if failed
@@ -449,13 +485,13 @@ def execute_task():
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@arm_bp.route('/topology', methods=['GET'])
+@arm_bp.route("/topology", methods=["GET"])
 def get_topology():
     """Return the actor flow order so the UI can walk the pipeline."""
     return jsonify({"flow": pipeline_config.get_module_flow_order()})
 
 
-@arm_bp.route('/scripts/<int:arm_id>', methods=['GET'])
+@arm_bp.route("/scripts/<int:arm_id>", methods=["GET"])
 def get_arm_script_menu(arm_id):
     """List the named behaviours available for one arm (the Qwen menu)."""
     menu = list_scripts(arm_id)
@@ -464,9 +500,9 @@ def get_arm_script_menu(arm_id):
     return jsonify({"arm_id": arm_id, "scripts": menu})
 
 
-@arm_bp.route('/actor_scripts/<actor_id>', methods=['GET'])
+@arm_bp.route("/actor_scripts/<actor_id>", methods=["GET"])
 def get_actor_script_menu(actor_id):
-    """List menus for any actor — arms (numeric) or assets (string id)."""
+    """List menus for any actor - arms (numeric) or assets (string id)."""
     try:
         resolved = int(actor_id)
     except (TypeError, ValueError):
@@ -477,7 +513,7 @@ def get_actor_script_menu(actor_id):
     return jsonify({"actor_id": resolved, "scripts": menu})
 
 
-# Track each actor's last chosen script — used to suppress log spam when
+# Track each actor's last chosen script - used to suppress log spam when
 # an idle actor keeps polling and the answer is the same hold every time.
 _actor_last_decision = {}
 
@@ -486,13 +522,16 @@ def _pick_for_asset(asset_id, task, menu, obj_summary):
     """Lightweight asset-side brain: same closed-menu shape as the arm brain.
 
     Assets only have 2 menu options (relay / hold) so we skip Qwen entirely
-    and pick deterministically from the world state — which makes the
+    and pick deterministically from the world state - which makes the
     asset's decision visible in the log without paying the 5–30 s LLM
     latency. If the asset is failed/draining/stopped, force hold.
     """
     from app.services.arm_scripts import _actor_zones
+
     rec = asset_state.get(asset_id)
-    is_alive = (rec is None) or (rec.get("status") not in ("failed", "draining", "stopped"))
+    is_alive = (rec is None) or (
+        rec.get("status") not in ("failed", "draining", "stopped")
+    )
     zones = _actor_zones(asset_id)
     upstream = zones["upstream"]
     relay_options = [s["name"] for s in menu if s["name"].startswith("relay_")]
@@ -526,7 +565,7 @@ def _pick_for_asset(asset_id, task, menu, obj_summary):
     }
 
 
-@arm_bp.route('/run_script', methods=['POST'])
+@arm_bp.route("/run_script", methods=["POST"])
 def run_script_endpoint():
     """Ask Qwen (arms) or the deterministic asset-brain (shuttle) to
     pick a script for this actor + task, then run it.
@@ -538,13 +577,13 @@ def run_script_endpoint():
         {"status": "success", "arm_id": 1, "chosen_script": "...", ...}
     """
     data = request.get_json(silent=True) or {}
-    raw_actor = data.get('actor_id', data.get('arm_id'))
-    task = data.get('task')
+    raw_actor = data.get("actor_id", data.get("arm_id"))
+    task = data.get("task")
 
     if not isinstance(task, str) or not task.strip():
         return jsonify({"error": "task must be a non-empty string"}), 400
 
-    # Resolve actor_id — int means arm, string means asset.
+    # Resolve actor_id - int means arm, string means asset.
     if isinstance(raw_actor, int):
         actor_id = raw_actor
         is_arm = True
@@ -566,7 +605,7 @@ def run_script_endpoint():
     notif = get_notification_service()
 
     # Build the per-actor menu and a count summary of where objects currently
-    # sit (upstream zones for arms + assets — covers handover_<i>, intake,
+    # sit (upstream zones for arms + assets - covers handover_<i>, intake,
     # output, on_<asset>, carried).
     menu = list_scripts(actor_id)
     obj_summary = {s: 0 for s in pipeline_config.get_valid_handover_states()}
@@ -586,9 +625,19 @@ def run_script_endpoint():
 
     if pick.get("status") != "success":
         if is_arm:
-            notif.notify_failure(actor_id, pick.get("error", "brain unavailable"), action="pick_script")
-        return jsonify({"status": "failed", "actor_id": actor_id,
-                        "reason": pick.get("error", "brain unavailable")}), 500
+            notif.notify_failure(
+                actor_id, pick.get("error", "brain unavailable"), action="pick_script"
+            )
+        return (
+            jsonify(
+                {
+                    "status": "failed",
+                    "actor_id": actor_id,
+                    "reason": pick.get("error", "brain unavailable"),
+                }
+            ),
+            500,
+        )
 
     chosen = pick["script"]
     qwen_suggested = pick.get("qwen_suggested", chosen)
@@ -596,18 +645,18 @@ def run_script_endpoint():
 
     # ── Idle de-dupe ────────────────────────────────────────────────
     # If this is the SAME hold script as the previous decision for this
-    # actor, the world has not changed for them — go silent. Skip the
+    # actor, the world has not changed for them - go silent. Skip the
     # script_chosen event, skip the script body's log lines (quiet=True),
     # skip the Task-completed notification. Only relays and *first* holds
     # of an idle streak surface to the operator. This is what makes
     # "nothing to do" actually look like nothing in the UI.
     last = _actor_last_decision.get(actor_id)
-    is_repeat_idle = (
-        chosen.startswith("hold_") or chosen == "return_to_rest"
-    ) and (last == chosen)
+    is_repeat_idle = (chosen.startswith("hold_") or chosen == "return_to_rest") and (
+        last == chosen
+    )
     _actor_last_decision[actor_id] = chosen
 
-    timestamp = datetime.now().strftime('%H:%M:%S')
+    timestamp = datetime.now().strftime("%H:%M:%S")
     src_label = f"arm_{actor_id}" if is_arm else str(actor_id)
 
     if not is_repeat_idle:
@@ -624,49 +673,77 @@ def run_script_endpoint():
         }
         if is_arm:
             payload["arm_id"] = actor_id
-        socketio.emit('script_chosen', payload)
+        socketio.emit("script_chosen", payload)
         if override_reason:
-            socketio.emit('log_message', {
-                "timestamp": timestamp, "source": src_label, "level": "info",
-                "message": f"🤖 suggested: {qwen_suggested}  — {pick.get('reasoning', '')}",
-            })
-            socketio.emit('log_message', {
-                "timestamp": timestamp, "source": src_label, "level": "warning",
-                "message": f"⚖️  Override → {chosen}  ({override_reason})",
-            })
+            socketio.emit(
+                "log_message",
+                {
+                    "timestamp": timestamp,
+                    "source": src_label,
+                    "level": "info",
+                    "message": f"🤖 suggested: {qwen_suggested}  - {pick.get('reasoning', '')}",
+                },
+            )
+            socketio.emit(
+                "log_message",
+                {
+                    "timestamp": timestamp,
+                    "source": src_label,
+                    "level": "warning",
+                    "message": f"⚖️  Override → {chosen}  ({override_reason})",
+                },
+            )
         else:
             # Distinguish Qwen-driven (work to do) from rule fast-path (idle).
-            label = "🛌 idle" if (chosen.startswith("hold_") or chosen == "return_to_rest") else (
-                "🎬 Qwen chose" if is_arm else "🎬 AI chose"
+            label = (
+                "🛌 idle"
+                if (chosen.startswith("hold_") or chosen == "return_to_rest")
+                else ("🎬 Qwen chose" if is_arm else "🎬 AI chose")
             )
-            socketio.emit('log_message', {
-                "timestamp": timestamp, "source": src_label, "level": "info",
-                "message": f"{label}: {chosen}  — {pick.get('reasoning', '')}",
-            })
+            socketio.emit(
+                "log_message",
+                {
+                    "timestamp": timestamp,
+                    "source": src_label,
+                    "level": "info",
+                    "message": f"{label}: {chosen}  - {pick.get('reasoning', '')}",
+                },
+            )
 
     try:
         result = run_script(actor_id, chosen, quiet=is_repeat_idle)
     except Exception as e:
         if is_arm:
             notif.notify_failure(actor_id, str(e), action=chosen)
-        return jsonify({"status": "failed", "actor_id": actor_id,
-                        "chosen_script": chosen, "reason": str(e)}), 500
+        return (
+            jsonify(
+                {
+                    "status": "failed",
+                    "actor_id": actor_id,
+                    "chosen_script": chosen,
+                    "reason": str(e),
+                }
+            ),
+            500,
+        )
 
     if is_arm and not is_repeat_idle:
         notif.notify_success(actor_id, chosen, confidence=pick.get("confidence", 1.0))
 
-    return jsonify({
-        "status": "success",
-        "actor_id": actor_id,
-        "arm_id": actor_id if is_arm else None,
-        "chosen_script": chosen,
-        "reasoning": pick.get("reasoning", ""),
-        "fallback": pick.get("fallback", False),
-        "result": result,
-    })
+    return jsonify(
+        {
+            "status": "success",
+            "actor_id": actor_id,
+            "arm_id": actor_id if is_arm else None,
+            "chosen_script": chosen,
+            "reasoning": pick.get("reasoning", ""),
+            "fallback": pick.get("fallback", False),
+            "result": result,
+        }
+    )
 
 
-@arm_bp.route('/state', methods=['GET'])
+@arm_bp.route("/state", methods=["GET"])
 def get_state():
     """Get the current state of all arms.
 
@@ -676,7 +753,7 @@ def get_state():
     return jsonify(arm_state.get_all())
 
 
-@arm_bp.route('/state/<int:arm_id>', methods=['GET'])
+@arm_bp.route("/state/<int:arm_id>", methods=["GET"])
 def get_single_state(arm_id):
     """Get the current state of a single arm.
 
@@ -693,7 +770,7 @@ def get_single_state(arm_id):
         return jsonify({"error": str(e), "code": "VALIDATION_ERROR"}), 400
 
 
-@arm_bp.route('/object_event', methods=['POST'])
+@arm_bp.route("/object_event", methods=["POST"])
 def object_event():
     """Update an object's position in the pipeline.
 
@@ -711,8 +788,8 @@ def object_event():
     if data is None:
         return jsonify({"error": "Request body must be JSON"}), 400
 
-    object_id = data.get('object_id')
-    state = data.get('state')
+    object_id = data.get("object_id")
+    state = data.get("state")
     if not object_id or not state:
         return jsonify({"error": "Missing object_id or state"}), 400
 
@@ -721,9 +798,7 @@ def object_event():
     valid_states = set(pipeline_config.get_valid_handover_states())
     valid_states.add("transfer_point")
     is_asset_state = (
-        state.startswith("on_")
-        or state.startswith("at_")
-        or state == "carried"
+        state.startswith("on_") or state.startswith("at_") or state == "carried"
     )
     if state not in valid_states and not is_asset_state:
         return jsonify({"error": f"Invalid state: {state}"}), 400
@@ -755,34 +830,44 @@ def object_event():
             owner_type = owner_type or "zone"
 
     if not owner_id or not owner_type:
-        return jsonify({
-            "error": "missing ownership fields",
-            "code": "INVALID_OWNERSHIP",
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "missing ownership fields",
+                    "code": "INVALID_OWNERSHIP",
+                }
+            ),
+            400,
+        )
 
     topo = _topology_snapshot()
     if not _owner_exists(topo, owner_type, owner_id):
-        return jsonify({
-            "error": f"unknown owner {owner_type}:{owner_id}",
-            "code": "UNKNOWN_OWNER",
-        }), 409
+        return (
+            jsonify(
+                {
+                    "error": f"unknown owner {owner_type}:{owner_id}",
+                    "code": "UNKNOWN_OWNER",
+                }
+            ),
+            409,
+        )
 
     obj = {
         "object_id": object_id,
         "state": state,
-        "carrier_arm": data.get('carrier_arm'),
+        "carrier_arm": data.get("carrier_arm"),
         "event_time": incoming_ts,
     }
-    # Optional asset metadata — additive, frontend already reads carrier_asset.
-    carrier_asset = data.get('carrier_asset')
+    # Optional asset metadata - additive, frontend already reads carrier_asset.
+    carrier_asset = data.get("carrier_asset")
     if carrier_asset:
         obj["carrier_asset"] = carrier_asset
     if owner_id is not None:
         obj["owner_id"] = owner_id
     if owner_type is not None:
         obj["owner_type"] = owner_type
-    if 'slot' in data:
-        obj['slot'] = data['slot']
+    if "slot" in data:
+        obj["slot"] = data["slot"]
     # Phase 3: timing fields so the frontend can interpolate positions or
     # snap deterministically based on backend timestamps. All optional.
     for ts_field in ("start_time", "duration_ms", "event_time"):
@@ -799,15 +884,22 @@ def object_event():
         if prev_owner_type and prev_owner_id:
             ok, reason = _valid_transition(
                 topo,
-                prev_owner_type, prev_owner_id,
-                owner_type, owner_id,
+                prev_owner_type,
+                prev_owner_id,
+                owner_type,
+                owner_id,
             )
             if not ok:
-                return jsonify({
-                    "error": f"invalid ownership transition {prev_owner_type}:{prev_owner_id} -> "
-                             f"{owner_type}:{owner_id}: {reason}",
-                    "code": "INVALID_OWNERSHIP_TRANSITION",
-                }), 409
+                return (
+                    jsonify(
+                        {
+                            "error": f"invalid ownership transition {prev_owner_type}:{prev_owner_id} -> "
+                            f"{owner_type}:{owner_id}: {reason}",
+                            "code": "INVALID_OWNERSHIP_TRANSITION",
+                        }
+                    ),
+                    409,
+                )
         _object_versions[object_id] = incoming_ts
         _event_seq += 1
         obj["event_seq"] = _event_seq
@@ -815,18 +907,21 @@ def object_event():
         prev_owner = _object_owners.get(object_id)
         if owner_id is not None and prev_owner != owner_id:
             _object_owners[object_id] = owner_id
-            timestamp = datetime.now().strftime('%H:%M:%S')
-            socketio.emit('log_message', {
-                'timestamp': timestamp,
-                'source': 'ownership',
-                'message': f'[OWNERSHIP] {object_id} -> {owner_type}:{owner_id}',
-            })
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            socketio.emit(
+                "log_message",
+                {
+                    "timestamp": timestamp,
+                    "source": "ownership",
+                    "message": f"[OWNERSHIP] {object_id} -> {owner_type}:{owner_id}",
+                },
+            )
         _object_states[object_id] = obj
-    socketio.emit('object_update', obj)
+    socketio.emit("object_update", obj)
     return jsonify({"status": "ok"})
 
 
-@arm_bp.route('/objects', methods=['GET'])
+@arm_bp.route("/objects", methods=["GET"])
 def get_objects():
     """Get current state of all tracked objects (for reconnection sync).
 
@@ -838,7 +933,7 @@ def get_objects():
     return jsonify({"objects": snapshot})
 
 
-@arm_bp.route('/objects/reset', methods=['POST'])
+@arm_bp.route("/objects/reset", methods=["POST"])
 def reset_objects():
     """Clear all tracked objects (called at start of new demo run)."""
     with _object_lock:
@@ -848,11 +943,11 @@ def reset_objects():
     # Forget per-actor last-decision history so the next call after a
     # reset emits its log line even if the answer happens to repeat.
     _actor_last_decision.clear()
-    socketio.emit('objects_reset', {})
+    socketio.emit("objects_reset", {})
     return jsonify({"status": "ok"})
 
 
-@arm_bp.route('/objects/spawn', methods=['POST'])
+@arm_bp.route("/objects/spawn", methods=["POST"])
 def spawn_object():
     """Spawn one object at intake so the script-driven pipeline has work to do.
 
@@ -860,7 +955,7 @@ def spawn_object():
     Auto-numbers Obj1, Obj2, Obj3, ... if no id is supplied.
     """
     data = request.get_json(silent=True) or {}
-    explicit_id = data.get('object_id')
+    explicit_id = data.get("object_id")
     with _object_lock:
         if explicit_id:
             object_id = str(explicit_id)
@@ -882,11 +977,11 @@ def spawn_object():
         }
         _object_states[object_id] = obj
         _object_owners[object_id] = "intake-zone"
-    socketio.emit('object_update', obj)
+    socketio.emit("object_update", obj)
     return jsonify({"status": "ok", "object": obj})
 
 
-@arm_bp.route('/config', methods=['GET'])
+@arm_bp.route("/config", methods=["GET"])
 def get_config():
     """Get the full scene configuration for browser initialization.
 
@@ -896,11 +991,11 @@ def get_config():
     return jsonify(get_full_config())
 
 
-@arm_bp.route('/reload_config', methods=['POST'])
+@arm_bp.route("/reload_config", methods=["POST"])
 def reload_config():
     """Reload pipeline.yaml into memory. Does NOT reset runtime state.
 
-    Safe to call during a running simulation — the in-memory config
+    Safe to call during a running simulation - the in-memory config
     is updated, but arm angles, health, and tracked objects are untouched.
     Caller should invoke POST /restart_pipeline to apply the new config.
 
@@ -910,15 +1005,17 @@ def reload_config():
     pipeline_config.reload()
     n = pipeline_config.get_arm_count()
     valid, errors = pipeline_config.validate_dependency_graph()
-    return jsonify({
-        "status": "ok",
-        "arms": n,
-        "graph_valid": valid,
-        "graph_errors": errors,
-    })
+    return jsonify(
+        {
+            "status": "ok",
+            "arms": n,
+            "graph_valid": valid,
+            "graph_errors": errors,
+        }
+    )
 
 
-@arm_bp.route('/restart_pipeline', methods=['POST'])
+@arm_bp.route("/restart_pipeline", methods=["POST"])
 def restart_pipeline():
     """Reinitialize arm state and objects using the currently-loaded config.
 
@@ -932,51 +1029,59 @@ def restart_pipeline():
     arm_state.reinitialize()
     with _object_lock:
         _object_states.clear()
-    socketio.emit('state_update', arm_state.get_all())
-    socketio.emit('objects_reset', {})
+    socketio.emit("state_update", arm_state.get_all())
+    socketio.emit("objects_reset", {})
     n = pipeline_config.get_arm_count()
     return jsonify({"status": "ok", "arms": n})
 
 
 # --- Arm health and lifecycle ---
 
-@arm_bp.route('/arms/health', methods=['GET'])
+
+@arm_bp.route("/arms/health", methods=["GET"])
 def get_arms_health():
     """Return health status of all arms."""
     health = arm_state.get_all_health()
     return jsonify({"arms": health})
 
 
-@arm_bp.route('/arms/<int:arm_id>/health', methods=['POST'])
+@arm_bp.route("/arms/<int:arm_id>/health", methods=["POST"])
 def set_arm_health(arm_id):
     """Set health status for an arm (called by arm containers and demo-runner).
 
-    When health is 'dead', marks only this arm — downstream arms are NOT
+    When health is 'dead', marks only this arm - downstream arms are NOT
     cascade-stopped. They drain remaining products from handover zones, then
     individually report as 'stopped' via this same endpoint.
     """
     data = request.get_json(silent=True) or {}
-    health = data.get('health', 'alive')
-    error = data.get('error')
+    health = data.get("health", "alive")
+    error = data.get("error")
 
-    if health == 'dead':
-        arm_state.mark_arm_failed(arm_id, error or 'container stopped')
-        socketio.emit('arm_health', {"arm_id": arm_id, "health": "dead", "error": error})
+    if health == "dead":
+        arm_state.mark_arm_failed(arm_id, error or "container stopped")
+        socketio.emit(
+            "arm_health", {"arm_id": arm_id, "health": "dead", "error": error}
+        )
 
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        socketio.emit('log_message', {
-            'timestamp': timestamp,
-            'source': 'pipeline',
-            'message': f'Arm {arm_id} FAILED: {error or "unknown"}',
-        })
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        socketio.emit(
+            "log_message",
+            {
+                "timestamp": timestamp,
+                "source": "pipeline",
+                "message": f'Arm {arm_id} FAILED: {error or "unknown"}',
+            },
+        )
     else:
         arm_state.set_health(arm_id, health, error)
-        socketio.emit('arm_health', {"arm_id": arm_id, "health": health, "error": error})
+        socketio.emit(
+            "arm_health", {"arm_id": arm_id, "health": health, "error": error}
+        )
 
     return jsonify({"status": "ok"})
 
 
-@arm_bp.route('/arms/<int:arm_id>/stop', methods=['POST'])
+@arm_bp.route("/arms/<int:arm_id>/stop", methods=["POST"])
 def stop_arm(arm_id):
     """Stop an arm container AND propagate to all downstream dependents.
 
@@ -986,7 +1091,7 @@ def stop_arm(arm_id):
     waiting for the health monitor.
     """
     data = request.get_json(silent=True) or {}
-    reason = data.get('reason', 'manually stopped')
+    reason = data.get("reason", "manually stopped")
 
     docker_err = container_manager.stop_container(f"arm-{arm_id}")
 
@@ -997,63 +1102,75 @@ def stop_arm(arm_id):
     all_affected = [arm_id] + downstream
     for aid in all_affected:
         h = arm_state.get_health(aid)
-        socketio.emit('arm_health', {"arm_id": aid, **h})
+        socketio.emit("arm_health", {"arm_id": aid, **h})
 
     # Log it
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    socketio.emit('log_message', {
-        'timestamp': timestamp,
-        'source': 'pipeline',
-        'message': f'Arm {arm_id} stopped: {reason}. Downstream affected: {downstream}',
-    })
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    socketio.emit(
+        "log_message",
+        {
+            "timestamp": timestamp,
+            "source": "pipeline",
+            "message": f"Arm {arm_id} stopped: {reason}. Downstream affected: {downstream}",
+        },
+    )
 
-    return jsonify({
-        "status": "ok",
-        "arm_id": arm_id,
-        "downstream_stopped": downstream,
-        "container_control": "ok" if docker_err is None else docker_err,
-    })
+    return jsonify(
+        {
+            "status": "ok",
+            "arm_id": arm_id,
+            "downstream_stopped": downstream,
+            "container_control": "ok" if docker_err is None else docker_err,
+        }
+    )
 
 
-@arm_bp.route('/arms/<int:arm_id>/start', methods=['POST'])
+@arm_bp.route("/arms/<int:arm_id>/start", methods=["POST"])
 def start_arm(arm_id):
     """Start an arm container. Health monitor recovers the in-memory state."""
     docker_err = container_manager.start_container(f"arm-{arm_id}")
 
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    socketio.emit('log_message', {
-        'timestamp': timestamp,
-        'source': 'pipeline',
-        'message': f'Arm {arm_id} container start requested',
-    })
-    return jsonify({
-        "status": "ok",
-        "arm_id": arm_id,
-        "container_control": "ok" if docker_err is None else docker_err,
-    })
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    socketio.emit(
+        "log_message",
+        {
+            "timestamp": timestamp,
+            "source": "pipeline",
+            "message": f"Arm {arm_id} container start requested",
+        },
+    )
+    return jsonify(
+        {
+            "status": "ok",
+            "arm_id": arm_id,
+            "container_control": "ok" if docker_err is None else docker_err,
+        }
+    )
 
 
-@arm_bp.route('/arms/<int:arm_id>/allowed', methods=['GET'])
+@arm_bp.route("/arms/<int:arm_id>/allowed", methods=["GET"])
 def check_arm_allowed(arm_id):
     """Check if an arm is allowed to execute (no upstream failures)."""
     allowed = arm_state.is_arm_allowed(arm_id)
     return jsonify({"arm_id": arm_id, "allowed": allowed})
 
 
-@arm_bp.route('/pipeline/status', methods=['GET'])
+@arm_bp.route("/pipeline/status", methods=["GET"])
 def pipeline_status():
     """Return full pipeline status: arm health, dependency graph, stopped flag."""
     valid, errors = pipeline_config.validate_dependency_graph()
-    return jsonify({
-        "pipeline_stopped": arm_state.is_pipeline_stopped(),
-        "arms": arm_state.get_all_health(),
-        "dependency_graph_valid": valid,
-        "graph_errors": errors,
-        "topological_order": pipeline_config.get_topological_order(),
-    })
+    return jsonify(
+        {
+            "pipeline_stopped": arm_state.is_pipeline_stopped(),
+            "arms": arm_state.get_all_health(),
+            "dependency_graph_valid": valid,
+            "graph_errors": errors,
+            "topological_order": pipeline_config.get_topological_order(),
+        }
+    )
 
 
-@arm_bp.route('/log', methods=['POST'])
+@arm_bp.route("/log", methods=["POST"])
 def post_log():
     """Receive a log message from external services and broadcast to browser.
 
@@ -1063,24 +1180,28 @@ def post_log():
     if not data:
         return jsonify({"error": "JSON required"}), 400
 
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    socketio.emit('log_message', {
-        'timestamp': timestamp,
-        'source': data.get('source', 'system'),
-        'message': data.get('message', ''),
-    })
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    socketio.emit(
+        "log_message",
+        {
+            "timestamp": timestamp,
+            "source": data.get("source", "system"),
+            "message": data.get("message", ""),
+        },
+    )
     return jsonify({"status": "ok"})
 
 
 # ── Phase 2: non-arm asset runtime state ───────────────
 
-@arm_bp.route('/assets/state', methods=['GET'])
+
+@arm_bp.route("/assets/state", methods=["GET"])
 def get_assets_runtime_state():
     """Return runtime status for every registered non-arm asset."""
     return jsonify({"assets": asset_state.get_all()})
 
 
-@arm_bp.route('/assets/<asset_id>/state', methods=['GET'])
+@arm_bp.route("/assets/<asset_id>/state", methods=["GET"])
 def get_asset_runtime_state(asset_id):
     rec = asset_state.get(asset_id)
     if rec is None:
@@ -1088,7 +1209,7 @@ def get_asset_runtime_state(asset_id):
     return jsonify(rec)
 
 
-@arm_bp.route('/assets/<asset_id>/fail', methods=['POST'])
+@arm_bp.route("/assets/<asset_id>/fail", methods=["POST"])
 def fail_asset(asset_id):
     """Stop the asset's container, then mark it failed.
 
@@ -1097,7 +1218,7 @@ def fail_asset(asset_id):
     in-memory `asset_state.fail()` mirrors the reality.
     """
     data = request.get_json(silent=True) or {}
-    reason = data.get('reason', 'manually failed')
+    reason = data.get("reason", "manually failed")
 
     # 1) Stop the container (best-effort; soft-fails when docker not wired up).
     docker_err = container_manager.stop_container(asset_id)
@@ -1107,21 +1228,26 @@ def fail_asset(asset_id):
     if rec is None:
         return jsonify({"error": "unknown asset", "code": "NOT_FOUND"}), 404
 
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    socketio.emit('log_message', {
-        'timestamp': timestamp,
-        'source': asset_id,
-        'message': f'{asset_id} FAILED: {reason}',
-    })
-    socketio.emit('asset_health', {"asset_id": asset_id, **rec})
-    return jsonify({
-        "status": "ok",
-        "asset": rec,
-        "container_control": "ok" if docker_err is None else docker_err,
-    })
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    socketio.emit(
+        "log_message",
+        {
+            "timestamp": timestamp,
+            "source": asset_id,
+            "message": f"{asset_id} FAILED: {reason}",
+        },
+    )
+    socketio.emit("asset_health", {"asset_id": asset_id, **rec})
+    return jsonify(
+        {
+            "status": "ok",
+            "asset": rec,
+            "container_control": "ok" if docker_err is None else docker_err,
+        }
+    )
 
 
-@arm_bp.route('/assets/<asset_id>/recover', methods=['POST'])
+@arm_bp.route("/assets/<asset_id>/recover", methods=["POST"])
 def recover_asset(asset_id):
     """Start the asset's container, then mark it recovering.
 
@@ -1129,7 +1255,7 @@ def recover_asset(asset_id):
     endpoint so the in-container controller transitions
     failed → recovering → idle in lockstep with the backend registry.
     Without this hop the UI shows "RECOVERING" while the container's
-    controller stays idle and keeps processing — exactly the bug the user
+    controller stays idle and keeps processing - exactly the bug the user
     saw on a healthy click. The health monitor still auto-flips
     `recovering → idle` on the backend side once the container reports
     `state == "idle"` via `/health`.
@@ -1138,18 +1264,22 @@ def recover_asset(asset_id):
     if current is None:
         return jsonify({"error": "unknown asset", "code": "NOT_FOUND"}), 404
     if current.get("status") in ("idle", "busy"):
-        return jsonify({
-            "status": "ok",
-            "asset": current,
-            "container_control": "not needed",
-            "message": f"{asset_id} is already {current.get('status')}",
-        })
+        return jsonify(
+            {
+                "status": "ok",
+                "asset": current,
+                "container_control": "not needed",
+                "message": f"{asset_id} is already {current.get('status')}",
+            }
+        )
     if current.get("status") == "recovering":
-        return jsonify({
-            "status": "ok",
-            "asset": current,
-            "container_control": "already recovering",
-        })
+        return jsonify(
+            {
+                "status": "ok",
+                "asset": current,
+                "container_control": "already recovering",
+            }
+        )
 
     docker_err = container_manager.start_container(asset_id)
 
@@ -1157,44 +1287,53 @@ def recover_asset(asset_id):
 
     # Best-effort: notify the container's controller. Compose service name
     # equals asset id; in non-Docker dev env we hit the published port.
-    docker_mode = os.path.exists('/.dockerenv') or os.environ.get(
-        'DEMO_RUNNER_HOST', '').startswith('http://demo-runner')
+    docker_mode = os.path.exists("/.dockerenv") or os.environ.get(
+        "DEMO_RUNNER_HOST", ""
+    ).startswith("http://demo-runner")
     fallback_port = pipeline_config.get_asset_host_ports().get(asset_id, 8000)
-    container_url = (f"http://{asset_id}:8000" if docker_mode
-                     else f"http://localhost:{fallback_port}")
+    container_url = (
+        f"http://{asset_id}:8000"
+        if docker_mode
+        else f"http://localhost:{fallback_port}"
+    )
     try:
         http_requests.post(f"{container_url}/recover", timeout=3)
     except Exception:
         pass  # Container may still be coming up; health monitor handles sync.
 
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    socketio.emit('log_message', {
-        'timestamp': timestamp,
-        'source': asset_id,
-        'message': f'{asset_id} recovering',
-    })
-    socketio.emit('asset_health', {"asset_id": asset_id, **rec})
-    return jsonify({
-        "status": "ok",
-        "asset": rec,
-        "container_control": "ok" if docker_err is None else docker_err,
-    })
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    socketio.emit(
+        "log_message",
+        {
+            "timestamp": timestamp,
+            "source": asset_id,
+            "message": f"{asset_id} recovering",
+        },
+    )
+    socketio.emit("asset_health", {"asset_id": asset_id, **rec})
+    return jsonify(
+        {
+            "status": "ok",
+            "asset": rec,
+            "container_control": "ok" if docker_err is None else docker_err,
+        }
+    )
 
 
 # ── Demo Proxy (forwards to demo-runner container) ──────
 
 import requests as http_requests
 
-DEMO_RUNNER_HOST = os.environ.get('DEMO_RUNNER_HOST', 'http://localhost:6000')
+DEMO_RUNNER_HOST = os.environ.get("DEMO_RUNNER_HOST", "http://localhost:6000")
 
 
-@arm_bp.route('/demo/start', methods=['POST'])
+@arm_bp.route("/demo/start", methods=["POST"])
 def demo_start():
     """Proxy demo start to the demo-runner container."""
     try:
         data = request.get_json(silent=True) or {}
         resp = http_requests.post(
-            f'{DEMO_RUNNER_HOST}/run',
+            f"{DEMO_RUNNER_HOST}/run",
             json=data,
             timeout=5,
         )
@@ -1205,21 +1344,21 @@ def demo_start():
         return jsonify({"error": "Demo runner timeout"}), 504
 
 
-@arm_bp.route('/demo/status', methods=['GET'])
+@arm_bp.route("/demo/status", methods=["GET"])
 def demo_status():
     """Proxy demo status from the demo-runner container."""
     try:
-        resp = http_requests.get(f'{DEMO_RUNNER_HOST}/status', timeout=3)
+        resp = http_requests.get(f"{DEMO_RUNNER_HOST}/status", timeout=3)
         return jsonify(resp.json())
     except Exception:
         return jsonify({"running": False, "error": "Demo runner unreachable"})
 
 
-@arm_bp.route('/demo/stop', methods=['POST'])
+@arm_bp.route("/demo/stop", methods=["POST"])
 def demo_stop():
     """Proxy demo stop to the demo-runner container."""
     try:
-        resp = http_requests.post(f'{DEMO_RUNNER_HOST}/stop', timeout=3)
+        resp = http_requests.post(f"{DEMO_RUNNER_HOST}/stop", timeout=3)
         return jsonify(resp.json())
     except Exception:
         return jsonify({"status": "stopped"})

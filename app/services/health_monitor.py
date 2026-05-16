@@ -23,7 +23,7 @@ _monitor_thread = None
 _running = False
 
 # Cache Docker mode once at import time (env var never changes at runtime)
-_DOCKER_MODE = os.environ.get('DEMO_RUNNER_HOST', '').startswith('http://demo-runner')
+_DOCKER_MODE = os.environ.get("DEMO_RUNNER_HOST", "").startswith("http://demo-runner")
 
 
 def _get_arm_url(arm_id):
@@ -49,6 +49,7 @@ def _check_arm(arm_id, timeout):
 
 # ── Phase 6: non-arm asset health checks ──────────────────────────────
 
+
 def _get_asset_url(asset_id):
     """Build the health URL for a non-arm asset container.
 
@@ -73,32 +74,44 @@ def _check_asset(asset_id, timeout):
 
 def _emit_asset_health(asset_id, status, error=None):
     from app import socketio
-    socketio.emit("asset_health", {
-        "asset_id": asset_id,
-        "status": status,
-        "error": error,
-    })
+
+    socketio.emit(
+        "asset_health",
+        {
+            "asset_id": asset_id,
+            "status": status,
+            "error": error,
+        },
+    )
 
 
 def _emit_health(arm_id, health, error=None):
     """Broadcast arm health change to all connected browsers via SocketIO."""
     from app import socketio
-    socketio.emit('arm_health', {
-        "arm_id": arm_id,
-        "health": health,
-        "error": error,
-    })
+
+    socketio.emit(
+        "arm_health",
+        {
+            "arm_id": arm_id,
+            "health": health,
+            "error": error,
+        },
+    )
 
 
 def _emit_log(source, message):
     """Broadcast a log message to the browser log panel via SocketIO."""
     from app import socketio
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    socketio.emit('log_message', {
-        'timestamp': timestamp,
-        'source': source,
-        'message': message,
-    })
+
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    socketio.emit(
+        "log_message",
+        {
+            "timestamp": timestamp,
+            "source": source,
+            "message": message,
+        },
+    )
 
 
 def _monitor_loop():
@@ -119,7 +132,7 @@ def _monitor_loop():
             current = h["health"]
 
             # ── Recovery path: dead/stopped arms might have come back ──
-            # "draining" is NOT included — the demo runner owns that state.
+            # "draining" is NOT included - the demo runner owns that state.
             # A draining arm is actively processing its last product; the
             # health monitor must not override it to "alive" just because
             # the container responds. The demo runner transitions
@@ -131,14 +144,18 @@ def _monitor_loop():
                 alive = _check_arm(arm_id, timeout)
                 if alive:
                     # Recovery = container health + upstream availability.
-                    # Downstream health is NOT checked — an arm is healthy
+                    # Downstream health is NOT checked - an arm is healthy
                     # if its container responds, even if the line can't flow.
                     # Line availability is a separate concern from arm health.
                     deps = pipeline_config.get_dependencies(arm_id)
-                    all_deps_ok = all(
-                        arm_state.get_health(d)["health"] in ("alive", "idle")
-                        for d in deps
-                    ) if deps else True
+                    all_deps_ok = (
+                        all(
+                            arm_state.get_health(d)["health"] in ("alive", "idle")
+                            for d in deps
+                        )
+                        if deps
+                        else True
+                    )
 
                     if all_deps_ok:
                         arm_state.set_health(arm_id, "alive")
@@ -165,16 +182,19 @@ def _monitor_loop():
 
                 if missed[arm_id] >= max_missed:
                     # Container is confirmed dead
-                    print(f"[HealthMonitor] Arm {arm_id} container is DEAD "
-                          f"({missed[arm_id]} missed checks)")
+                    print(
+                        f"[HealthMonitor] Arm {arm_id} container is DEAD "
+                        f"({missed[arm_id]} missed checks)"
+                    )
                     arm_state.mark_arm_failed(arm_id, "container stopped responding")
                     missed[arm_id] = 0
 
                     # Notify browser: this arm failed
                     _emit_health(arm_id, "dead", "container stopped responding")
-                    _emit_log("pipeline",
-                              f"Arm {arm_id} FAILED: container stopped responding")
-                    # Downstream arms are NOT stopped immediately — they drain
+                    _emit_log(
+                        "pipeline", f"Arm {arm_id} FAILED: container stopped responding"
+                    )
+                    # Downstream arms are NOT stopped immediately - they drain
                     # remaining products from handover zones, then stop naturally
 
                 elif missed[arm_id] >= 1:
@@ -184,15 +204,15 @@ def _monitor_loop():
 
         # ── Phase 6: poll non-arm asset containers (vehicle) ──
         # Asset registry is populated either by /assets/<id>/register from
-        # asset containers themselves, or — in this phase — implicitly by
+        # asset containers themselves, or - in this phase - implicitly by
         # the demo runner / config helpers. We iterate whatever is registered.
         for asset_id, rec in asset_state.get_all().items():
             current = rec.get("status")
             alive = _check_asset(asset_id, timeout)
             if alive is None:
-                continue  # not docker mode — skip
+                continue  # not docker mode - skip
 
-            # Container's reported state (when reachable) — drives sync.
+            # Container's reported state (when reachable) - drives sync.
             container_state = None
             if alive:
                 try:
@@ -202,15 +222,27 @@ def _monitor_loop():
                 except Exception:
                     container_state = None
 
-            if alive and container_state in ("idle", "busy", "draining", "recovering", "failed", "stopped"):
+            if alive and container_state in (
+                "idle",
+                "busy",
+                "draining",
+                "recovering",
+                "failed",
+                "stopped",
+            ):
                 if container_state != current:
                     try:
-                        asset_state.set_status(asset_id, container_state, rec.get("error"))
+                        asset_state.set_status(
+                            asset_id, container_state, rec.get("error")
+                        )
                     except Exception:
                         pass
                     _emit_asset_health(asset_id, container_state, rec.get("error"))
                     if container_state == "draining":
-                        _emit_log("state", f"[STATE] {asset_id} → draining (downstream blocked)")
+                        _emit_log(
+                            "state",
+                            f"[STATE] {asset_id} → draining (downstream blocked)",
+                        )
                     current = container_state
 
             if current == "failed":
@@ -238,10 +270,12 @@ def _monitor_loop():
                 if missed[asset_id] >= max_missed:
                     asset_state.fail(asset_id, "container stopped responding")
                     missed[asset_id] = 0
-                    _emit_asset_health(asset_id, "failed",
-                                       "container stopped responding")
-                    _emit_log("pipeline",
-                              f"{asset_id} FAILED: container stopped responding")
+                    _emit_asset_health(
+                        asset_id, "failed", "container stopped responding"
+                    )
+                    _emit_log(
+                        "pipeline", f"{asset_id} FAILED: container stopped responding"
+                    )
 
         time.sleep(interval)
 
@@ -254,7 +288,9 @@ def start():
         return
 
     _running = True
-    _monitor_thread = threading.Thread(target=_monitor_loop, name="HealthMonitor", daemon=True)
+    _monitor_thread = threading.Thread(
+        target=_monitor_loop, name="HealthMonitor", daemon=True
+    )
     _monitor_thread.start()
     print("[HealthMonitor] Started")
 

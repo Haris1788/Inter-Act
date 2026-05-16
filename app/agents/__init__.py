@@ -1,1 +1,1 @@
-"""Agent layer — multi-agent coordination (Phase 3+)."""
+"""Agent layer - multi-agent coordination (Phase 3+)."""

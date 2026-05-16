@@ -1,9 +1,9 @@
 """
-Demo Runner Microservice — executes the pipeline via HTTP calls to the backend.
+Demo Runner Microservice - executes the pipeline via HTTP calls to the backend.
 
 This runs in its own container, separate from the Flask API server.
 When triggered, it calls the backend's /set_angle and /object_event
-endpoints as an external HTTP client — no self-calling, no thread starvation.
+endpoints as an external HTTP client - no self-calling, no thread starvation.
 
 Usage:
     SERVER_HOST=http://backend:5000 python scripts/demo_runner_server.py
@@ -30,29 +30,31 @@ _thread = None
 def _run_demo(num_products, speed_factor, use_brain=False):
     """Execute the pipeline in a background thread via HTTP.
 
-    `use_brain` is parked here for Phase 4 — once the brain is generalised
+    `use_brain` is parked here for Phase 4 - once the brain is generalised
     across actor types it gets re-wired in. Phase 1 just runs the pipeline.
     """
     global _status
     host = DEFAULT_HOST  # From SERVER_HOST env var
     try:
         _status = {"running": True, "error": None, "use_brain": use_brain}
-        print(f'Demo started: {num_products} products, speed={speed_factor}x, host={host}, brain={use_brain}')
+        print(
+            f"Demo started: {num_products} products, speed={speed_factor}x, host={host}, brain={use_brain}"
+        )
         run_pipeline(host, speed_factor, num_products)
         _status = {"running": False, "error": None}
-        print('Demo completed successfully')
+        print("Demo completed successfully")
     except Exception as e:
         _status = {"running": False, "error": str(e)}
-        print(f'Demo failed: {e}')
+        print(f"Demo failed: {e}")
 
 
-@app.route('/health', methods=['GET'])
+@app.route("/health", methods=["GET"])
 def health():
     """Health check for Docker."""
     return jsonify({"status": "ok", "backend": DEFAULT_HOST})
 
 
-@app.route('/run', methods=['POST'])
+@app.route("/run", methods=["POST"])
 def run():
     """Start the pipeline demo.
 
@@ -65,14 +67,14 @@ def run():
         return jsonify({"error": "Demo already running"}), 409
 
     data = request.get_json(silent=True) or {}
-    num_products = data.get('products', 3)
-    speed_name = data.get('speed', 'normal')
+    num_products = data.get("products", 3)
+    speed_name = data.get("speed", "normal")
     speed_factor = SPEED_FACTORS.get(speed_name, 1.0)
     # Body flag wins; otherwise honour USE_QWEN_BRAIN env var.
-    if 'use_brain' in data:
-        use_brain = bool(data.get('use_brain'))
+    if "use_brain" in data:
+        use_brain = bool(data.get("use_brain"))
     else:
-        use_brain = os.environ.get('USE_QWEN_BRAIN', '').lower() in ('1', 'true', 'yes')
+        use_brain = os.environ.get("USE_QWEN_BRAIN", "").lower() in ("1", "true", "yes")
 
     _thread = threading.Thread(
         target=_run_demo,
@@ -81,21 +83,23 @@ def run():
     )
     _thread.start()
 
-    return jsonify({
-        "status": "started",
-        "products": num_products,
-        "speed": speed_name,
-        "use_brain": use_brain,
-    })
+    return jsonify(
+        {
+            "status": "started",
+            "products": num_products,
+            "speed": speed_name,
+            "use_brain": use_brain,
+        }
+    )
 
 
-@app.route('/status', methods=['GET'])
+@app.route("/status", methods=["GET"])
 def status():
     """Check if a demo is currently running."""
     return jsonify(_status)
 
 
-@app.route('/stop', methods=['POST'])
+@app.route("/stop", methods=["POST"])
 def stop():
     """Stop the running demo by signaling every module to halt."""
     global _status
@@ -104,8 +108,8 @@ def stop():
     return jsonify({"status": "stopped"})
 
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', '6000'))
-    print(f'Demo Runner starting on port {port}')
-    print(f'Backend: {DEFAULT_HOST}')
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "6000"))
+    print(f"Demo Runner starting on port {port}")
+    print(f"Backend: {DEFAULT_HOST}")
+    app.run(host="0.0.0.0", port=port)

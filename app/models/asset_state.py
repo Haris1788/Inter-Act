@@ -1,15 +1,15 @@
 """Runtime state registry for non-arm assets (vehicle).
 
 Mirrors `arm_state.py` for the rest of the asset graph. Arms continue to use
-their existing health model — this module tracks vehicles so the frontend,
+their existing health model - this module tracks vehicles so the frontend,
 REST routes, and demo runner share one source of truth.
 
 State machine per asset:
-    idle    — registered, nothing in flight
-    busy    — processing an object
-    failed  — controller has been told to fail; downstream sees this
-    recovering — fail flag cleared, waiting for next cycle
-    stopped — drain-stopped after upstream completion (terminal)
+    idle    - registered, nothing in flight
+    busy    - processing an object
+    failed  - controller has been told to fail; downstream sees this
+    recovering - fail flag cleared, waiting for next cycle
+    stopped - drain-stopped after upstream completion (terminal)
 
 The registry is process-local, lock-guarded, and reset between demo runs.
 """
@@ -88,7 +88,7 @@ def is_alive(asset_id: str) -> bool:
     """True when asset is in a state that can still process objects."""
     rec = get(asset_id)
     if rec is None:
-        return True   # unknown id treated as transparent (back-compat with arms-only)
+        return True  # unknown id treated as transparent (back-compat with arms-only)
     return rec["status"] not in ("draining", "failed", "stopped")
 
 

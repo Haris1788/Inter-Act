@@ -1,4 +1,4 @@
-"""Page routes — serves simulation page and health endpoints."""
+"""Page routes - serves simulation page and health endpoints."""
 
 import os
 
@@ -12,7 +12,7 @@ page_bp = Blueprint("pages", __name__)
 def index():
     """Serve the main simulation page with no-cache headers."""
     response = make_response(render_template("index.html"))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
 
 
@@ -33,23 +33,35 @@ def ollama_health():
         resp.raise_for_status()
         payload = resp.json()
         models = payload.get("models", [])
-        model_names = [m.get("name") for m in models if isinstance(m, dict) and m.get("name")]
+        model_names = [
+            m.get("name") for m in models if isinstance(m, dict) and m.get("name")
+        ]
         configured_model_available = (
             ollama_model in model_names if ollama_model else None
         )
-        return jsonify({
-            "status": "ok",
-            "ollama_reachable": True,
-            "ollama_base_url": ollama_base_url,
-            "configured_model": ollama_model,
-            "configured_model_available": configured_model_available,
-            "model_count": len(models),
-        }), 200
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "ollama_reachable": True,
+                    "ollama_base_url": ollama_base_url,
+                    "configured_model": ollama_model,
+                    "configured_model_available": configured_model_available,
+                    "model_count": len(models),
+                }
+            ),
+            200,
+        )
     except (requests.RequestException, ValueError) as exc:
-        return jsonify({
-            "status": "error",
-            "ollama_reachable": False,
-            "ollama_base_url": ollama_base_url,
-            "configured_model": ollama_model,
-            "error": str(exc),
-        }), 503
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "ollama_reachable": False,
+                    "ollama_base_url": ollama_base_url,
+                    "configured_model": ollama_model,
+                    "error": str(exc),
+                }
+            ),
+            503,
+        )

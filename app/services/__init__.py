@@ -1,1 +1,1 @@
-"""Service layer — LLM integration (Phase 2+)."""
+"""Service layer - LLM integration (Phase 2+)."""

@@ -44,9 +44,10 @@ def create_app(config_class=None):
 
     # Pre-register non-arm assets from pipeline_config so the health monitor
     # has something to poll without waiting for asset containers to register
-    # themselves. Idempotent — safe to call repeatedly.
+    # themselves. Idempotent - safe to call repeatedly.
     try:
         from app.models import asset_state, pipeline_config
+
         for ea in pipeline_config.get_extra_assets():
             asset_state.register(ea["id"], ea["type"], ea.get("label"))
     except Exception as exc:
@@ -54,6 +55,7 @@ def create_app(config_class=None):
 
     # Start health monitor for arm + asset containers (runs in background thread)
     from app.services.health_monitor import start as start_health_monitor
+
     start_health_monitor()
 
     return app

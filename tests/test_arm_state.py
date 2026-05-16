@@ -1,4 +1,4 @@
-"""Tests for arm_state module — state management and validation.
+"""Tests for arm_state module - state management and validation.
 
 All arm IDs are sourced from pipeline_config.get_arm_ids() so these tests
 scale automatically when pipeline.yaml changes arm count.
@@ -8,8 +8,7 @@ import pytest
 from app.models import arm_state
 from app.models.pipeline_config import get_arm_count, get_arm_ids
 
-
-# Derive canonical arm IDs once per test session — tests adapt to any arm count.
+# Derive canonical arm IDs once per test session - tests adapt to any arm count.
 ARM_IDS = get_arm_ids()
 FIRST_ARM = ARM_IDS[0]
 LAST_ARM = ARM_IDS[-1]

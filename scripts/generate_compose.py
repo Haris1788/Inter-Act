@@ -23,8 +23,7 @@ COMPOSE_PREFIX = "interact"
 
 def _asset_host_ports(assets):
     return {
-        a["id"]: ASSET_PORT_BASE + i * ASSET_PORT_STEP
-        for i, a in enumerate(assets)
+        a["id"]: ASSET_PORT_BASE + i * ASSET_PORT_STEP for i, a in enumerate(assets)
     }
 
 
@@ -44,8 +43,9 @@ def _vehicle_travel_time(asset):
     for i in range(len(waypoints) - 1):
         a = waypoints[i]
         b = waypoints[i + 1]
-        distance += math.dist((a.get("x", 0), a.get("y", 0)),
-                              (b.get("x", 0), b.get("y", 0)))
+        distance += math.dist(
+            (a.get("x", 0), a.get("y", 0)), (b.get("x", 0), b.get("y", 0))
+        )
 
     if speed <= 0:
         return 2.0
@@ -57,7 +57,7 @@ def _non_arm_assets(cfg):
     for a in raw:
         if a.get("type") == "conveyor":
             raise ValueError(
-                f"Asset {a.get('id')!r}: unsupported asset type 'conveyor' — "
+                f"Asset {a.get('id')!r}: unsupported asset type 'conveyor' - "
                 f"conveyor support has been removed from pipeline.yaml"
             )
     return [a for a in raw if a.get("type") == "vehicle"]
@@ -107,7 +107,9 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
             ],
             "healthcheck": {
                 "test": [
-                    "CMD", "python", "-c",
+                    "CMD",
+                    "python",
+                    "-c",
                     "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=3).read()",
                 ],
                 "interval": "5s",
@@ -134,7 +136,9 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
             "volumes": ["./pipeline.yaml:/config/pipeline.yaml:ro"],
             "healthcheck": {
                 "test": [
-                    "CMD", "python", "-c",
+                    "CMD",
+                    "python",
+                    "-c",
                     "import urllib.request; urllib.request.urlopen('http://localhost:6000/health', timeout=3).read()",
                 ],
                 "interval": "5s",
@@ -203,7 +207,9 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate docker-compose.yml from pipeline.yaml")
+    parser = argparse.ArgumentParser(
+        description="Generate docker-compose.yml from pipeline.yaml"
+    )
     parser.add_argument("--config", default="pipeline.yaml")
     parser.add_argument("--output", default="docker-compose.yml")
     args = parser.parse_args()

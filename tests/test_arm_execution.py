@@ -35,15 +35,21 @@ def reset_singletons():
 
 class TestValidateDecision:
     def test_clamps_angle_above_180(self):
-        out = _validate_decision({"target_angle": 999, "action": "pick", "confidence": 0.9})
+        out = _validate_decision(
+            {"target_angle": 999, "action": "pick", "confidence": 0.9}
+        )
         assert out["target_angle"] == 180.0
 
     def test_clamps_angle_below_zero(self):
-        out = _validate_decision({"target_angle": -45, "action": "drop", "confidence": 0.9})
+        out = _validate_decision(
+            {"target_angle": -45, "action": "drop", "confidence": 0.9}
+        )
         assert out["target_angle"] == 0.0
 
     def test_unknown_action_falls_back_to_move(self):
-        out = _validate_decision({"target_angle": 90, "action": "yeet", "confidence": 0.5})
+        out = _validate_decision(
+            {"target_angle": 90, "action": "yeet", "confidence": 0.5}
+        )
         assert out["action"] == "move"
         assert out["action"] in VALID_ACTIONS
 
@@ -52,7 +58,9 @@ class TestValidateDecision:
         assert out["confidence"] == 0.5
 
     def test_string_angle_is_coerced(self):
-        out = _validate_decision({"target_angle": "47.5", "action": "pick", "confidence": 0.8})
+        out = _validate_decision(
+            {"target_angle": "47.5", "action": "pick", "confidence": 0.8}
+        )
         assert out["target_angle"] == 47.5
 
     def test_failure_dict_passes_through(self):
@@ -82,13 +90,15 @@ class TestExecuteTaskHappyPath:
         }
         executor.brain = fake_brain
 
-        # Mock the arm server's /move response — 200 with a JSON body.
+        # Mock the arm server's /move response - 200 with a JSON body.
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status.return_value = None
         mock_resp.json.return_value = {"status": "ok", "arm_id": 1, "angle": 180}
 
-        with patch("app.services.arm_execution.requests.post", return_value=mock_resp) as posted:
+        with patch(
+            "app.services.arm_execution.requests.post", return_value=mock_resp
+        ) as posted:
             result = executor.execute_task("pick object from intake")
 
         assert result["status"] == "success"

@@ -127,7 +127,7 @@ function recoverAsset(assetId) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * AI bar — reset / spawn / run-all + per-arm Qwen script dispatch.
+ * AI bar - reset / spawn / run-all + per-arm Qwen script dispatch.
  *
  * Calls the backend /run_script endpoint, which asks Qwen to pick one of
  * three named scripts for that arm (relay / hold / return_to_rest), runs
@@ -151,7 +151,7 @@ function setActorButtonBusy(actorId, busy) {
   // remain clickable so the operator can drive several in parallel if they
   // want (Qwen is shared but the runs serialise on the network anyway).
   const btn = document.querySelector(
-    `#ai-actor-buttons button[data-actor-id="${actorId}"]`
+    `#ai-actor-buttons button[data-actor-id="${actorId}"]`,
   );
   if (btn) btn.disabled = busy;
   if (busy) actorBusy.add(actorId);
@@ -190,8 +190,9 @@ function renderAIActorButtons() {
       const nb = Number(b.id.replace(/^arm-/, ""));
       return na - nb;
     });
-  const assets = Array.from(state.assets.values())
-    .filter((a) => a.type === "vehicle");
+  const assets = Array.from(state.assets.values()).filter(
+    (a) => a.type === "vehicle",
+  );
 
   const flow = [...arms, ...assets];
   if (flow.length === 0) return;
@@ -218,7 +219,7 @@ function renderAIActorButtons() {
 }
 
 function aiReset() {
-  // Reset is always allowed — used to recover from a stuck or
+  // Reset is always allowed - used to recover from a stuck or
   // half-finished run.
   setAIStatus("resetting…");
   fetch(backendUrl + "/objects/reset", { method: "POST" })
@@ -227,7 +228,7 @@ function aiReset() {
 }
 
 function aiSpawn() {
-  // Spawn is always allowed — useful to queue more work mid-run.
+  // Spawn is always allowed - useful to queue more work mid-run.
   setAIStatus("spawning…");
   fetch(backendUrl + "/objects/spawn", {
     method: "POST",
@@ -235,7 +236,9 @@ function aiSpawn() {
     body: "{}",
   })
     .then((r) => r.json())
-    .then((d) => setAIStatus(`spawned ${d?.object?.object_id || "object"}`, "ok"))
+    .then((d) =>
+      setAIStatus(`spawned ${d?.object?.object_id || "object"}`, "ok"),
+    )
     .catch(() => setAIStatus("spawn failed", "err"));
 }
 
@@ -245,9 +248,10 @@ function actorLabel(actorId) {
 
 async function _dispatch(actorId) {
   // Body shape matches the backend: numeric → arm_id, string → actor_id.
-  const body = typeof actorId === "number"
-    ? { arm_id: actorId, task: "do your relay" }
-    : { actor_id: actorId, task: "do your relay" };
+  const body =
+    typeof actorId === "number"
+      ? { arm_id: actorId, task: "do your relay" }
+      : { actor_id: actorId, task: "do your relay" };
   const r = await fetch(backendUrl + "/run_script", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -265,7 +269,10 @@ function aiRunActor(actorId) {
       if (d?.status === "success") {
         setAIStatus(`${actorLabel(actorId)} → ${d.chosen_script}`, "ok");
       } else {
-        setAIStatus(`${actorLabel(actorId)} failed: ${d?.reason || "?"}`, "err");
+        setAIStatus(
+          `${actorLabel(actorId)} failed: ${d?.reason || "?"}`,
+          "err",
+        );
       }
     })
     .catch((e) => {
@@ -275,7 +282,7 @@ function aiRunActor(actorId) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * Run All — N parallel actor loops (one per actor, all running concurrently).
+ * Run All - N parallel actor loops (one per actor, all running concurrently).
  *
  * Each actor independently polls its brain. When its upstream has an
  * object and its downstream is alive, it relays. Otherwise the brain
@@ -283,7 +290,7 @@ function aiRunActor(actorId) {
  * then checks again.
  *
  * Result: the operator spawns objects whenever they like. As soon as an
- * actor sees work, it moves the object. arm-1 and arm-2 work in parallel —
+ * actor sees work, it moves the object. arm-1 and arm-2 work in parallel -
  * arm-1 is already picking Obj2 from intake while arm-2 is carrying Obj1
  * to the shuttle.
  *
@@ -331,7 +338,7 @@ async function actorLoop(fid) {
         consecutiveHolds++;
       }
     } catch (e) {
-      // Network blip — keep looping, the next poll will retry.
+      // Network blip - keep looping, the next poll will retry.
       consecutiveHolds++;
     }
     setActorButtonBusy(actorId, false);
@@ -340,7 +347,9 @@ async function actorLoop(fid) {
     // Backoff: when the actor has no work, sleep longer between polls so
     // we don't hammer the backend with hold cycles. Active actors poll
     // quickly so they pick up new work fast.
-    const sleepMs = didWork ? 200 : Math.min(1000 + consecutiveHolds * 500, 5000);
+    const sleepMs = didWork
+      ? 200
+      : Math.min(1000 + consecutiveHolds * 500, 5000);
     await sleep(sleepMs);
   }
   return { actorId, movedCount };
@@ -350,13 +359,17 @@ async function aiRunAll() {
   if (aiBusy) {
     // Second click while running = stop request.
     runAllStop = true;
-    setAIStatus("Run All: stop requested — actors finishing their current step…");
+    setAIStatus(
+      "Run All: stop requested - actors finishing their current step…",
+    );
     return;
   }
   aiBusy = true;
   runAllStop = false;
   setRunAllRunning(true);
-  setAIStatus("Run All: parallel loops active. Spawn or kill anything; the actors react on their own.");
+  setAIStatus(
+    "Run All: parallel loops active. Spawn or kill anything; the actors react on their own.",
+  );
 
   // Authoritative actor list from the backend.
   let flow = await fetch(backendUrl + "/topology")
@@ -380,7 +393,7 @@ async function aiRunAll() {
     .querySelectorAll("#ai-actor-buttons button")
     .forEach((b) => (b.disabled = true));
 
-  // Kick off one loop per actor. They run concurrently — arm-1 polls
+  // Kick off one loop per actor. They run concurrently - arm-1 polls
   // intake while arm-5 polls handover_4, etc.
   runAllLoopsActive = flow.length;
   const loops = flow.map((fid) => actorLoop(fid));
@@ -388,7 +401,10 @@ async function aiRunAll() {
   runAllLoopsActive = 0;
 
   const total = results.reduce((s, r) => s + (r.movedCount || 0), 0);
-  setAIStatus(`Run All: stopped (${total} relay(s) total across all actors)`, "ok");
+  setAIStatus(
+    `Run All: stopped (${total} relay(s) total across all actors)`,
+    "ok",
+  );
 
   // Re-enable manual buttons.
   document
