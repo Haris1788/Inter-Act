@@ -41,6 +41,12 @@ export function createMockDriver(): RuntimeDriver {
         dockGlows: mockDockGlows,
         agvKinematics: {},
       });
+      // Seed a small operational timeline so the Events view is populated in
+      // the standalone (mock) demo. Representative, not fabricated analytics.
+      s.pushEvent({ kind: "link", text: "Mock runtime started", tone: "info" });
+      s.pushEvent({ kind: "health", actorId: "arm-1", text: "arm-1 → alive", tone: "ok" });
+      s.pushEvent({ kind: "asset", actorId: "veh-1", text: "veh-1 → busy · carrying obj-1", tone: "ok" });
+      s.pushEvent({ kind: "dock", actorId: "veh-1", text: "dock · obj-1 → arm-2", tone: "info" });
 
       const loop = (t: number) => {
         if (last) store.getState().tick(t - last);

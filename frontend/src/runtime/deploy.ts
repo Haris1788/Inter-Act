@@ -92,6 +92,7 @@ export async function runDeploy(opts: RunDeployOptions): Promise<RunDeployOutcom
   const payload = buildDeployPayload(st());
   if (!v.deployable) {
     st().setDeployPhase("failed", `Not deployable · ${v.errors || v.warnings} issue(s)`);
+    st().pushEvent({ kind: "deploy", text: "Deploy blocked — validation failed", tone: "err" });
     return { ok: false, payload, finalPhase: "failed", note: "Validation blocked deploy" };
   }
 
@@ -106,6 +107,7 @@ export async function runDeploy(opts: RunDeployOptions): Promise<RunDeployOutcom
     if (!ok) {
       // No snapshot recorded — the deploy did not land.
       st().setDeployPhase("failed", "Backend /restart_pipeline failed");
+      st().pushEvent({ kind: "deploy", text: "Restart failed — /restart_pipeline error", tone: "err" });
       return { ok: false, payload, finalPhase: "failed", note: "restart_pipeline failed" };
     }
     st().setDeployPhase("reconciling", "Reconciling runtime…");
@@ -131,6 +133,13 @@ export async function runDeploy(opts: RunDeployOptions): Promise<RunDeployOutcom
     }
     if (ready) st().recordDeploy(snapshotJson); // baseline only on confirmed land
     st().setDeployPhase(ready ? "ready" : "failed", ready ? "Runtime ready" : "Runtime did not converge");
+    st().pushEvent({
+      kind: "deploy",
+      text: ready
+        ? "Deploy reconciled — runtime ready"
+        : "Deploy reconcile timed out — runtime did not converge",
+      tone: ready ? "ok" : "warn",
+    });
     return {
       ok: ready,
       payload,
@@ -147,6 +156,11 @@ export async function runDeploy(opts: RunDeployOptions): Promise<RunDeployOutcom
     "prepared",
     "Payload prepared. Backend apply is the offline pipeline.yaml → generate_compose flow.",
   );
+  st().pushEvent({
+    kind: "deploy",
+    text: `Payload prepared · ${payload.actors.length} actors (snapshot recorded)`,
+    tone: "info",
+  });
   return {
     ok: true,
     payload,

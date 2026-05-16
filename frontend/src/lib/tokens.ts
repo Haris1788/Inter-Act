@@ -34,6 +34,7 @@ export const tokens = {
   idle: "#8A8A90",
   idleBg: "#E7E6E2",
   info: "#5C6B7A",
+  infoBg: "#E4E8EC",
   cta: "#18181B",
   cta2: "#27272A",
   // field-layer accents (from the SVG defs in INTER.act v2.html)

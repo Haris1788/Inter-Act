@@ -34,6 +34,9 @@ export function createSocketDriver(): RuntimeDriver {
   // object ids are evicted FIFO so a long run can't grow these unbounded.
   const OBJ_CAP = 500;
   const objSeq = new Map<string, number>();
+  // last emitted status per actor — dedup so observability records only real
+  // transitions, never per-poll repeats.
+  const lastStatus = new Map<string, string>();
   // actorId → downstream actorIds (from /config asset_graph).
   let adjacency: Record<string, string[]> = {};
   // object_id → last owner key, for detecting dock moments.
@@ -77,15 +80,20 @@ export function createSocketDriver(): RuntimeDriver {
 
       socket.on("connect", () => {
         st().setConnection("live", "connected");
+        st().pushEvent({ kind: "link", text: "Runtime link established", tone: "ok" });
         // Resilience: a backend restart resets its event_seq counter. Clearing
         // the per-object dedup maps on every (re)connect prevents post-restart
         // object events being wrongly dropped as stale. Bootstrap reseeds them.
         objSeq.clear();
         objOwner.clear();
         busWindow = [];
+        lastStatus.clear();
         void bootstrap();
       });
-      socket.on("disconnect", () => st().setConnection("live", "disconnected"));
+      socket.on("disconnect", () => {
+        st().setConnection("live", "disconnected");
+        st().pushEvent({ kind: "link", text: "Runtime link lost", tone: "warn" });
+      });
       socket.io.on("reconnect_attempt", () => st().setConnection("live", "connecting"));
 
       socket.on("state_update", (p: { arms?: { arm_id: number; status: string }[] }) => {
@@ -95,19 +103,39 @@ export function createSocketDriver(): RuntimeDriver {
       });
 
       socket.on("arm_health", (p: { arm_id: number; health: string; error?: string | null }) => {
-        st().setActorRuntime(armActorId(p.arm_id), {
-          status: armHealthToStatus(p.health),
+        const id = armActorId(p.arm_id);
+        const status = armHealthToStatus(p.health);
+        st().setActorRuntime(id, {
+          status,
           phase: p.error ? `${p.health} · ${p.error}` : p.health,
         });
+        // Observability: only record actual transitions (no per-poll spam).
+        if (lastStatus.get(id) !== status) {
+          lastStatus.set(id, status);
+          st().pushEvent({
+            kind: "health",
+            actorId: id,
+            text: `${id} → ${p.health}${p.error ? ` (${p.error})` : ""}`,
+            tone: status === "down" ? "err" : status === "warn" ? "warn" : "ok",
+          });
+        }
       });
 
       socket.on(
         "asset_health",
         (p: { asset_id: string; status: string; carried_object?: string | null; error?: string | null }) => {
-          st().setActorRuntime(assetActorId(p.asset_id), {
-            status: assetStatusToStatus(p.status),
-            phase: p.status,
-          });
+          const id = assetActorId(p.asset_id);
+          const status = assetStatusToStatus(p.status);
+          st().setActorRuntime(id, { status, phase: p.status });
+          if (lastStatus.get(id) !== status) {
+            lastStatus.set(id, status);
+            st().pushEvent({
+              kind: "asset",
+              actorId: id,
+              text: `${id} → ${p.status}${p.carried_object ? ` · carrying ${p.carried_object}` : ""}`,
+              tone: status === "down" ? "err" : status === "warn" ? "warn" : "ok",
+            });
+          }
         },
       );
 
@@ -171,6 +199,12 @@ export function createSocketDriver(): RuntimeDriver {
               resolveOwnerPosition(s, p.owner_type, p.owner_id) ??
               (p.carrier_asset ? resolveOwnerPosition(s, "asset", assetActorId(p.carrier_asset)) : null);
             if (at) s.emitDockGlow({ id: `dg-${p.object_id}`, at, intensity: 0.8, fadeMsLeft: 1400 });
+            s.pushEvent({
+              kind: "dock",
+              actorId: p.carrier_asset ? assetActorId(p.carrier_asset) : undefined,
+              text: `dock · ${p.object_id} → ${p.owner_id}`,
+              tone: "info",
+            });
           }
         },
       );
@@ -179,6 +213,7 @@ export function createSocketDriver(): RuntimeDriver {
         objSeq.clear();
         objOwner.clear();
         st().clearSpatialRuntime();
+        st().pushEvent({ kind: "object", text: "Objects reset", tone: "info" });
       });
 
       socket.on(
@@ -222,6 +257,13 @@ export function createSocketDriver(): RuntimeDriver {
             kind: "bid",
             from: id,
             text: `→ ${p.script}`,
+          });
+          st().pushEvent({
+            kind: "lifecycle",
+            actorId: id,
+            text: `${id} chose ${p.script}`,
+            tone: "info",
+            ts: p.timestamp,
           });
         },
       );

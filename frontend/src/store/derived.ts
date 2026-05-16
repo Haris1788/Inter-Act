@@ -8,6 +8,17 @@ import { computeCoherence, type CoherenceResult } from "@/lib/coherence";
 import { deriveLifecycle, type LifecycleView } from "@/lib/lifecycle";
 import { parseTopology, type TopologyDoc } from "@/lib/topologySchema";
 
+import type { OperationalEvent } from "./types";
+
+/** Per-actor operational history (observability). Memoized. */
+export function useActorEvents(actorId: string | null, limit = 40): OperationalEvent[] {
+  const events = useStore((s) => s.events);
+  return useMemo(() => {
+    if (!actorId) return [];
+    return events.filter((e) => e.actorId === actorId).slice(-limit);
+  }, [events, actorId, limit]);
+}
+
 export function useTopologyValidation(): ValidationReport {
   const actors = useStore((s) => s.actors);
   const zones = useStore((s) => s.zones);

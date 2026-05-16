@@ -40,6 +40,7 @@ export default {
         idle: "#8A8A90",
         "idle-bg": "#E7E6E2",
         info: "#5C6B7A",
+        "info-bg": "#E4E8EC",
         cta: "#18181B",
         "cta-2": "#27272A",
       },

@@ -153,6 +153,25 @@ export interface ValidationRow {
   text: string;
 }
 
+// Phase 8 — structured operational event (observability). Derived from real
+// socket/deploy transitions; NOT fabricated analytics. Bounded ring buffer.
+export type EventKind =
+  | "health"
+  | "asset"
+  | "dock"
+  | "object"
+  | "deploy"
+  | "link"
+  | "lifecycle";
+export interface OperationalEvent {
+  id: string;
+  ts: string;
+  kind: EventKind;
+  actorId?: ActorId;
+  text: string;
+  tone: "ok" | "warn" | "err" | "info";
+}
+
 export interface RuntimeSlice {
   actorRuntime: Record<ActorId, ActorRuntime>;
   busMessages: BusMessage[];
@@ -163,8 +182,11 @@ export interface RuntimeSlice {
   /** Phase 2 — live link state, shown in the topbar; never persisted. */
   dataSource: DataSource;
   linkStatus: LinkStatus;
+  /** Phase 8 — bounded operational event timeline (observability). */
+  events: OperationalEvent[];
   pushBusMessage: (m: BusMessage) => void;
   pushLogLine: (l: LogLine) => void;
+  pushEvent: (e: Omit<OperationalEvent, "id" | "ts"> & { ts?: string }) => void;
   setActorRuntime: (id: ActorId, patch: Partial<ActorRuntime>) => void;
   setConnection: (source: DataSource, status: LinkStatus) => void;
   hydrateRuntime: (
