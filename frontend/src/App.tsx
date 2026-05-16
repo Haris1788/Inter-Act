@@ -7,6 +7,7 @@ import { LeftRegistry } from "@/chrome/LeftRegistry";
 import { Inspector } from "@/chrome/Inspector";
 import { LogsPanel } from "@/chrome/LogsPanel";
 import { CanvasViewport } from "@/canvas/CanvasViewport";
+import { OnboardingOverlay } from "@/chrome/OnboardingOverlay";
 
 // App shell — mirrors styles-v2.css `.app` / `.main` grid exactly:
 //   .app  : grid-rows 48px 1fr
@@ -53,6 +54,7 @@ export function App() {
           <LogsPanel />
         </div>
       </main>
+      <OnboardingOverlay />
     </div>
   );
 }
