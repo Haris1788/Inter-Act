@@ -8,6 +8,13 @@ import { DeployModal } from "./DeployModal";
 import { serializeTopology, docToState } from "@/lib/topologySchema";
 import { exportTopologyFile, importTopologyFile } from "@/lib/persistence";
 import { saveWorkspace } from "@/runtime/save";
+import {
+  undo,
+  redo,
+  canUndo,
+  canRedo,
+  useHistoryState,
+} from "@/runtime/history";
 import { useTopologyValidation, useLifecycle } from "@/store/derived";
 import type { Tone } from "@/lib/lifecycle";
 import { PRESETS, applyPreset, resetDemo } from "@/runtime/presets";
@@ -45,12 +52,32 @@ export function Topbar() {
     savedTimer.current = setTimeout(() => setSaved(false), 1500);
   }
 
-  // ⌘S / Ctrl+S triggers the same save (the button shows the shortcut).
+  useHistoryState(); // re-render on undo/redo stack changes (enable state)
+  const undoOk = canUndo();
+  const redoOk = canRedo();
+
+  // ⌘S save · ⌘Z undo · ⌘⇧Z / ⌘Y redo. Skip while typing in a field.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      )
+        return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === "s") {
         e.preventDefault();
         doSave();
+      } else if (k === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((k === "z" && e.shiftKey) || k === "y") {
+        e.preventDefault();
+        redo();
       }
     }
     window.addEventListener("keydown", onKey);
@@ -192,8 +219,10 @@ export function Topbar() {
 
         {/* Undo */}
         <button
-          title="Undo"
-          className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-ink-3 hover:bg-bg-hover hover:text-ink"
+          title="Undo (⌘Z)"
+          onClick={undo}
+          disabled={!undoOk}
+          className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-ink-3 hover:bg-bg-hover hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
         >
           <svg
             width="14"
@@ -212,8 +241,10 @@ export function Topbar() {
 
         {/* Redo */}
         <button
-          title="Redo"
-          className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-ink-3 hover:bg-bg-hover hover:text-ink"
+          title="Redo (⌘⇧Z)"
+          onClick={redo}
+          disabled={!redoOk}
+          className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-ink-3 hover:bg-bg-hover hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
         >
           <svg
             width="14"

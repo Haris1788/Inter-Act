@@ -103,7 +103,9 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
             ],
             "volumes": [
                 "/var/run/docker.sock:/var/run/docker.sock",
-                "./pipeline.yaml:/config/pipeline.yaml:ro",
+                # Writable: the deploy bridge rewrites this on POST
+                # /deploy/apply, then reloads. Arms/demo-runner keep :ro.
+                "./pipeline.yaml:/config/pipeline.yaml:rw",
             ],
             "healthcheck": {
                 "test": [

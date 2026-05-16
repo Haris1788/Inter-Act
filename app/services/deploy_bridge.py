@@ -233,6 +233,7 @@ def apply_topology(
 
     # 4) Reload config + re-init arm state so the health monitor begins
     #    pinging any new arm container and rebroadcasts its real state.
+    reloaded_ok = False
     if reload_runtime:
         try:
             pipeline_config.reload()
@@ -240,21 +241,49 @@ def apply_topology(
 
             arm_state.reinitialize()
             steps["reloaded"] = "ok"
+            reloaded_ok = True
         except Exception as exc:  # noqa: BLE001
             steps["reloaded"] = f"failed: {exc}"
 
-    detail = (
-        "Containers brought up; health monitor will confirm liveness."
-        if compose_up_ok
-        else (
-            "Config + compose regenerated, but containers were NOT started "
-            "(docker/compose unavailable here). Actor stays stale until a "
-            "real container reports healthy - no fake ready state."
+    # 5) Restart EXISTING arm containers so they re-read the new config.
+    #    A brand-new arm has no container/image yet - that hop honestly
+    #    fails and is reported; only `docker compose up` (step 3) or an
+    #    offline stack rebuild can materialise it.
+    restarted: list[str] = []
+    if reload_runtime and container_manager.is_enabled():
+        for a in doc["arms"]:
+            mid = f"arm-{a['id']}"
+            stop_err = container_manager.stop_container(mid)
+            start_err = container_manager.start_container(mid)
+            if not stop_err and not start_err:
+                restarted.append(mid)
+        steps["arms_restarted"] = ", ".join(restarted) if restarted else "none"
+
+    # Honest "applied": the backend genuinely applied the authored config to
+    # its running model (writable mount + reload) and/or brought containers
+    # up. The frontend STILL gates "ready" on real per-arm health, so a
+    # brand-new arm with no container can never fake a ready state.
+    applied = compose_up_ok or (steps.get("config_written") == "ok" and reloaded_ok)
+
+    if compose_up_ok:
+        detail = "Containers brought up; health monitor confirms liveness."
+    elif applied:
+        detail = (
+            "Authored config applied and existing arm containers restarted. "
+            "Any brand-new arm has no container yet - rebuild the stack "
+            "(generate_compose + docker compose up) to materialise it. The "
+            "UI keeps it stale until a real container reports healthy."
         )
-    )
+    else:
+        detail = (
+            "pipeline.yaml not writable / docker unavailable - runtime left "
+            "unchanged (honest). Apply via the offline pipeline.yaml -> "
+            "generate_compose flow."
+        )
+
     return {
         "status": "ok",
-        "applied": compose_up_ok,
+        "applied": applied,
         "arms": arm_ids,
         "assets": asset_ids,
         "steps": steps,

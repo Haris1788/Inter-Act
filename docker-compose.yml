@@ -34,7 +34,7 @@ services:
     - COMPOSE_CONTAINER_PREFIX=interact
     volumes:
     - /var/run/docker.sock:/var/run/docker.sock
-    - ./pipeline.yaml:/config/pipeline.yaml:ro
+    - ./pipeline.yaml:/config/pipeline.yaml:rw
     healthcheck:
       test:
       - CMD

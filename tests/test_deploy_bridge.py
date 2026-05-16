@@ -66,7 +66,7 @@ class TestApplyTopologyHonest:
         assert result["steps"]["config_written"] == "ok"
         assert result["steps"]["compose_generated"] == "ok"
         assert "skipped" in result["steps"]["compose_up"]
-        assert "no fake ready state" in result["detail"]
+        assert "honest" in result["detail"]
 
         # Real artifacts exist on disk.
         assert os.path.exists(cfg) and os.path.exists(comp)

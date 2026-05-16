@@ -68,7 +68,8 @@ def test_generate_compose_includes_assets_from_pipeline_yaml():
 
         # Compose runtime uses a single mounted pipeline path across services.
         assert "./pipeline.yaml:/config/pipeline.yaml:ro" in services["demo-runner"]["volumes"]
-        assert "./pipeline.yaml:/config/pipeline.yaml:ro" in services["backend"]["volumes"]
+        # Backend mount is writable so the deploy bridge can rewrite config.
+        assert "./pipeline.yaml:/config/pipeline.yaml:rw" in services["backend"]["volumes"]
         assert "PIPELINE_CONFIG=/config/pipeline.yaml" in services["backend"]["environment"]
         assert "PIPELINE_CONFIG=/config/pipeline.yaml" in services["demo-runner"]["environment"]
         assert "PIPELINE_CONFIG=/config/pipeline.yaml" in services["veh-a"]["environment"]
