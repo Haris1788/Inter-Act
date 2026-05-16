@@ -21,7 +21,11 @@ import {
 } from "@xyflow/react";
 
 import { useStore } from "@/store";
-import { useEditorMode, useFocusRequest } from "@/store/selectors";
+import {
+  useEditorMode,
+  useFocusRequest,
+  useSelectedActorId,
+} from "@/store/selectors";
 import { createActorFromPalette } from "@/runtime/nodeFactory";
 import { DRAG_MIME } from "@/lib/dragContract";
 import { useFlowNodes } from "./flow/useFlowNodes";
@@ -41,6 +45,7 @@ function FlowInner() {
   const rf = useReactFlow();
   const mode = useEditorMode();
   const focusRequest = useFocusRequest();
+  const selectedId = useSelectedActorId();
 
   const setSelectedActor = useStore((s) => s.setSelectedActor);
   const moveActor = useStore((s) => s.moveActor);
@@ -274,18 +279,22 @@ function FlowInner() {
           maskStrokeColor="rgba(201,198,189,0.7)"
           nodeBorderRadius={3}
           nodeStrokeWidth={1}
-          nodeColor={(n) =>
-            n.type === "actorNode"
+          // Selected actor: filled accent + dark border so it pops locally
+          // in the overview without re-styling the whole map.
+          nodeColor={(n) => {
+            if (n.id === selectedId) return "rgba(24,24,27,0.30)";
+            return n.type === "actorNode"
               ? (n.data as { kind?: string })?.kind === "agv"
                 ? "rgba(122,132,110,0.22)"
                 : "rgba(96,94,88,0.24)"
-              : "rgba(201,198,189,0.16)"
-          }
-          nodeStrokeColor={(n) =>
-            n.type === "actorNode"
+              : "rgba(201,198,189,0.16)";
+          }}
+          nodeStrokeColor={(n) => {
+            if (n.id === selectedId) return "#18181B";
+            return n.type === "actorNode"
               ? "rgba(96,94,88,0.55)"
-              : "rgba(201,198,189,0.6)"
-          }
+              : "rgba(201,198,189,0.6)";
+          }}
         />
       </ReactFlow>
 
