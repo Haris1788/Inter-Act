@@ -1,4 +1,9 @@
-export function SearchBox() {
+interface SearchBoxProps {
+  value: string;
+  onChange: (v: string) => void;
+}
+
+export function SearchBox({ value, onChange }: SearchBoxProps) {
   return (
     <div className="border-b border-line-soft px-3 pb-2 pt-3">
       {/* .search */}
@@ -11,6 +16,8 @@ export function SearchBox() {
         <input
           className="flex-1 border-0 bg-transparent text-12.5 text-ink outline-none placeholder:text-ink-4"
           placeholder="Search actors, capabilities…"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
         />
         <span className="rounded-[4px] border border-line bg-bg-surface px-1 font-mono text-10.5 text-ink-4">
           /

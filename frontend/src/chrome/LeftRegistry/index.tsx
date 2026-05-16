@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { useActors } from "@/store/selectors";
+import { useStore } from "@/store";
 import { CapRow } from "./CapRow";
 import { LeftFoot } from "./LeftFoot";
 import { LibChip } from "./LibChip";
@@ -111,55 +114,211 @@ const ZoneCharging = (
   </svg>
 );
 
+// ── Actor glyph ──────────────────────────────────────────────────────────────
+
+const ActorDot = (
+  <svg width="8" height="8" viewBox="0 0 8 8">
+    <circle cx="4" cy="4" r="3.5" fill="currentColor" />
+  </svg>
+);
+
+// ── Palette data (for filtering) ─────────────────────────────────────────────
+
+interface ChipItem {
+  kind: "chip";
+  name: string;
+  sub: string;
+  paletteKey: string;
+  icon: React.ReactNode;
+}
+
+interface RowItem {
+  kind: "row";
+  name: string;
+  meta: string;
+  icon: React.ReactNode;
+}
+
+interface CapItem {
+  kind: "cap";
+  name: string;
+  count: string;
+  filled: boolean;
+}
+
+type PaletteItem = ChipItem | RowItem | CapItem;
+
+interface PaletteSection {
+  label: string;
+  grid?: boolean;
+  listClassName?: string;
+  items: PaletteItem[];
+}
+
+const PALETTE: PaletteSection[] = [
+  {
+    label: "Capability Stations",
+    grid: true,
+    items: [
+      { kind: "chip", name: "Arm · 6DoF", sub: "pick · place · dock", paletteKey: "arm-6dof", icon: CapStationArm6DoF },
+      { kind: "chip", name: "Arm · SCARA", sub: "fast cycle", paletteKey: "arm-scara", icon: CapStationArmSCARA },
+      { kind: "chip", name: "Arm · Delta", sub: "high-speed", paletteKey: "arm-delta", icon: CapStationArmDelta },
+    ],
+  },
+  {
+    label: "Mobile Agents",
+    grid: true,
+    items: [
+      { kind: "chip", name: "Shuttle AGV", sub: "fast · cap 1", paletteKey: "agv-shuttle", icon: MobileShuttle },
+      { kind: "chip", name: "Forklift AGV", sub: "heavy · pallet", paletteKey: "agv-forklift", icon: MobileForklift },
+      { kind: "chip", name: "Tow AGV", sub: "balanced", paletteKey: "agv-tow", icon: MobileTow },
+    ],
+  },
+  {
+    label: "Capabilities",
+    listClassName: "gap-0",
+    items: [
+      { kind: "cap", name: "pick",    count: "2 stations", filled: true },
+      { kind: "cap", name: "place",   count: "2 stations", filled: true },
+      { kind: "cap", name: "dock",    count: "5 actors",   filled: true },
+      { kind: "cap", name: "transit", count: "3 agents",   filled: true },
+      { kind: "cap", name: "weigh",   count: "0 actors",   filled: false },
+      { kind: "cap", name: "inspect", count: "0 actors",   filled: false },
+    ],
+  },
+  {
+    label: "Brains",
+    items: [
+      { kind: "row", name: "Scripted",        meta: "default", icon: BrainScripted },
+      { kind: "row", name: "Scheduler",       meta: "FIFO",    icon: BrainScheduler },
+      { kind: "row", name: "LLM coordinator", meta: "qwen",    icon: BrainLLM },
+      { kind: "row", name: "RL policy",       meta: "v3",      icon: BrainRL },
+    ],
+  },
+  {
+    label: "Zones",
+    items: [
+      { kind: "row", name: "Source feed",   meta: "I",  icon: ZoneSource },
+      { kind: "row", name: "Sink / outflow", meta: "O", icon: ZoneSink },
+      { kind: "row", name: "Charging dock", meta: "⚡", icon: ZoneCharging },
+    ],
+  },
+];
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function LeftRegistry() {
+  const [query, setQuery] = useState("");
+
+  const actors = useActors();
+  const setSelectedActor = useStore((s) => s.setSelectedActor);
+  const requestFocus = useStore((s) => s.requestFocus);
+
+  const q = query.trim().toLowerCase();
+  const isSearching = q.length > 0;
+
+  // ── Filtered palette sections ────────────────────────────────────────────
+  const filteredSections = PALETTE.map((section) => {
+    const items = isSearching
+      ? section.items.filter((item) => item.name.toLowerCase().includes(q))
+      : section.items;
+    return { ...section, items };
+  }).filter((section) => section.items.length > 0);
+
+  // ── Matched actors (cap 8) ───────────────────────────────────────────────
+  const actorList = isSearching
+    ? Object.values(actors)
+        .filter(
+          (a) =>
+            a.id.toLowerCase().includes(q) ||
+            a.label.toLowerCase().includes(q) ||
+            a.type.toLowerCase().includes(q),
+        )
+        .slice(0, 8)
+    : [];
+
   return (
     <aside className="flex h-full flex-col border-r border-line bg-bg-panel">
       {/* .left-search */}
-      <SearchBox />
+      <SearchBox value={query} onChange={setQuery} />
 
       {/* .left-scroll */}
       <div className="flex-1 overflow-y-auto px-2 pb-4 pt-2">
 
-        {/* Capability Stations — 2-col grid */}
-        <LibSection label="Capability Stations" count={3} grid>
-          <LibChip icon={CapStationArm6DoF} name="Arm · 6DoF" sub="pick · place · dock" paletteKey="arm-6dof" />
-          <LibChip icon={CapStationArmSCARA} name="Arm · SCARA" sub="fast cycle" paletteKey="arm-scara" />
-          <LibChip icon={CapStationArmDelta} name="Arm · Delta" sub="high-speed" paletteKey="arm-delta" />
-        </LibSection>
+        {/* ── Actors results (only when searching) ── */}
+        {isSearching && actorList.length > 0 && (
+          <div className="mt-1">
+            <div className="flex items-center justify-between px-2 pb-[6px] pt-[10px]">
+              <span className="text-10.5 font-semibold uppercase tracking-[0.08em] text-ink-3">
+                Actors
+              </span>
+              <span className="font-mono text-10.5 text-ink-5">{actorList.length}</span>
+            </div>
+            <div className="flex flex-col gap-1 p-0.5">
+              {actorList.map((actor) => (
+                <button
+                  key={actor.id}
+                  type="button"
+                  className="flex w-full cursor-pointer items-center gap-[9px] rounded-md px-2 py-1.5 text-left hover:bg-bg-hover"
+                  onClick={() => {
+                    setSelectedActor(actor.id);
+                    requestFocus(actor.id);
+                  }}
+                >
+                  <span className="inline-flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-[5px] bg-bg-sunken text-ink-3">
+                    {ActorDot}
+                  </span>
+                  <span className="flex-1 truncate text-12 text-ink">{actor.id}</span>
+                  <span className="font-mono text-10.5 text-ink-4">{actor.type}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
-        {/* Mobile Agents — 2-col grid */}
-        <LibSection label="Mobile Agents" count={3} grid>
-          <LibChip icon={MobileShuttle} name="Shuttle AGV" sub="fast · cap 1" paletteKey="agv-shuttle" />
-          <LibChip icon={MobileForklift} name="Forklift AGV" sub="heavy · pallet" paletteKey="agv-forklift" />
-          <LibChip icon={MobileTow} name="Tow AGV" sub="balanced" paletteKey="agv-tow" />
-        </LibSection>
-
-        {/* Capabilities — list, gap:0 */}
-        <LibSection label="Capabilities" count={6} listClassName="gap-0">
-          <CapRow name="pick"    count="2 stations" filled />
-          <CapRow name="place"   count="2 stations" filled />
-          <CapRow name="dock"    count="5 actors"   filled />
-          <CapRow name="transit" count="3 agents"   filled />
-          <CapRow name="weigh"   count="0 actors"   filled={false} />
-          <CapRow name="inspect" count="0 actors"   filled={false} />
-        </LibSection>
-
-        {/* Brains */}
-        <LibSection label="Brains" count={4}>
-          <LibRow icon={BrainScripted}  name="Scripted"        meta="default" />
-          <LibRow icon={BrainScheduler} name="Scheduler"       meta="FIFO"    />
-          <LibRow icon={BrainLLM}       name="LLM coordinator" meta="qwen"    />
-          <LibRow icon={BrainRL}        name="RL policy"       meta="v3"      />
-        </LibSection>
-
-        {/* Zones */}
-        <LibSection label="Zones" count={3}>
-          <LibRow icon={ZoneSource}  name="Source feed"   meta="I"  />
-          <LibRow icon={ZoneSink}    name="Sink / outflow" meta="O" />
-          <LibRow icon={ZoneCharging} name="Charging dock" meta="⚡" />
-        </LibSection>
+        {/* ── Palette sections ── */}
+        {filteredSections.map((section) => (
+          <LibSection
+            key={section.label}
+            label={section.label}
+            count={section.items.length}
+            grid={section.grid}
+            listClassName={section.listClassName}
+          >
+            {section.items.map((item) => {
+              if (item.kind === "chip") {
+                return (
+                  <LibChip
+                    key={item.paletteKey}
+                    icon={item.icon}
+                    name={item.name}
+                    sub={item.sub}
+                    paletteKey={item.paletteKey}
+                  />
+                );
+              }
+              if (item.kind === "row") {
+                return (
+                  <LibRow
+                    key={item.name}
+                    icon={item.icon}
+                    name={item.name}
+                    meta={item.meta}
+                  />
+                );
+              }
+              // cap
+              return (
+                <CapRow
+                  key={item.name}
+                  name={item.name}
+                  count={item.count}
+                  filled={item.filled}
+                />
+              );
+            })}
+          </LibSection>
+        ))}
 
       </div>
 
