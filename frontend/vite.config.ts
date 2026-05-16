@@ -23,10 +23,40 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: {
-      "/socket.io": { target: "http://localhost:5000", ws: true },
-      "/config": "http://localhost:5000",
-      "/health": "http://localhost:5000",
-    },
+    // nginx (prod) proxies every non-SPA path to Flask. Dev must mirror
+    // that or REST calls hit the vite server and 404 - the symptom was
+    // "/deploy/apply unreachable" while the socket-only "live" chip stayed
+    // green (only /config + /socket.io were proxied). Forward every backend
+    // route prefix to the local backend.
+    proxy: Object.fromEntries(
+      [
+        "/socket.io",
+        "/config",
+        "/health",
+        "/deploy",
+        "/arms",
+        "/assets",
+        "/runtime",
+        "/state",
+        "/objects",
+        "/object_event",
+        "/set_angle",
+        "/restart_pipeline",
+        "/reload_config",
+        "/pipeline",
+        "/topology",
+        "/execute_task",
+        "/scripts",
+        "/actor_scripts",
+        "/run_script",
+        "/demo",
+        "/log",
+      ].map((p) => [
+        p,
+        p === "/socket.io"
+          ? { target: "http://localhost:5000", ws: true }
+          : { target: "http://localhost:5000", changeOrigin: true },
+      ]),
+    ),
   },
 });
