@@ -1,6 +1,6 @@
 import { cn } from "@/lib/cn";
 
-const TABS = ["Properties", "Runtime", "Logs", "YAML"] as const;
+const TABS = ["Properties", "Runtime", "History", "YAML"] as const;
 type Tab = (typeof TABS)[number];
 
 interface InspTabsProps {

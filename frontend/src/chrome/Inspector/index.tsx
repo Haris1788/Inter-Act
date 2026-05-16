@@ -9,6 +9,7 @@ import { SectionDocking } from "./SectionDocking";
 import { SectionBrain } from "./SectionBrain";
 import { SectionTaskQueue } from "./SectionTaskQueue";
 import { SectionRuntime } from "./SectionRuntime";
+import { SectionHistory } from "./SectionHistory";
 import { ActionsRow } from "./ActionsRow";
 
 const FALLBACK_ID = "veh-1";
@@ -86,10 +87,8 @@ export function Inspector() {
             <SectionRuntime metrics={runtime.metrics} live={live} />
           </div>
         )}
-        {activeTab === "Logs" && (
-          <div className="px-[14px] pt-[14px] text-12 text-ink-4">
-            Log output will appear here.
-          </div>
+        {activeTab === "History" && (
+          <SectionHistory actorId={effectiveId} />
         )}
         {activeTab === "YAML" && (
           <div className="px-[14px] pt-[14px] font-mono text-11 text-ink-3">
