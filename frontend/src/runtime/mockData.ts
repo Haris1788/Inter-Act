@@ -1,4 +1,5 @@
-// Fixtures transcribed from `Inter Act Node-red/INTER.act v2.html`.
+// Fixtures transcribed from the reference visual orchestration workspace
+// prototype (INTER.act topology authoring interface).
 // Coordinates are in the 1320x720 stage space. Actor `position` is the node
 // box top-left (React Flow semantics); zone `position` is the chip center
 // (the prototype uses translate(-50%,-50%) on zone chips).

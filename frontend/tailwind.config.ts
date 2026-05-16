@@ -1,6 +1,6 @@
 import type { Config } from "tailwindcss";
 
-// Ported verbatim from `Inter Act Node-red/styles-v2.css` :root.
+// Ported verbatim from the reference orchestration workspace design tokens.
 // This is the single source of truth for the design system. lib/tokens.ts
 // re-exports the same hex values for Konva/SVG so canvas colors == CSS colors.
 export default {

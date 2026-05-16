@@ -251,121 +251,52 @@ def apply_topology(
     #    permanent fix for "/deploy/apply unreachable": the request can no
     #    longer outlive the client timeout no matter how many actors.
     def _materialize() -> None:
-        s_compose = "skipped: docker control unavailable"
-        compose_up_ok = False
-        if run_compose and container_manager.is_enabled():
-            cmd = _docker_compose_cmd()
-            if cmd is None:
-                s_compose = "skipped: docker compose not found"
-            else:
-                try:
-                    r = subprocess.run(
-                        [*cmd, "-f", comp_path, "up", "-d", "--remove-orphans"],
-                        cwd=project_dir,
-                        capture_output=True,
-                        text=True,
-                        timeout=600,
-                        check=False,
-                    )
-                    compose_up_ok = r.returncode == 0
-                    s_compose = (
-                        "ok"
-                        if compose_up_ok
-                        else "failed: "
-                        + ((r.stderr or r.stdout or "").strip()[:300])
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    s_compose = f"failed: {exc}"
-        steps["compose_up"] = s_compose
+        # ONE reconciliation pass owns the entire actor runtime: remove
+        # stale + legacy, create missing, restart surviving. No compose-up
+        # for actors (they are not compose services anymore), no separate
+        # prune. Idempotent and scale-symmetric for any N.
+        desired = [
+            {"id": f"arm-{a['id']}", "kind": "arm",
+             "label": a.get("label", f"arm-{a['id']}")}
+            for a in doc["arms"]
+        ] + [
+            {"id": asset["id"], "kind": "vehicle",
+             "label": asset.get("label", asset["id"])}
+            for asset in doc["assets"]
+        ]
 
-        restarted: list[str] = []
-        created: list[str] = []
-        create_failed: list[str] = []
-        if container_manager.is_enabled():
-            sibling = next(
-                (
-                    f"arm-{a['id']}"
-                    for a in doc["arms"]
-                    if container_manager.container_exists(f"arm-{a['id']}")
-                ),
-                "arm-1",
-            )
+        res = container_manager.reconcile_actors(desired)
+        steps["created"] = ", ".join(res["created"]) or "none"
+        steps["restarted"] = ", ".join(res["restarted"]) or "none"
+        steps["removed"] = ", ".join(res["removed"]) or "none"
+        if res["failed"]:
+            steps["failed"] = "; ".join(res["failed"])
 
-            def _ensure(mid: str, make) -> None:
-                if container_manager.container_exists(mid):
-                    if not container_manager.stop_container(
-                        mid
-                    ) and not container_manager.start_container(mid):
-                        restarted.append(mid)
-                else:
-                    err = make()
-                    (created if err is None else create_failed).append(
-                        mid if err is None else f"{mid}: {err}"
-                    )
-                _set(
-                    detail=f"materializing… {mid}",
-                    steps={
-                        **steps,
-                        "restarted": ", ".join(restarted) or "none",
-                        "created": ", ".join(created) or "none",
-                        **(
-                            {"create_failed": "; ".join(create_failed)}
-                            if create_failed
-                            else {}
-                        ),
-                    },
-                )
-
-            for a in doc["arms"]:
-                aid = a["id"]
-                _ensure(
-                    f"arm-{aid}",
-                    lambda aid=aid: container_manager.create_arm_container(
-                        aid, template_module=sibling
-                    ),
-                )
-            for i, asset in enumerate(doc["assets"]):
-                a_id = asset["id"]
-                _ensure(
-                    a_id,
-                    lambda asset=asset, i=i: container_manager.create_asset_container(
-                        asset["id"],
-                        label=asset.get("label", asset["id"]),
-                        asset_type=asset.get("type", "vehicle"),
-                        template_module=sibling,
-                        publish_port=8010 + i * 10,
-                    ),
-                )
-
-            steps["restarted"] = ", ".join(restarted) or "none"
-            steps["created"] = ", ".join(created) or "none"
-            if create_failed:
-                steps["create_failed"] = "; ".join(create_failed)
-
-        applied = compose_up_ok or (
-            steps.get("config_written") == "ok" and reloaded_ok
+        # Honest "applied": config persisted + reloaded into the running
+        # backend AND docker reconciliation actually ran. The frontend
+        # still gates "ready" on real per-arm health.
+        applied = (
+            res["applied"]
+            and steps.get("config_written") == "ok"
+            and reloaded_ok
         )
-        if compose_up_ok:
-            detail = "Containers brought up; health monitor confirms liveness."
-        elif applied:
-            parts = ["Authored config applied."]
-            if restarted:
-                parts.append(f"Restarted {len(restarted)} container(s).")
-            if created:
+        if applied:
+            parts = ["Authored topology reconciled."]
+            if res["created"]:
+                parts.append(f"Created {len(res['created'])}.")
+            if res["restarted"]:
+                parts.append(f"Restarted {len(res['restarted'])}.")
+            if res["removed"]:
+                parts.append(f"Removed {len(res['removed'])} stale.")
+            if res["failed"]:
                 parts.append(
-                    f"Created {len(created)} new container(s) - booting; "
-                    "health monitor confirms when alive."
-                )
-            if create_failed:
-                parts.append(
-                    f"{len(create_failed)} could not be created "
-                    "(see steps); they stay stale until really up."
+                    f"{len(res['failed'])} failed (see steps); stale until up."
                 )
             detail = " ".join(parts)
         else:
             detail = (
-                "docker unavailable - runtime left unchanged (honest). "
-                "Apply via the offline pipeline.yaml -> generate_compose flow."
+                f"{res['detail']} - runtime left unchanged (honest). Apply "
+                "via the offline pipeline.yaml -> generate_compose flow."
             )
         _set(
             phase="done",

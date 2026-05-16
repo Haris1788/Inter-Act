@@ -1,21 +1,22 @@
-"""Docker container control for the failure/recovery flow.
+"""Docker control + the unified actor-runtime ownership model.
 
-Phase 7: frontend Kill/Recover and backend `/assets/<id>/fail` /
-`/assets/<id>/recover` (and the analogous `/arms/<id>/stop` /
-`/arms/<id>/start`) must actually stop and start the corresponding
-Docker container - not merely flip in-memory state.
+Two concerns live here:
 
-This module wraps `docker stop|start <container>` via subprocess. It
-relies on:
+1. Operational stop/start of a module's container (used by
+   `/arms/<id>/stop|start`, `/assets/<id>/fail|recover`).
 
-  * the host Docker socket mounted into the backend container at
-    `/var/run/docker.sock`, and
-  * each pipeline service having a stable `container_name` in
-    docker-compose.yml (so we can address it without parsing labels).
+2. **Actor-runtime reconciliation.** Arms / AGVs / future actor kinds are
+   NOT docker-compose services. They are ephemeral runtime entities owned
+   entirely by topology reconciliation, created here with explicit
+   ownership LABELS (`interact.role=actor`, `interact.actor.id=...`).
+   Ownership is decided by those labels - never by parsing container
+   names - so the model is future-safe for AI-generated dynamic
+   topologies and a legacy container from any old naming scheme is still
+   reclaimed. Core infrastructure (compose: backend/frontend/demo-runner/
+   ollama) carries none of these labels and is structurally untouchable.
 
-Asset/arm id → container name mapping uses the convention
-``interact-<id>``. The mapping can be overridden via
-`COMPOSE_CONTAINER_PREFIX` env var if a different project name is in use.
+Relies on the host Docker socket mounted into the backend container at
+`/var/run/docker.sock`.
 """
 
 from __future__ import annotations
@@ -45,11 +46,10 @@ def _docker_available() -> bool:
 
 
 def container_name_for(module_id: str) -> str:
-    """Map a pipeline module id (`arm-1`, `veh-a`) to its
-    docker-compose container name. Customise via `container_name:` in
-    docker-compose.yml so this stays predictable across `docker compose up`
-    invocations.
-    """
+    """ONE container name scheme for everything: ``interact-<module>``.
+    Ownership is NOT inferred from this name - it is inferred from labels.
+    The name only needs to be stable + DNS-resolvable (we also set a
+    matching ``--network-alias``)."""
     return f"{_PREFIX}-{module_id}"
 
 
@@ -72,7 +72,7 @@ def _emit_log(source: str, message: str) -> None:
 
 
 def _run_docker(action: str, name: str, timeout: int = 10) -> Optional[str]:
-    """Run `docker <action> <name>`. Returns None on success or stderr on failure."""
+    """Run `docker <action> <name>`. None on success, else stderr."""
     if not _docker_available():
         msg = f"docker CLI/socket unavailable - skipping {action} {name}"
         _emit_log("system", f"[SYSTEM] {msg}")
@@ -100,43 +100,29 @@ def _run_docker(action: str, name: str, timeout: int = 10) -> Optional[str]:
 
 
 def stop_container(module_id: str) -> Optional[str]:
-    """Stop the container backing a pipeline module. Returns None on success."""
+    """Stop the container backing a module. None on success."""
     name = container_name_for(module_id)
     _emit_log("system", f"[SYSTEM] Stopping container: {name}")
     return _run_docker("stop", name)
 
 
 def start_container(module_id: str) -> Optional[str]:
-    """Start the container backing a pipeline module. Returns None on success."""
+    """Start the container backing a module. None on success."""
     name = container_name_for(module_id)
     _emit_log("system", f"[SYSTEM] Starting container: {name}")
     return _run_docker("start", name)
 
 
-def container_exists(module_id: str) -> bool:
-    """True when a container (running or stopped) exists for this module."""
-    if not _docker_available():
-        return False
-    try:
-        r = subprocess.run(
-            ["docker", "inspect", container_name_for(module_id)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
+def is_enabled() -> bool:
+    """Expose availability so routes can decide whether to attempt control."""
+    return _docker_available()
 
 
-# Repo root inside the backend container (Dockerfile: WORKDIR /interact +
-# COPY . .) - the build context for new actor images. Resolved from this
-# file so it also works when run locally outside Docker.
-_REPO_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..")
-)
-
+# ── shared actor images ───────────────────────────────────────────────────
+# All arms share one image, all assets share one (parametrised by env).
+# The backend image bakes the repo at /interact, so the build context is
+# present without compose or a host mount.
+_REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _SHARED_IMAGE = {
     "arm": "interact-shared-arm:latest",
     "asset": "interact-shared-asset:latest",
@@ -145,6 +131,18 @@ _DOCKERFILE = {
     "arm": "docker/Dockerfile.arm",
     "asset": "docker/Dockerfile.asset",
 }
+_SHARED_IMAGE_SET = set(_SHARED_IMAGE.values()) | {
+    v.split(":")[0] for v in _SHARED_IMAGE.values()
+}
+
+# Core infra is compose-owned and label-free; defensively denylisted too.
+_CORE_MODULES = {"backend", "frontend", "demo-runner", "ollama"}
+
+# Ownership labels - the SINGLE source of truth for "is this an actor".
+LBL_ROLE = "interact.role"
+LBL_ID = "interact.actor.id"
+LBL_KIND = "interact.actor.kind"
+ROLE_ACTOR = "actor"
 
 
 def _image_exists(tag: str) -> bool:
@@ -162,13 +160,7 @@ def _image_exists(tag: str) -> bool:
 
 
 def ensure_shared_image(kind: str) -> Optional[str]:
-    """Build the shared arm/asset image once (idempotent).
-
-    All arms come from one Dockerfile (likewise all assets), so a single
-    clean image - NOT a copy of arm-1 - backs every new container. The
-    backend image bakes the repo at /interact, so the build context is
-    present without compose or a host mount.
-    """
+    """Build the shared arm/asset image once (idempotent)."""
     tag = _SHARED_IMAGE[kind]
     if _image_exists(tag):
         return None
@@ -191,14 +183,16 @@ def ensure_shared_image(kind: str) -> Optional[str]:
         return str(exc)
 
 
-def _sibling_runtime(module_id: str) -> dict:
-    """Network + pipeline.yaml host mount + compose project from a running
-    sibling, so a new container joins the SAME network and binds the SAME
-    host config file (daemon-resolved paths stay correct)."""
-    out = {"network": None, "pipeline_mount": None, "project": None}
+def _infra_runtime() -> dict:
+    """Network + host pipeline.yaml mount + compose project, read from the
+    persistent backend infra container. New actor containers join the SAME
+    network and bind the SAME daemon-resolved host config file - no
+    dependency on any sibling actor existing."""
+    out: dict = {"network": None, "pipeline_mount": None, "project": None}
     try:
         r = subprocess.run(
-            ["docker", "inspect", container_name_for(module_id)],
+            ["docker", "inspect", "--type", "container",
+             container_name_for("backend")],
             capture_output=True,
             text=True,
             timeout=10,
@@ -220,118 +214,257 @@ def _sibling_runtime(module_id: str) -> dict:
     return out
 
 
-def _run_new_container(
-    new_name: str,
-    image: str,
-    env: list[str],
-    sibling: str,
-    service_label: str,
-    publish_port: Optional[int],
+def _kind_key(kind: str) -> str:
+    return "arm" if kind == "arm" else "asset"
+
+
+def create_actor(
+    module_id: str, kind: str, label: str, publish_port: Optional[int]
 ) -> Optional[str]:
-    sib = _sibling_runtime(sibling)
-    args = [
-        "docker",
-        "run",
-        "-d",
-        "--name",
-        new_name,
-        "--restart",
-        "unless-stopped",
-    ]
-    if sib["network"]:
-        args += ["--network", sib["network"]]
-    if sib["project"]:
-        args += [
-            "--label",
-            f"com.docker.compose.project={sib['project']}",
-            "--label",
-            f"com.docker.compose.service={service_label}",
+    """Create ONE labelled actor container (arm or vehicle). Idempotent
+    (removes any same-name leftover first). None on success / honest
+    error string. Never fakes."""
+    if not _docker_available():
+        return "docker CLI/socket unavailable"
+    kk = _kind_key(kind)
+    build_err = ensure_shared_image(kk)
+    if build_err:
+        return f"{kk} image build failed: {build_err}"
+
+    infra = _infra_runtime()
+    if not infra["network"]:
+        return "infra network unknown (is interact-backend running?)"
+
+    name = container_name_for(module_id)
+    if kind == "arm":
+        try:
+            arm_n = int(module_id.split("-")[-1])
+        except ValueError:
+            arm_n = 0
+        env = [
+            f"ARM_ID={arm_n}",
+            "SERVER_HOST=http://backend:5000",
+            "PIPELINE_CONFIG=/config/pipeline.yaml",
+            "PYTHONUNBUFFERED=1",
         ]
-    if sib["pipeline_mount"]:
-        src, dst = sib["pipeline_mount"]
+    else:
+        env = [
+            f"ASSET_ID={module_id}",
+            "ASSET_TYPE=vehicle",
+            f"ASSET_LABEL={label or module_id}",
+            "SERVER_HOST=http://backend:5000",
+            "PIPELINE_CONFIG=/config/pipeline.yaml",
+            "SPEED_FACTOR=1.0",
+            "PYTHONUNBUFFERED=1",
+        ]
+
+    args = [
+        "docker", "run", "-d",
+        "--name", name,
+        "--restart", "unless-stopped",
+        "--network", infra["network"],
+        # Compose-parity DNS so the health monitor's http://<module>:8000
+        # resolves regardless of container name.
+        "--network-alias", module_id,
+        "--label", f"{LBL_ROLE}={ROLE_ACTOR}",
+        "--label", f"{LBL_ID}={module_id}",
+        "--label", f"{LBL_KIND}={kind}",
+    ]
+    if infra["project"]:
+        args += ["--label", f"com.docker.compose.project={infra['project']}"]
+    if infra["pipeline_mount"]:
+        src, dst = infra["pipeline_mount"]
         if src and dst:
             args += ["-v", f"{src}:{dst}:ro"]
     if publish_port:
         args += ["-p", f"{publish_port}:8000"]
     for e in env:
         args += ["-e", e]
-    args.append(image)
+    args.append(_SHARED_IMAGE[kk])
 
-    _emit_log("system", f"[SYSTEM] Creating container: {new_name} ({image})")
+    subprocess.run(
+        ["docker", "rm", "-f", name],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    _emit_log("system", f"[SYSTEM] Creating actor container: {name} ({kind})")
     try:
         r = subprocess.run(
             args, capture_output=True, text=True, timeout=60, check=False
         )
         if r.returncode != 0:
             err = (r.stderr or r.stdout or "").strip()
-            _emit_log("system", f"[SYSTEM] docker run {new_name} failed: {err}")
+            _emit_log("system", f"[SYSTEM] docker run {name} failed: {err}")
             return err
         return None
     except subprocess.TimeoutExpired:
-        return f"docker run {new_name} timed out"
+        return f"docker run {name} timed out"
     except Exception as exc:  # noqa: BLE001
         return str(exc)
 
 
-def create_arm_container(
-    arm_id: int, template_module: str = "arm-1"
-) -> Optional[str]:
-    """Create a NEW, first-class arm container (own clean image + port +
-    ARM_ID) - not a copy of arm-1. Returns None or an honest error."""
+def _ps_rows() -> list[tuple[str, str, str]]:
+    """(name, image, role-label) for every container. role is '' when the
+    container carries no interact.role label."""
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "-a", "--format",
+             "{{.Names}}\t{{.Image}}\t{{.Label \"" + LBL_ROLE + "\"}}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if r.returncode != 0:
+            return []
+        rows: list[tuple[str, str, str]] = []
+        for ln in r.stdout.splitlines():
+            parts = ln.split("\t")
+            if len(parts) >= 2:
+                rows.append(
+                    (parts[0].strip(), parts[1].strip(),
+                     parts[2].strip() if len(parts) > 2 else "")
+                )
+        return rows
+    except Exception:
+        return []
+
+
+def _module_from_name(name: str) -> Optional[str]:
+    """Best-effort module id from a container name (legacy reclaim only -
+    ownership itself never depends on this)."""
+    p = f"{_PREFIX}-"
+    if not name.startswith(p):
+        return None
+    m = name[len(p):]
+    if m.startswith("dyn-"):  # legacy bridge namespace
+        m = m[len("dyn-"):]
+    return m
+
+
+def list_actor_containers() -> dict[str, list[str]]:
+    """Discover every actor-runtime container by OWNERSHIP, returning
+    {"owned": {module: name}, "legacy": [name,…]}.
+
+    - owned   : carries interact.role=actor (the canonical model).
+    - legacy  : runs a shared actor image but predates the label scheme
+                (old `interact-arm-5`, `interact-dyn-*`). Reclaimed during
+                reconciliation so no orphan from any old scheme survives.
+    Core/compose containers have neither marker and never appear here.
+    """
+    owned: dict[str, str] = {}
+    legacy: list[str] = []
     if not _docker_available():
-        return "docker CLI/socket unavailable"
-    build_err = ensure_shared_image("arm")
-    if build_err:
-        return f"arm image build failed: {build_err}"
-    env = [
-        f"ARM_ID={arm_id}",
-        "SERVER_HOST=http://backend:5000",
-        "PIPELINE_CONFIG=/config/pipeline.yaml",
-        "PYTHONUNBUFFERED=1",
-    ]
-    return _run_new_container(
-        new_name=container_name_for(f"arm-{arm_id}"),
-        image=_SHARED_IMAGE["arm"],
-        env=env,
-        sibling=template_module,
-        service_label=f"arm-{arm_id}",
-        publish_port=8000 + int(arm_id),
-    )
+        return {"owned": owned, "legacy": legacy}
+    for name, image, role in _ps_rows():
+        if role == ROLE_ACTOR:
+            mod = _module_from_name(name) or name
+            owned[mod] = name
+        elif image in _SHARED_IMAGE_SET:
+            legacy.append(name)
+    return {"owned": owned, "legacy": legacy}
 
 
-def create_asset_container(
-    asset_id: str,
-    label: str = "",
-    asset_type: str = "vehicle",
-    template_module: str = "arm-1",
-    publish_port: Optional[int] = None,
-) -> Optional[str]:
-    """Create a NEW, first-class asset (AGV) container. Returns None or an
-    honest error string."""
+def reconcile_actors(desired: list[dict]) -> dict:
+    """Single reconciliation pass: make running actor containers exactly
+    match the authored topology.
+
+      desired item = {"id": "arm-1", "kind": "arm", "label": "Source"}
+
+    - remove stale owned actors + ALL legacy actor containers
+    - (re)create / restart desired actors with ownership labels
+    - infra is structurally excluded (no actor label, not a shared image)
+
+    Honest: returns ``applied: False`` with a reason when docker is
+    unavailable; never fakes runtime.
+    """
     if not _docker_available():
-        return "docker CLI/socket unavailable"
-    build_err = ensure_shared_image("asset")
-    if build_err:
-        return f"asset image build failed: {build_err}"
-    env = [
-        f"ASSET_ID={asset_id}",
-        f"ASSET_TYPE={asset_type}",
-        f"ASSET_LABEL={label or asset_id}",
-        "SERVER_HOST=http://backend:5000",
-        "PIPELINE_CONFIG=/config/pipeline.yaml",
-        "SPEED_FACTOR=1.0",
-        "PYTHONUNBUFFERED=1",
-    ]
-    return _run_new_container(
-        new_name=container_name_for(asset_id),
-        image=_SHARED_IMAGE["asset"],
-        env=env,
-        sibling=template_module,
-        service_label=asset_id,
-        publish_port=publish_port,
-    )
+        return {
+            "applied": False,
+            "created": [],
+            "restarted": [],
+            "removed": [],
+            "failed": [],
+            "detail": "docker unavailable - runtime unchanged (honest)",
+        }
 
+    inv = list_actor_containers()
+    owned = inv["owned"]  # module -> container name
+    legacy = inv["legacy"]  # container names
+    desired_by_id = {d["id"]: d for d in desired}
+    desired_ids = set(desired_by_id)
 
-def is_enabled() -> bool:
-    """Expose availability so routes can decide whether to attempt control."""
-    return _docker_available()
+    created: list[str] = []
+    restarted: list[str] = []
+    removed: list[str] = []
+    failed: list[str] = []
+
+    # 1) Remove every legacy actor container (any old naming scheme). If a
+    #    legacy module is still desired it is re-created cleanly + labelled.
+    for name in legacy:
+        subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        mod = _module_from_name(name) or name
+        removed.append(f"{mod} (legacy)")
+        _emit_log("system", f"[SYSTEM] Reclaimed legacy actor: {name}")
+
+    # 2) Remove owned actors no longer in the topology.
+    for mod, name in owned.items():
+        if mod in desired_ids:
+            continue
+        if mod in _CORE_MODULES:
+            continue  # defensive; core never carries the actor label anyway
+        subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        removed.append(mod)
+        _emit_log("system", f"[SYSTEM] Removed stale actor: {name}")
+
+    # 3) Create missing / restart surviving desired actors.
+    veh_index = 0
+    for d in desired:
+        mid = d["id"]
+        kind = d.get("kind", "arm")
+        port: Optional[int]
+        if kind == "arm":
+            try:
+                port = 8000 + int(mid.split("-")[-1])
+            except ValueError:
+                port = None
+        else:
+            port = 8010 + veh_index * 10
+            veh_index += 1
+
+        # `removed` may contain "mod (legacy)" entries - compare on the id.
+        removed_ids = {m.split(" ")[0] for m in removed}
+        still_owned = mid in owned and mid not in removed_ids
+
+        if still_owned:
+            stop_err = stop_container(mid)
+            start_err = start_container(mid)
+            errs = [e for e in (stop_err, start_err) if e]
+            if errs:
+                failed.append(f"{mid}: {'; '.join(errs)}")
+            else:
+                restarted.append(mid)
+        else:
+            err = create_actor(mid, kind, d.get("label", mid), port)
+            if err is None:
+                created.append(mid)
+            else:
+                failed.append(f"{mid}: {err}")
+
+    return {
+        "applied": True,
+        "created": created,
+        "restarted": restarted,
+        "removed": removed,
+        "failed": failed,
+        "detail": (
+            f"reconciled · +{len(created)} ~{len(restarted)} "
+            f"-{len(removed)}"
+            + (f" !{len(failed)}" if failed else "")
+        ),
+    }

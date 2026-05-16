@@ -65,7 +65,9 @@ class TestApplyTopologyHonest:
         assert result["arms"] == ["arm-1", "arm-5"]
         assert result["steps"]["config_written"] == "ok"
         assert result["steps"]["compose_generated"] == "ok"
-        assert "skipped" in result["steps"]["compose_up"]
+        # Actors are reconciled, not compose-up'd; docker off → honest.
+        assert result["steps"]["created"] == "none"
+        assert result["steps"]["removed"] == "none"
         assert "honest" in result["detail"]
 
         # Real artifacts exist on disk.
@@ -91,19 +93,48 @@ class TestApplyTopologyHonest:
         assert result["steps"].get("compose_generated") is None
 
 
-class TestCreateArmContainerHonest:
-    def test_honest_when_docker_unavailable(self, monkeypatch):
-        from app.services import container_manager
+class TestUnifiedActorRuntime:
+    def test_reconcile_honest_when_docker_unavailable(self, monkeypatch):
+        from app.services import container_manager as cm
 
-        monkeypatch.setattr(
-            container_manager, "_docker_available", lambda: False
+        monkeypatch.setattr(cm, "_docker_available", lambda: False)
+        res = cm.reconcile_actors(
+            [{"id": "arm-1", "kind": "arm", "label": "Source"}]
         )
-        assert "unavailable" in (container_manager.create_arm_container(5) or "")
+        assert res["applied"] is False
+        assert res["created"] == [] and res["removed"] == []
+        assert "honest" in res["detail"]
+        # list is also a safe no-op (never hits the host docker daemon)
+        assert cm.list_actor_containers() == {"owned": {}, "legacy": []}
+
+    def test_create_actor_honest_when_docker_unavailable(self, monkeypatch):
+        from app.services import container_manager as cm
+
+        monkeypatch.setattr(cm, "_docker_available", lambda: False)
         assert "unavailable" in (
-            container_manager.create_asset_container("veh-9") or ""
+            cm.create_actor("arm-7", "arm", "Arm 7", 8007) or ""
         )
-        # And it must never raise / never fake success.
-        assert container_manager.container_exists("arm-5") is False
+        assert "unavailable" in (
+            cm.create_actor("veh-z", "vehicle", "Veh Z", 8090) or ""
+        )
+
+    def test_module_from_name_handles_legacy_and_unified(self):
+        from app.services import container_manager as cm
+
+        assert cm._module_from_name("interact-arm-5") == "arm-5"
+        # legacy bridge namespace is still reclaimable
+        assert cm._module_from_name("interact-dyn-arm-5") == "arm-5"
+        assert cm._module_from_name("interact-veh-a") == "veh-a"
+        # non-prefixed (host noise) ignored
+        assert cm._module_from_name("some-other-container") is None
+
+    def test_ownership_labels_are_explicit(self):
+        from app.services import container_manager as cm
+
+        # Ownership is label-driven, not name-driven.
+        assert cm.LBL_ROLE == "interact.role"
+        assert cm.ROLE_ACTOR == "actor"
+        assert "backend" in cm._CORE_MODULES
 
 
 class TestDeployApplyRoute:

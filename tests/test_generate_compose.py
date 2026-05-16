@@ -56,23 +56,23 @@ def test_generate_compose_includes_assets_from_pipeline_yaml():
         compose = yaml.safe_load(out_path.read_text(encoding="utf-8"))
         services = compose["services"]
 
-        assert "arm-1" in services
-        assert "arm-2" in services
-        assert "arm-3" in services
-        assert "veh-a" in services
-        assert "veh-b" in services
+        # Unified model: compose defines ONLY core infrastructure. Arms /
+        # AGVs are reconciler-owned actor containers, never compose services.
+        assert set(services) == {
+            "ollama",
+            "backend",
+            "frontend",
+            "demo-runner",
+        }
+        assert "arm-1" not in services
+        assert "veh-a" not in services
 
-        # Deterministic asset host ports from declaration order.
-        assert services["veh-a"]["ports"] == ["8010:8000"]
-        assert services["veh-b"]["ports"] == ["8020:8000"]
-
-        # Compose runtime uses a single mounted pipeline path across services.
-        assert "./pipeline.yaml:/config/pipeline.yaml:ro" in services["demo-runner"]["volumes"]
-        # Backend mount is writable so the deploy bridge can rewrite config.
+        # Backend mount writable so the deploy bridge can rewrite config;
+        # demo-runner reads it read-only.
         assert "./pipeline.yaml:/config/pipeline.yaml:rw" in services["backend"]["volumes"]
+        assert "./pipeline.yaml:/config/pipeline.yaml:ro" in services["demo-runner"]["volumes"]
         assert "PIPELINE_CONFIG=/config/pipeline.yaml" in services["backend"]["environment"]
         assert "PIPELINE_CONFIG=/config/pipeline.yaml" in services["demo-runner"]["environment"]
-        assert "PIPELINE_CONFIG=/config/pipeline.yaml" in services["veh-a"]["environment"]
 
 
 def test_generate_compose_rejects_conveyor_type():

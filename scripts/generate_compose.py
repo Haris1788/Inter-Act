@@ -152,47 +152,18 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
         },
     }
 
-    for arm in arms:
-        arm_id = int(arm["id"])
-        sid = f"arm-{arm_id}"
-        services[sid] = {
-            "build": {"context": ".", "dockerfile": "docker/Dockerfile.arm"},
-            "container_name": f"{COMPOSE_PREFIX}-{sid}",
-            "ports": [f"{8000 + arm_id}:8000"],
-            "environment": [
-                f"ARM_ID={arm_id}",
-                "SERVER_HOST=http://backend:5000",
-                "PIPELINE_CONFIG=/config/pipeline.yaml",
-            ],
-            "volumes": ["./pipeline.yaml:/config/pipeline.yaml:ro"],
-            "depends_on": {"backend": {"condition": "service_healthy"}},
-        }
-
-    for asset in assets:
-        aid = asset["id"]
-        upstream = (asset.get("upstream") or [None])[0]
-        downstream = (asset.get("downstream") or [None])[0]
-        env = [
-            f"ASSET_TYPE={asset['type']}",
-            f"ASSET_ID={aid}",
-            f"ASSET_LABEL={asset.get('label', aid)}",
-            "SERVER_HOST=http://backend:5000",
-            "PIPELINE_CONFIG=/config/pipeline.yaml",
-            "SPEED_FACTOR=1.0",
-            f"UPSTREAM_URL={_asset_url(upstream)}",
-            f"DOWNSTREAM_URL={_asset_url(downstream)}",
-        ]
-        if asset["type"] == "vehicle":
-            env.append(f"TRAVEL_TIME={_vehicle_travel_time(asset)}")
-
-        services[aid] = {
-            "build": {"context": ".", "dockerfile": "docker/Dockerfile.asset"},
-            "container_name": f"{COMPOSE_PREFIX}-{aid}",
-            "ports": [f"{asset_ports[aid]}:8000"],
-            "environment": env,
-            "volumes": ["./pipeline.yaml:/config/pipeline.yaml:ro"],
-            "depends_on": {"backend": {"condition": "service_healthy"}},
-        }
+    # ARMS & ASSETS ARE NO LONGER COMPOSE SERVICES.
+    #
+    # Actor containers are ephemeral runtime entities owned by topology
+    # reconciliation (app/services/container_manager.reconcile_actors),
+    # tagged with explicit `interact.role=actor` labels. Compose now only
+    # defines the persistent core infrastructure (ollama / backend /
+    # frontend / demo-runner). This kills the static-compose-vs-bridge
+    # namespace fragmentation: one ownership model, label-based, decentralised.
+    #
+    # `arms`/`assets` are still parsed above so `type: conveyor` is rejected
+    # loudly at compose-gen time and the run summary stays informative.
+    _ = (arms, asset_ports)  # parsed for validation/summary only
 
     compose = {"services": services, "volumes": {"ollama_data": {}}}
 
@@ -201,11 +172,13 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
 
     arm_names = ", ".join(f"arm-{a['id']}" for a in arms) if arms else "-"
     asset_names = ", ".join(a["id"] for a in assets) if assets else "-"
-    print(f"Generated {output_path}")
-    print(f"  Arms   : {len(arms)} ({arm_names})")
-    print(f"  Assets : {len(assets)} ({asset_names})")
-    print(f"  Services total: {len(services)}")
-    print("\nRun: docker compose up --build")
+    print(f"Generated {output_path} (core infrastructure only)")
+    print(f"  Core services : {len(services)} (ollama, backend, frontend, demo-runner)")
+    print(f"  Actors (reconciled at deploy, NOT compose):")
+    print(f"    Arms   : {len(arms)} ({arm_names})")
+    print(f"    Assets : {len(assets)} ({asset_names})")
+    print("\nRun core: docker compose up -d --build")
+    print("Actors are created/removed by topology reconciliation on Deploy.")
 
 
 if __name__ == "__main__":

@@ -10,10 +10,16 @@ import { LogsPanel } from "@/chrome/LogsPanel";
 import { CanvasViewport } from "@/canvas/CanvasViewport";
 import { OnboardingOverlay } from "@/chrome/OnboardingOverlay";
 
-// App shell - mirrors styles-v2.css `.app` / `.main` grid exactly:
-//   .app  : grid-rows 48px 1fr
-//   .main : grid-cols 260px 1fr 320px / grid-rows 1fr 220px
-//           areas "left canvas right" / "left logs right"
+// Application-level density scale. ~0.9 makes the workspace read like
+// Chrome at 90% while the browser stays at native 100%. This is a shell
+// layout transform (the inverse-sized box keeps it filling the viewport),
+// NOT a browser-zoom hack: it scales typography, spacing, panels, toolbar,
+// inspector, the operational dock AND the canvas uniformly. ReactFlow +
+// Konva sit under the SAME transform, so screen↔flow math and overlay
+// alignment stay exact (RF reads the scaled bounding rect).
+const UI_SCALE = 0.9;
+const INV = `${100 / UI_SCALE}`; // 111.111… → after scale == 100vw/vh
+
 export function App() {
   useAutosave();
 
@@ -34,8 +40,17 @@ export function App() {
   }, []);
 
   return (
-    <div className="grid h-screen w-screen grid-rows-[48px_1fr] overflow-hidden">
-      <Topbar />
+    <div
+      className="fixed left-0 top-0 overflow-hidden"
+      style={{
+        width: `${INV}vw`,
+        height: `${INV}vh`,
+        transform: `scale(${UI_SCALE})`,
+        transformOrigin: "top left",
+      }}
+    >
+      <div className="grid h-full w-full grid-rows-[48px_1fr] overflow-hidden">
+        <Topbar />
       <main
         className="grid min-h-0"
         style={{
@@ -59,7 +74,8 @@ export function App() {
           <LogsPanel />
         </div>
       </main>
-      <OnboardingOverlay />
+        <OnboardingOverlay />
+      </div>
     </div>
   );
 }

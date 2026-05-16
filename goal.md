@@ -305,7 +305,7 @@ Three costs are acknowledged upfront:
 - **Multi-input, multi-output warehouse topologies**: considered for later phases.
 - **Real physical hardware integration**: this is a simulation only.
 - **Cloud-hosted or remote LLMs**: Ollama local only.
-- **Node-RED style drag-and-drop builder**: planned for a later phase.
+- **Visual orchestration workspace (drag-and-drop topology authoring)**: now implemented (ReactFlow + Konva).
 
 ---
 
@@ -345,4 +345,4 @@ The immediate engineering target is:
 
 The system does not need to be perfect. It needs to be **demonstrably non-deterministic** in how it finds solutions, meaning the path taken should emerge from actor negotiation based on the constraint given in the prompt, not from code that pre-defines the route. When the constraint is "shortest time," the fastest available AGV wins. When the constraint is "shortest distance," the nearest one does. When no constraint is given, the first actor to respond wins. None of these decisions are hard-coded. They fall out of the negotiation.
 
-That is the project. Everything else (conveyor belts, complex routing, package weights, collision avoidance, Node-RED UI) is downstream of making this core loop work first.
+That is the project. Everything else (conveyor belts, complex routing, package weights, collision avoidance, the visual orchestration workspace) is downstream of making this core loop work first.

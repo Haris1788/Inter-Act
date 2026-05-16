@@ -8,7 +8,7 @@ import { useStore } from "@/store";
 import { docToState } from "@/lib/topologySchema";
 import { loadLocal } from "@/lib/persistence";
 import { saveWorkspace } from "./save";
-import { primeHistory, recordHistory } from "./history";
+import { primeHistory, installHistory } from "./history";
 
 // Autosave ~1s after the last change (topology OR workspace name).
 const DEBOUNCE_MS = 1000;
@@ -16,6 +16,9 @@ const DEBOUNCE_MS = 1000;
 export function useAutosave() {
   useEffect(() => {
     let restored = false;
+    // History owns its own change subscription, independent of autosave
+    // and the Save button - saving never resets undo/redo.
+    installHistory();
 
     // Restore the saved workspace once the runtime link has settled (so we
     // restore on top of, not before, the driver's initial hydrate). Applies
@@ -52,10 +55,7 @@ export function useAutosave() {
       )
         return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        recordHistory(); // capture the settled change as an undo step
-        saveWorkspace(); // persist topology + name, clear dirty
-      }, DEBOUNCE_MS);
+      timer = setTimeout(saveWorkspace, DEBOUNCE_MS);
     });
 
     return () => {
