@@ -1,11 +1,28 @@
+import { cn } from "@/lib/cn";
 import type { TopologyActor, ActorRuntime } from "@/store/types";
 
 interface InspHeadProps {
   actor: TopologyActor;
   runtime: ActorRuntime;
+  live: boolean;
 }
 
-export function InspHead({ actor, runtime }: InspHeadProps) {
+// Map ActorStatus → badge appearance
+const STATUS_BADGE: Record<
+  string,
+  { label: string; dotCls: string; bgCls: string; textCls: string; borderCls: string }
+> = {
+  ok:        { label: "Healthy",    dotCls: "bg-ok",           bgCls: "bg-[#E7F4EC]", textCls: "text-[#1D6B38]", borderCls: "border-[#B8DEC5]" },
+  idle:      { label: "Idle",       dotCls: "bg-[#8A8A90]",    bgCls: "bg-[#E7E6E2]", textCls: "text-ink-2",    borderCls: "border-line" },
+  busy:      { label: "Busy",       dotCls: "bg-cta",          bgCls: "bg-[#EFF4FF]", textCls: "text-[#1B47A5]", borderCls: "border-[#C3D3F7]" },
+  warn:      { label: "Warning",    dotCls: "bg-[#D08A00]",    bgCls: "bg-[#FDF6E3]", textCls: "text-[#7A5200]", borderCls: "border-[#EDD68A]" },
+  down:      { label: "Down",       dotCls: "bg-[#C93535]",    bgCls: "bg-[#FBEAEA]", textCls: "text-[#7A1A1A]", borderCls: "border-[#EDB8B8]" },
+};
+
+export function InspHead({ actor, runtime, live }: InspHeadProps) {
+  const statusKey = runtime.status in STATUS_BADGE ? runtime.status : "idle";
+  const badge = STATUS_BADGE[statusKey];
+
   return (
     <div className="px-[14px] pt-[12px] pb-[10px] border-b border-line-soft">
       {/* Title row */}
@@ -46,19 +63,38 @@ export function InspHead({ actor, runtime }: InspHeadProps) {
 
       {/* Status row */}
       <div className="mt-[10px] flex items-center gap-2 flex-wrap">
-        {runtime.winning && (
+        {/* Bid/winning badge — mock only (live has no bid data) */}
+        {!live && runtime.winning && (
           <span className="inline-flex items-center gap-[6px] h-[22px] px-2 rounded-[5px] text-11 font-medium bg-cta text-[#FAFAF7] border border-cta">
             <span className="w-[6px] h-[6px] rounded-full bg-[#FAFAF7]" />
             Winning bid · {runtime.bid?.toFixed(2) ?? "—"}
           </span>
         )}
-        <span className="inline-flex items-center gap-[6px] h-[22px] px-2 rounded-[5px] text-11 font-medium bg-[#E7E6E2] text-ink-2 border border-line">
-          <span className="w-[6px] h-[6px] rounded-full bg-[#8A8A90]" />
-          Container healthy
+
+        {/* Health status badge — always shown; driven by live status in live mode */}
+        <span
+          className={cn(
+            "inline-flex items-center gap-[6px] h-[22px] px-2 rounded-[5px] text-11 font-medium border",
+            badge.bgCls, badge.textCls, badge.borderCls,
+          )}
+        >
+          <span className={cn("w-[6px] h-[6px] rounded-full", badge.dotCls)} />
+          {live ? badge.label : "Container healthy"}
         </span>
-        <span className="ml-auto font-mono text-11 text-ink-3">
-          up {runtime.uptime}
-        </span>
+
+        {/* Phase label — live only; shows the current script/phase from backend */}
+        {live && runtime.phase && (
+          <span className="font-mono text-10.5 text-ink-3 truncate max-w-[120px]" title={runtime.phase}>
+            {runtime.phase}
+          </span>
+        )}
+
+        {/* Uptime — show only in mock (live has empty string default) */}
+        {!live && (
+          <span className="ml-auto font-mono text-11 text-ink-3">
+            up {runtime.uptime}
+          </span>
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,10 @@
 import { cn } from "@/lib/cn";
+import { useActors } from "@/store/selectors";
+import { ConnectionChip } from "./ConnectionChip";
 
 export function Topbar() {
+  const actors = useActors();
+  const actorCount = Object.keys(actors).length;
   return (
     <header
       className={cn(
@@ -25,14 +29,7 @@ export function Topbar() {
           <span className="text-12 font-semibold text-ink">atlas-floor-3</span>
           <span className="text-12 text-ink-5">/</span>
           <span className="font-mono text-12 text-ink-2">orchestration.yaml</span>
-          <span
-            className={cn(
-              "font-mono text-10.5 tracking-wider",
-              "rounded-full border border-line bg-bg-sunken px-[7px] py-px",
-            )}
-          >
-            ● live
-          </span>
+          <ConnectionChip />
         </div>
       </div>
 
@@ -108,7 +105,7 @@ export function Topbar() {
             style={{ boxShadow: "0 0 0 2px #E6EBE0" }}
           />
           Coherent ·{" "}
-          <span className="font-mono text-11 text-ink-4">5 actors registered</span>
+          <span className="font-mono text-11 text-ink-4">{actorCount} actors registered</span>
         </button>
 
         {/* Deploy */}
