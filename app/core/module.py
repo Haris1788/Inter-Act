@@ -1,6 +1,6 @@
 """Unified Module interface for pipeline assets (Phase 4).
 
-Every pipeline component — arm, vehicle, conveyor, future types — is a
+Every pipeline component — arm, vehicle, future types — is a
 `Module`. Modules communicate ONLY via TransferPoint. The pipeline builder
 treats them uniformly: read flow order from config, connect TPs linearly,
 spawn threads. There are no type-specific branches outside each module's

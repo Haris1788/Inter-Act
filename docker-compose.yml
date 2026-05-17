@@ -149,22 +149,6 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-  arm-5:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.arm
-    container_name: interact-arm-5
-    ports:
-    - 8005:8000
-    environment:
-    - ARM_ID=5
-    - SERVER_HOST=http://backend:5000
-    - PIPELINE_CONFIG=/config/pipeline.yaml
-    volumes:
-    - ./pipeline.yaml:/config/pipeline.yaml:ro
-    depends_on:
-      backend:
-        condition: service_healthy
   veh-a:
     build:
       context: .
@@ -180,31 +164,8 @@ services:
     - PIPELINE_CONFIG=/config/pipeline.yaml
     - SPEED_FACTOR=1.0
     - UPSTREAM_URL=http://arm-2:8000
-    - DOWNSTREAM_URL=http://conv-1:8000
-    - TRAVEL_TIME=1.214
-    volumes:
-    - ./pipeline.yaml:/config/pipeline.yaml:ro
-    depends_on:
-      backend:
-        condition: service_healthy
-  conv-1:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.asset
-    container_name: interact-conv-1
-    ports:
-    - 8020:8000
-    environment:
-    - ASSET_TYPE=conveyor
-    - ASSET_ID=conv-1
-    - ASSET_LABEL=Belt 1
-    - SERVER_HOST=http://backend:5000
-    - PIPELINE_CONFIG=/config/pipeline.yaml
-    - SPEED_FACTOR=1.0
-    - UPSTREAM_URL=http://veh-a:8000
     - DOWNSTREAM_URL=http://arm-3:8000
-    - SLOT_COUNT=4
-    - SHIFT_INTERVAL=1.2
+    - TRAVEL_TIME=1.214
     volumes:
     - ./pipeline.yaml:/config/pipeline.yaml:ro
     depends_on:

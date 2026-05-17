@@ -44,7 +44,7 @@ def _docker_available() -> bool:
 
 
 def container_name_for(module_id: str) -> str:
-    """Map a pipeline module id (`arm-1`, `veh-a`, `conv-1`) to its
+    """Map a pipeline module id (`arm-1`, `veh-a`) to its
     docker-compose container name. Customise via `container_name:` in
     docker-compose.yml so this stays predictable across `docker compose up`
     invocations.

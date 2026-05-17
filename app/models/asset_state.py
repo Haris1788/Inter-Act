@@ -1,8 +1,8 @@
-"""Runtime state registry for non-arm assets (vehicle, conveyor).
+"""Runtime state registry for non-arm assets (vehicle).
 
 Mirrors `arm_state.py` for the rest of the asset graph. Arms continue to use
-their existing health model — this module only tracks vehicles and conveyors
-so the frontend, REST routes, and demo runner share one source of truth.
+their existing health model — this module tracks vehicles so the frontend,
+REST routes, and demo runner share one source of truth.
 
 State machine per asset:
     idle    — registered, nothing in flight

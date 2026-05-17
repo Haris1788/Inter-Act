@@ -1,9 +1,9 @@
 /* Phase 3: frontend no longer simulates pipeline progress.
  *
- * All asset state — vehicle position, conveyor slot occupancy, asset status —
+ * All asset state — vehicle position, asset status —
  * is driven exclusively by backend SocketIO events (`object_update`,
  * `state_update`, `arm_health`, `asset_health`). This file used to host
- * `tickVehicle` / `tickConveyor` / `driveTransits` / `checkProximityHandovers`;
+ * `tickVehicle` / `driveTransits` / `checkProximityHandovers`;
  * those have been removed because they introduced frontend-side guesses about
  * pipeline progress, violating the "frontend is a pure reflection" rule.
  *

@@ -2,9 +2,11 @@
 
 Covers:
 - arms-only configs (legacy back-compat)
-- mixed arms + vehicle + conveyor configs
+- mixed arms + vehicle configs
+- arms + multi-vehicle configs
 - /config response shape exposes asset_graph
 - graph validation rejects invalid references and detects cycles
+- conveyor type explicitly rejected (post-removal regression)
 - registry helpers (get_all_assets, get_asset, get_assets_by_type)
 """
 
@@ -46,12 +48,28 @@ def _mixed_cfg():
             "id": "veh-a", "type": "vehicle", "label": "Shuttle A", "color": "#9b59b6",
             "speed": 120, "loop": False,
             "waypoints": [{"x": 730, "y": 300}, {"x": 900, "y": 300}],
-            "upstream": ["arm-2"], "downstream": ["conv-1"],
+            "upstream": ["arm-2"], "downstream": ["arm-3"],
+        },
+    ]
+    return cfg
+
+
+def _multi_vehicle_cfg():
+    cfg = _arms_only_cfg()
+    cfg["arms"].append(
+        {"id": 4, "label": "Arm 4", "color": "#e67e22", "depends_on": [3], "critical": True}
+    )
+    cfg["assets"] = [
+        {
+            "id": "veh-a", "type": "vehicle", "label": "Shuttle A", "color": "#9b59b6",
+            "speed": 120, "loop": False,
+            "waypoints": [{"x": 700, "y": 300}, {"x": 850, "y": 300}],
+            "upstream": ["arm-2"], "downstream": ["veh-b"],
         },
         {
-            "id": "conv-1", "type": "conveyor", "label": "Belt 1", "color": "#34495e",
-            "from": {"x": 900, "y": 300}, "to": {"x": 1250, "y": 300},
-            "slot_count": 4, "shift_interval": 1.2,
+            "id": "veh-b", "type": "vehicle", "label": "Shuttle B", "color": "#8e44ad",
+            "speed": 120, "loop": False,
+            "waypoints": [{"x": 850, "y": 300}, {"x": 1000, "y": 300}],
             "upstream": ["veh-a"], "downstream": ["arm-3"],
         },
     ]
@@ -98,50 +116,56 @@ class TestArmsOnly:
 
 
 # ---------------------------------------------------------------------------
-# Mixed registry: arms + vehicle + conveyor
+# Mixed registry: arms + vehicle
 # ---------------------------------------------------------------------------
 
 class TestMixedAssets:
-    def test_registry_includes_all_asset_types(self):
+    def test_registry_includes_arms_and_vehicles(self):
         with fake_config(_mixed_cfg()):
             assets = pipeline_config.get_all_assets()
         ids = [a["id"] for a in assets]
-        assert ids == ["arm-1", "arm-2", "arm-3", "veh-a", "conv-1"]
+        assert ids == ["arm-1", "arm-2", "arm-3", "veh-a"]
 
-    def test_arm_downstream_bridges_to_non_arm_assets(self):
+    def test_arm_downstream_bridges_to_vehicle(self):
         with fake_config(_mixed_cfg()):
             arm2 = pipeline_config.get_asset("arm-2")
             arm3 = pipeline_config.get_asset("arm-3")
         assert "veh-a" in arm2["downstream"]
-        assert "conv-1" in arm3["upstream"]
+        assert "veh-a" in arm3["upstream"]
 
     def test_vehicle_upstream_downstream_preserved(self):
         with fake_config(_mixed_cfg()):
             veh = pipeline_config.get_asset("veh-a")
         assert veh["type"] == "vehicle"
         assert veh["upstream"] == ["arm-2"]
-        assert veh["downstream"] == ["conv-1"]
-
-    def test_conveyor_geometry_has_slot_positions(self):
-        with fake_config(_mixed_cfg()):
-            conv = pipeline_config.get_asset("conv-1")
-        slots = conv["geometry"]["slot_positions"]
-        assert len(slots) == 4
-        assert slots[0]["x"] == conv["geometry"]["from"]["x"]
-        assert slots[-1]["x"] == conv["geometry"]["to"]["x"]
+        assert veh["downstream"] == ["arm-3"]
 
     def test_get_assets_by_type_filters_correctly(self):
         with fake_config(_mixed_cfg()):
             arms = pipeline_config.get_assets_by_type("arm")
             vehicles = pipeline_config.get_assets_by_type("vehicle")
-            conveyors = pipeline_config.get_assets_by_type("conveyor")
         assert len(arms) == 3
         assert len(vehicles) == 1
-        assert len(conveyors) == 1
 
     def test_get_asset_returns_none_for_unknown_id(self):
         with fake_config(_mixed_cfg()):
             assert pipeline_config.get_asset("nope") is None
+
+
+# ---------------------------------------------------------------------------
+# Multi-vehicle chain (arm -> vehicle -> vehicle -> arm)
+# ---------------------------------------------------------------------------
+
+class TestMultiVehicle:
+    def test_module_flow_order_inserts_both_vehicles(self):
+        with fake_config(_multi_vehicle_cfg()):
+            order = pipeline_config.get_module_flow_order()
+        assert order == ["arm-1", "arm-2", "veh-a", "veh-b", "arm-3", "arm-4"]
+
+    def test_validation_passes(self):
+        with fake_config(_multi_vehicle_cfg()):
+            valid, errors = pipeline_config.validate_asset_graph()
+        assert valid, errors
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +194,10 @@ class TestSceneConfigShape:
     def test_mixed_response_includes_all_assets(self):
         with fake_config(_mixed_cfg()):
             scene = pipeline_config.generate_scene_config()
-        assert len(scene["asset_graph"]) == 5
+        assert len(scene["asset_graph"]) == 4
         types = [a["type"] for a in scene["asset_graph"]]
         assert types.count("arm") == 3
         assert types.count("vehicle") == 1
-        assert types.count("conveyor") == 1
 
     def test_back_compat_arms_array_unchanged_for_legacy_consumers(self):
         with fake_config(_arms_only_cfg()):
@@ -216,14 +239,6 @@ class TestAssetGraphValidation:
         assert not valid
         assert any("arm-99" in e for e in errors)
 
-    def test_unknown_downstream_reference_rejected(self):
-        cfg = _mixed_cfg()
-        cfg["assets"][1]["downstream"] = ["ghost-1"]
-        with fake_config(cfg):
-            valid, errors = pipeline_config.validate_asset_graph()
-        assert not valid
-        assert any("ghost-1" in e for e in errors)
-
     def test_unknown_asset_type_rejected(self):
         cfg = _mixed_cfg()
         cfg["assets"].append({
@@ -235,19 +250,45 @@ class TestAssetGraphValidation:
         assert not valid
         assert any("drone" in e for e in errors)
 
+    def test_conveyor_type_explicitly_rejected(self):
+        """Regression: conveyor was removed; declaring it must fail loudly."""
+        cfg = _mixed_cfg()
+        cfg["assets"].append({
+            "id": "conv-1", "type": "conveyor",
+            "from": {"x": 0, "y": 0}, "to": {"x": 100, "y": 0},
+            "slot_count": 4, "shift_interval": 1.0,
+            "upstream": ["arm-3"], "downstream": [],
+        })
+        with fake_config(cfg):
+            valid, errors = pipeline_config.validate_asset_graph()
+        assert not valid
+        assert any("conveyor" in e.lower() for e in errors)
+
+    def test_get_extra_assets_raises_on_conveyor(self):
+        cfg = _arms_only_cfg()
+        cfg["assets"] = [{
+            "id": "conv-1", "type": "conveyor",
+            "from": {"x": 0, "y": 0}, "to": {"x": 100, "y": 0},
+            "slot_count": 4, "shift_interval": 1.0,
+            "upstream": [], "downstream": [],
+        }]
+        with fake_config(cfg):
+            with pytest.raises(ValueError, match="conveyor"):
+                pipeline_config.get_extra_assets()
+
     def test_cycle_in_arm_graph_detected(self):
         cfg = _arms_only_cfg()
-        cfg["arms"][0]["depends_on"] = [3]   # arm-1 <- arm-3, with arm-3 <- arm-2 <- arm-1 cycle
+        cfg["arms"][0]["depends_on"] = [3]
         with fake_config(cfg):
             valid, errors = pipeline_config.validate_asset_graph()
         assert not valid
         assert any("cycle" in e.lower() for e in errors)
 
     def test_cycle_across_asset_types_detected(self):
-        cfg = _mixed_cfg()
-        # Add a back-edge: conveyor -> vehicle creates a cycle.
+        cfg = _multi_vehicle_cfg()
+        # Add back-edge: veh-b -> veh-a creates a cycle.
         cfg["assets"][1]["downstream"].append("veh-a")
-        cfg["assets"][0]["upstream"].append("conv-1")
+        cfg["assets"][0]["upstream"].append("veh-b")
         with fake_config(cfg):
             valid, errors = pipeline_config.validate_asset_graph()
         assert not valid

@@ -68,7 +68,7 @@ function checkDemoStatus() {
     .catch(() => {});
 }
 
-/* Per-asset Kill / Recover buttons (vehicles + conveyors only). */
+/* Per-asset Kill / Recover buttons (vehicles only). */
 function renderAssetControls() {
   let panel = document.getElementById("asset-controls");
   if (!panel) {
@@ -84,7 +84,7 @@ function renderAssetControls() {
   panel.innerHTML = "";
 
   for (const asset of state.assets.values()) {
-    if (asset.type !== "vehicle" && asset.type !== "conveyor") continue;
+    if (asset.type !== "vehicle") continue;
 
     const killBtn = document.createElement("button");
     killBtn.textContent = `Kill ${asset.label}`;
@@ -191,7 +191,7 @@ function renderAIActorButtons() {
       return na - nb;
     });
   const assets = Array.from(state.assets.values())
-    .filter((a) => a.type === "vehicle" || a.type === "conveyor");
+    .filter((a) => a.type === "vehicle");
 
   const flow = [...arms, ...assets];
   if (flow.length === 0) return;

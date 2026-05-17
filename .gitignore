@@ -14,8 +14,9 @@ build/
 .claude/
 planning/
 .cursor/rules/humanized-docs.mdc
-
-# Personal documentation — kept locally, not pushed.
-# documentation/ folder holds shareable docs that get committed and pushed.
-# Doc-check/ folder holds everything kept local (weekly logs, presentation drafts, etc.).
-Doc-check/
+graphify-out/
+presentation/
+CLAUDE.md
+.graphify_python
+HANDOFF.md
+.playwright-mcp/page-2026-05-10T18-54-12-719Z.yml

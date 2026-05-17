@@ -35,7 +35,7 @@ arm_bp = Blueprint('arms', __name__)
 _object_states = {}  # {"Obj1": {"object_id": "Obj1", "state": "intake", "carrier_arm": None}}
 _object_lock = threading.Lock()
 _object_versions = {}  # {"Obj1": last_event_time_ms}
-_object_owners = {}    # {"Obj1": "arm-1" | "TP arm-1->arm-2" | "conv-1" | ...}
+_object_owners = {}    # {"Obj1": "arm-1" | "TP arm-1->arm-2" | "veh-a" | ...}
 _event_seq = 0         # monotonic backend sequence for object_update ordering
 
 
@@ -72,7 +72,7 @@ def _canonical_owner(owner_type, owner_id):
         return "transfer_point"
     if owner_type == "arm":
         return "arm"
-    if owner_type in ("asset", "vehicle", "conveyor"):
+    if owner_type in ("asset", "vehicle"):
         return "asset"
     return None
 
@@ -88,7 +88,7 @@ def _owner_exists(topo, owner_type, owner_id):
         return bool(rec and rec.get("type") == "arm")
     if canonical == "asset":
         rec = topo["assets"].get(owner_id)
-        return bool(rec and rec.get("type") in ("vehicle", "conveyor"))
+        return bool(rec and rec.get("type") == "vehicle")
     return False
 
 
@@ -528,8 +528,8 @@ def _pick_for_asset(asset_id, task, menu, obj_summary):
 
 @arm_bp.route('/run_script', methods=['POST'])
 def run_script_endpoint():
-    """Ask Qwen (arms) or the deterministic asset-brain (shuttle/conveyor)
-    to pick a script for this actor + task, then run it.
+    """Ask Qwen (arms) or the deterministic asset-brain (shuttle) to
+    pick a script for this actor + task, then run it.
 
     Request:
         {"arm_id": 1, "task": "do your relay"}

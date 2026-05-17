@@ -13,6 +13,9 @@ def _write_yaml(path: Path, data: dict):
         yaml.safe_dump(data, f, sort_keys=False)
 
 
+import pytest
+
+
 def test_generate_compose_includes_assets_from_pipeline_yaml():
     cfg = {
         "pipeline": {"mode": "dependency"},
@@ -29,16 +32,14 @@ def test_generate_compose_includes_assets_from_pipeline_yaml():
                 "speed": 100,
                 "waypoints": [{"x": 0, "y": 0}, {"x": 20, "y": 0}],
                 "upstream": ["arm-2"],
-                "downstream": ["conv-1"],
+                "downstream": ["veh-b"],
             },
             {
-                "id": "conv-1",
-                "type": "conveyor",
-                "label": "Belt 1",
-                "from": {"x": 20, "y": 0},
-                "to": {"x": 50, "y": 0},
-                "slot_count": 4,
-                "shift_interval": 1.2,
+                "id": "veh-b",
+                "type": "vehicle",
+                "label": "Shuttle B",
+                "speed": 100,
+                "waypoints": [{"x": 20, "y": 0}, {"x": 50, "y": 0}],
                 "upstream": ["veh-a"],
                 "downstream": ["arm-3"],
             },
@@ -59,11 +60,11 @@ def test_generate_compose_includes_assets_from_pipeline_yaml():
         assert "arm-2" in services
         assert "arm-3" in services
         assert "veh-a" in services
-        assert "conv-1" in services
+        assert "veh-b" in services
 
         # Deterministic asset host ports from declaration order.
         assert services["veh-a"]["ports"] == ["8010:8000"]
-        assert services["conv-1"]["ports"] == ["8020:8000"]
+        assert services["veh-b"]["ports"] == ["8020:8000"]
 
         # Compose runtime uses a single mounted pipeline path across services.
         assert "./pipeline.yaml:/config/pipeline.yaml:ro" in services["demo-runner"]["volumes"]
@@ -71,3 +72,28 @@ def test_generate_compose_includes_assets_from_pipeline_yaml():
         assert "PIPELINE_CONFIG=/config/pipeline.yaml" in services["backend"]["environment"]
         assert "PIPELINE_CONFIG=/config/pipeline.yaml" in services["demo-runner"]["environment"]
         assert "PIPELINE_CONFIG=/config/pipeline.yaml" in services["veh-a"]["environment"]
+
+
+def test_generate_compose_rejects_conveyor_type():
+    """Regression: conveyor support removed; declaring it must fail loudly."""
+    cfg = {
+        "pipeline": {"mode": "dependency"},
+        "arms": [
+            {"id": 1, "label": "Arm 1", "color": "#111", "depends_on": [], "critical": True},
+            {"id": 2, "label": "Arm 2", "color": "#222", "depends_on": [1], "critical": True},
+        ],
+        "assets": [
+            {
+                "id": "conv-1", "type": "conveyor", "label": "Belt",
+                "from": {"x": 0, "y": 0}, "to": {"x": 50, "y": 0},
+                "slot_count": 4, "shift_interval": 1.0,
+                "upstream": ["arm-1"], "downstream": ["arm-2"],
+            },
+        ],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_path = Path(tmp) / "pipeline.yaml"
+        out_path = Path(tmp) / "docker-compose.yml"
+        _write_yaml(cfg_path, cfg)
+        with pytest.raises(ValueError, match="conveyor"):
+            generate(str(cfg_path), str(out_path))

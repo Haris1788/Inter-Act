@@ -5,7 +5,7 @@ Validates:
 - AssetController + ArmController inherit from Module.
 - get_module_flow_order returns correct ordering for arms-only and mixed configs.
 - Linear pipeline wires up uniformly with NO type-specific branching.
-- Removing the vehicle from config still produces a working module list.
+- Removing an intermediate vehicle still produces a working module list.
 - Adding a hypothetical new module type works by implementing Module only.
 """
 
@@ -21,9 +21,7 @@ import pytest
 
 from app.core.module import Module, VALID_MODULE_STATES
 from app.models import asset_state, pipeline_config
-from app.services.asset_controllers import (
-    AssetController, VehicleController, ConveyorController,
-)
+from app.services.asset_controllers import AssetController, VehicleController
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from scripts.run_demo import ArmController, TransferPoint
@@ -99,11 +97,6 @@ class TestInheritance:
         v = VehicleController("veh", "Veh", input_tp=None, output_tp=None,
                               num_products=1)
         assert isinstance(v, Module)
-
-    def test_conveyor_controller_is_module(self):
-        c = ConveyorController("conv", "Conv", input_tp=None, output_tp=None,
-                               num_products=1, slot_count=3)
-        assert isinstance(c, Module)
 
 
 class TestArmBackpressure:
@@ -235,7 +228,7 @@ class TestFlowOrder:
             order = pipeline_config.get_module_flow_order()
         assert order == ["arm-1", "arm-2", "arm-3"]
 
-    def test_mixed_flow_inserts_assets_between_arms(self):
+    def test_mixed_flow_inserts_vehicle_between_arms(self):
         cfg = {
             "pipeline": {"mode": "dependency"},
             "arms": _arms_cfg(3),
@@ -243,31 +236,31 @@ class TestFlowOrder:
                 {"id": "veh-a", "type": "vehicle",
                  "speed": 100,
                  "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
-                 "upstream": ["arm-2"], "downstream": ["conv-1"]},
-                {"id": "conv-1", "type": "conveyor",
-                 "from": {"x": 10, "y": 0}, "to": {"x": 30, "y": 0},
-                 "slot_count": 3, "shift_interval": 1.0,
-                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
-            ],
-        }
-        with fake_config(cfg):
-            order = pipeline_config.get_module_flow_order()
-        assert order == ["arm-1", "arm-2", "veh-a", "conv-1", "arm-3"]
-
-    def test_remove_vehicle_still_orders(self):
-        cfg = {
-            "pipeline": {"mode": "dependency"},
-            "arms": _arms_cfg(3),
-            "assets": [
-                {"id": "conv-1", "type": "conveyor",
-                 "from": {"x": 0, "y": 0}, "to": {"x": 10, "y": 0},
-                 "slot_count": 3, "shift_interval": 1.0,
                  "upstream": ["arm-2"], "downstream": ["arm-3"]},
             ],
         }
         with fake_config(cfg):
             order = pipeline_config.get_module_flow_order()
-        assert order == ["arm-1", "arm-2", "conv-1", "arm-3"]
+        assert order == ["arm-1", "arm-2", "veh-a", "arm-3"]
+
+    def test_two_vehicles_in_series(self):
+        cfg = {
+            "pipeline": {"mode": "dependency"},
+            "arms": _arms_cfg(3),
+            "assets": [
+                {"id": "veh-a", "type": "vehicle",
+                 "speed": 100,
+                 "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
+                 "upstream": ["arm-2"], "downstream": ["veh-b"]},
+                {"id": "veh-b", "type": "vehicle",
+                 "speed": 100,
+                 "waypoints": [{"x": 10, "y": 0}, {"x": 30, "y": 0}],
+                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
+            ],
+        }
+        with fake_config(cfg):
+            order = pipeline_config.get_module_flow_order()
+        assert order == ["arm-1", "arm-2", "veh-a", "veh-b", "arm-3"]
 
     def test_five_arms_vehicle_between_arm4_and_arm5(self):
         cfg = {
@@ -277,11 +270,7 @@ class TestFlowOrder:
                 {"id": "veh-a", "type": "vehicle",
                  "speed": 120,
                  "waypoints": [{"x": 0, "y": 0}, {"x": 20, "y": 0}],
-                 "upstream": ["arm-2"], "downstream": ["conv-1"]},
-                {"id": "conv-1", "type": "conveyor",
-                 "from": {"x": 20, "y": 0}, "to": {"x": 50, "y": 0},
-                 "slot_count": 4, "shift_interval": 1.2,
-                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
+                 "upstream": ["arm-2"], "downstream": ["arm-3"]},
                 {"id": "veh-b", "type": "vehicle",
                  "speed": 120,
                  "waypoints": [{"x": 0, "y": 0}, {"x": 20, "y": 0}],
@@ -291,45 +280,8 @@ class TestFlowOrder:
         with fake_config(cfg):
             order = pipeline_config.get_module_flow_order()
         assert order == [
-            "arm-1", "arm-2", "veh-a", "conv-1",
+            "arm-1", "arm-2", "veh-a",
             "arm-3", "arm-4", "veh-b", "arm-5",
-        ]
-
-    def test_five_arms_conveyor_only_between_arm4_and_arm5(self):
-        cfg = {
-            "pipeline": {"mode": "dependency"},
-            "arms": _arms_cfg(5),
-            "assets": [
-                {"id": "conv-2", "type": "conveyor",
-                 "from": {"x": 0, "y": 0}, "to": {"x": 20, "y": 0},
-                 "slot_count": 4, "shift_interval": 1.1,
-                 "upstream": ["arm-4"], "downstream": ["arm-5"]},
-            ],
-        }
-        with fake_config(cfg):
-            order = pipeline_config.get_module_flow_order()
-        assert order == ["arm-1", "arm-2", "arm-3", "arm-4", "conv-2", "arm-5"]
-
-    def test_five_arms_only_conveyors(self):
-        cfg = {
-            "pipeline": {"mode": "dependency"},
-            "arms": _arms_cfg(5),
-            "assets": [
-                {"id": "conv-1", "type": "conveyor",
-                 "from": {"x": 0, "y": 0}, "to": {"x": 20, "y": 0},
-                 "slot_count": 4, "shift_interval": 1.2,
-                 "upstream": ["arm-2"], "downstream": ["arm-3"]},
-                {"id": "conv-2", "type": "conveyor",
-                 "from": {"x": 30, "y": 0}, "to": {"x": 50, "y": 0},
-                 "slot_count": 4, "shift_interval": 1.2,
-                 "upstream": ["arm-4"], "downstream": ["arm-5"]},
-            ],
-        }
-        with fake_config(cfg):
-            order = pipeline_config.get_module_flow_order()
-        assert order == [
-            "arm-1", "arm-2", "conv-1", "arm-3",
-            "arm-4", "conv-2", "arm-5",
         ]
 
     def test_asset_ordering_in_yaml_does_not_break_chain(self):
@@ -337,48 +289,20 @@ class TestFlowOrder:
             "pipeline": {"mode": "dependency"},
             "arms": _arms_cfg(3),
             "assets": [
-                # Intentionally reversed: downstream conveyor listed before vehicle.
-                {"id": "conv-1", "type": "conveyor",
-                 "from": {"x": 10, "y": 0}, "to": {"x": 30, "y": 0},
-                 "slot_count": 3, "shift_interval": 1.0,
-                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
-                {"id": "veh-a", "type": "vehicle",
-                 "speed": 100,
-                 "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
-                 "upstream": ["arm-2"], "downstream": ["conv-1"]},
-            ],
-        }
-        with fake_config(cfg):
-            order = pipeline_config.get_module_flow_order()
-        assert order == ["arm-1", "arm-2", "veh-a", "conv-1", "arm-3"]
-
-    def test_five_arm_topology_keeps_arm3_non_terminal(self):
-        cfg = {
-            "pipeline": {"mode": "dependency"},
-            "arms": _arms_cfg(5),
-            "assets": [
-                {"id": "veh-a", "type": "vehicle",
-                 "speed": 100,
-                 "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
-                 "upstream": ["arm-2"], "downstream": ["conv-1"]},
-                {"id": "conv-1", "type": "conveyor",
-                 "from": {"x": 10, "y": 0}, "to": {"x": 30, "y": 0},
-                 "slot_count": 3, "shift_interval": 1.0,
-                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
+                # Intentionally reversed: downstream listed before upstream.
                 {"id": "veh-b", "type": "vehicle",
                  "speed": 100,
-                 "waypoints": [{"x": 40, "y": 0}, {"x": 60, "y": 0}],
-                 "upstream": ["arm-3"], "downstream": ["conv-2"]},
-                {"id": "conv-2", "type": "conveyor",
-                 "from": {"x": 60, "y": 0}, "to": {"x": 80, "y": 0},
-                 "slot_count": 2, "shift_interval": 1.0,
-                 "upstream": ["veh-b"], "downstream": ["arm-4"]},
+                 "waypoints": [{"x": 10, "y": 0}, {"x": 30, "y": 0}],
+                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
+                {"id": "veh-a", "type": "vehicle",
+                 "speed": 100,
+                 "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
+                 "upstream": ["arm-2"], "downstream": ["veh-b"]},
             ],
         }
         with fake_config(cfg):
             order = pipeline_config.get_module_flow_order()
-        assert order[-1] == "arm-5"
-        assert order.index("arm-3") < order.index("arm-4") < order.index("arm-5")
+        assert order == ["arm-1", "arm-2", "veh-a", "veh-b", "arm-3"]
 
 
 class TestRunDemoTopologySync:
@@ -468,9 +392,8 @@ class TestLinearPipelineWiring:
         # Build modules of mixed types and connect them linearly.
         asset_state.reset()
         m1 = VehicleController("v1", "V1", None, None, num_products=1, travel_time=0.05)
-        m2 = ConveyorController("c1", "C1", None, None, num_products=1,
-                                slot_count=2, shift_interval=0.05)
-        m3 = VehicleController("v2", "V2", None, None, num_products=1, travel_time=0.05)
+        m2 = VehicleController("v2", "V2", None, None, num_products=1, travel_time=0.05)
+        m3 = VehicleController("v3", "V3", None, None, num_products=1, travel_time=0.05)
         modules = [m1, m2, m3]
 
         # Same loop the pipeline builder uses — no type-specific code.
@@ -512,13 +435,13 @@ class _DoubleBufferModule(AssetController):
 
     Demonstrates the Phase 4 contract: a fresh subclass of AssetController/
     Module needs zero changes outside its own file to participate in the
-    pipeline. The builder wires it up identically to vehicles and conveyors.
+    pipeline. The builder wires it up identically to vehicles.
     """
 
     asset_type = "double_buffer"
 
     def process(self):
-        # Fast pass-through: no delay, no shifting.
+        # Fast pass-through: no delay.
         time.sleep(0.01)
 
 
@@ -528,8 +451,7 @@ class TestPluggability:
         modules = [
             VehicleController("v1", "V1", None, None, num_products=1, travel_time=0.05),
             _DoubleBufferModule("db", "DB", None, None, num_products=1),
-            ConveyorController("c1", "C1", None, None, num_products=1,
-                               slot_count=2, shift_interval=0.05),
+            VehicleController("v2", "V2", None, None, num_products=1, travel_time=0.05),
         ]
         for i in range(len(modules) - 1):
             tp = StubTP(f"tp-{i}")
