@@ -1,4 +1,4 @@
-"""Asset Microservice — Flask wrapper around VehicleController.
+"""Asset Microservice - Flask wrapper around VehicleController.
 
 Mirrors the arm container pattern: each non-arm asset (vehicle) runs in
 its own container, exposes the same lifecycle endpoints, and can be
@@ -17,7 +17,7 @@ Environment variables
     SERVER_HOST     backend URL (defaults via utils.DEFAULT_HOST)
     UPSTREAM_URL    optional URL of upstream asset's /object GET (future)
     DOWNSTREAM_URL  optional URL of downstream asset's /object POST (future)
-    TRAVEL_TIME     vehicle — seconds per traversal
+    TRAVEL_TIME     vehicle - seconds per traversal
     SPEED_FACTOR    multiplier applied to controller speed (default 1.0)
 
 Usage
@@ -42,12 +42,12 @@ from flask import Flask, jsonify, request
 
 # Make `from app.*` and shared utils resolve identically to demo-runner.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.abspath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..")))
+sys.path.insert(
+    0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+)
 
 from utils import DEFAULT_HOST
 from app.services.asset_controllers import VehicleController
-
 
 # ── Environment ───────────────────────────────────────────────────────
 
@@ -61,6 +61,7 @@ TRAVEL_TIME = float(os.environ.get("TRAVEL_TIME", "2.0"))
 
 
 # ── Stub TransferPoint backed by a stdlib queue ──────────────────────
+
 
 class QueueTransferPoint:
     """Single-slot blocking buffer used inside the asset container.
@@ -105,6 +106,7 @@ class QueueTransferPoint:
 
 
 # ── Telemetry helpers ─────────────────────────────────────────────────
+
 
 def _post_log(source: str, message: str) -> None:
     try:
@@ -166,6 +168,7 @@ def _downstream_alive() -> bool:
         return True
     return _remote_module_ready(DOWNSTREAM_URL)
 
+
 if ASSET_TYPE == "vehicle":
     controller = VehicleController(
         asset_id=ASSET_ID,
@@ -177,7 +180,7 @@ if ASSET_TYPE == "vehicle":
         object_event_fn=_post_object_event,
         upstream_alive_fn=_upstream_alive,
         downstream_alive_fn=_downstream_alive,
-        num_products=10**9,        # effectively infinite — service is long-lived
+        num_products=10**9,  # effectively infinite - service is long-lived
         keep_alive=True,
         travel_time=TRAVEL_TIME,
     )
@@ -206,7 +209,7 @@ controller._downstream_target = _downstream_target_id(DOWNSTREAM_URL)
 
 # Downstream capability flag. None = unknown (probe at runtime). True = remote
 # accepts POST /object (another asset_service). False = remote does not accept
-# POST (e.g. an arm container) — stop forwarding so a polling consumer can
+# POST (e.g. an arm container) - stop forwarding so a polling consumer can
 # claim the object via GET /object.
 _downstream_accepts_post = None
 
@@ -244,10 +247,13 @@ def _forward_output_loop():
                 # 404 / 405 etc → downstream isn't an asset_service.
                 if resp.status_code in (404, 405):
                     _downstream_accepts_post = False
-                print(f"[{ASSET_ID}] forward {DOWNSTREAM_URL}/object → "
-                      f"{resp.status_code}, requeue", flush=True)
+                print(
+                    f"[{ASSET_ID}] forward {DOWNSTREAM_URL}/object → "
+                    f"{resp.status_code}, requeue",
+                    flush=True,
+                )
         except Exception as exc:
-            # Network failure — could be transient or downstream down.
+            # Network failure - could be transient or downstream down.
             # Don't permanently disable; just requeue + retry.
             print(f"[{ASSET_ID}] forward failed: {exc}", flush=True)
         if not delivered:
@@ -266,24 +272,28 @@ app = Flask(__name__)
 @app.route("/health", methods=["GET"])
 def health():
     """Liveness check + module state. Mirrors arm /health."""
-    return jsonify({
-        "status": "ok",
-        "asset_id": ASSET_ID,
-        "asset_type": ASSET_TYPE,
-        "state": controller.state,
-        "downstream_ready": controller.downstream_ready(),
-        "carried_object": getattr(controller, "_current_object", None),
-        "server_host": DEFAULT_HOST,
-    })
+    return jsonify(
+        {
+            "status": "ok",
+            "asset_id": ASSET_ID,
+            "asset_type": ASSET_TYPE,
+            "state": controller.state,
+            "downstream_ready": controller.downstream_ready(),
+            "carried_object": getattr(controller, "_current_object", None),
+            "server_host": DEFAULT_HOST,
+        }
+    )
 
 
 @app.route("/ready", methods=["GET"])
 def ready():
-    return jsonify({
-        "asset_id": ASSET_ID,
-        "state": controller.state,
-        "downstream_ready": controller.downstream_ready(),
-    })
+    return jsonify(
+        {
+            "asset_id": ASSET_ID,
+            "state": controller.state,
+            "downstream_ready": controller.downstream_ready(),
+        }
+    )
 
 
 @app.route("/object", methods=["POST"])
@@ -303,16 +313,21 @@ def receive_object():
         return jsonify({"error": "missing object_id", "code": "MISSING_FIELD"}), 400
 
     # Reject when not in a state that can accept new work.
-    # "busy" means carrying an object already — capacity=1 enforcement.
+    # "busy" means carrying an object already - capacity=1 enforcement.
     # We intentionally do NOT check downstream_ready() here: an idle asset
     # acts as a 1-slot TP buffer, accepting an object even when its own
     # downstream is blocked. It will drain or hold until the path clears.
     if controller.state in ("failed", "recovering", "draining", "stopped", "busy"):
-        return jsonify({
-            "error": f"asset {controller.state} — cannot accept",
-            "asset_id": ASSET_ID,
-            "state": controller.state,
-        }), 503
+        return (
+            jsonify(
+                {
+                    "error": f"asset {controller.state} - cannot accept",
+                    "asset_id": ASSET_ID,
+                    "state": controller.state,
+                }
+            ),
+            503,
+        )
 
     input_tp.place(obj_id)
 
@@ -320,21 +335,33 @@ def receive_object():
     deadline = time.time() + 30
     while time.time() < deadline:
         if controller.state == "failed":
-            return jsonify({
-                "error": "asset failed before accept",
-                "asset_id": ASSET_ID,
-            }), 503
+            return (
+                jsonify(
+                    {
+                        "error": "asset failed before accept",
+                        "asset_id": ASSET_ID,
+                    }
+                ),
+                503,
+            )
         if getattr(controller, "_current_object", None) == obj_id:
-            return jsonify({
-                "status": "accepted",
-                "asset_id": ASSET_ID,
-                "object_id": obj_id,
-            })
+            return jsonify(
+                {
+                    "status": "accepted",
+                    "asset_id": ASSET_ID,
+                    "object_id": obj_id,
+                }
+            )
         time.sleep(0.05)
-    return jsonify({
-        "error": "controller did not accept in time",
-        "asset_id": ASSET_ID,
-    }), 504
+    return (
+        jsonify(
+            {
+                "error": "controller did not accept in time",
+                "asset_id": ASSET_ID,
+            }
+        ),
+        504,
+    )
 
 
 @app.route("/object", methods=["GET"])
@@ -357,7 +384,8 @@ def fail_route():
     try:
         requests.post(
             f"{DEFAULT_HOST}/assets/{ASSET_ID}/fail",
-            json={"reason": reason}, timeout=3,
+            json={"reason": reason},
+            timeout=3,
         )
     except Exception:
         pass
@@ -372,7 +400,7 @@ def recover_route():
 
 @app.route("/reset", methods=["POST"])
 def reset_route():
-    """Drain internal queues and slot list — called at the start of every demo
+    """Drain internal queues and slot list - called at the start of every demo
     so leftover objects from a prior crashed run don't poison the next flow.
     """
     drained_in = 0
@@ -389,17 +417,21 @@ def reset_route():
     # Also reset the cached downstream-accepts-post flag so a re-detect happens.
     global _downstream_accepts_post
     _downstream_accepts_post = None
-    print(f"[{ASSET_ID}] reset: drained input={drained_in} output={drained_out}",
-          flush=True)
-    return jsonify({
-        "status": "ok",
-        "asset_id": ASSET_ID,
-        "drained_in": drained_in,
-        "drained_out": drained_out,
-    })
+    print(
+        f"[{ASSET_ID}] reset: drained input={drained_in} output={drained_out}",
+        flush=True,
+    )
+    return jsonify(
+        {
+            "status": "ok",
+            "asset_id": ASSET_ID,
+            "drained_in": drained_in,
+            "drained_out": drained_out,
+        }
+    )
 
 
-# ── Shutdown handler — instant failure notification ──────────────────
+# ── Shutdown handler - instant failure notification ──────────────────
 
 _shutting_down = False
 
@@ -428,7 +460,7 @@ def _handle_shutdown(signum, frame):
     if _shutting_down:
         os._exit(0)
     _shutting_down = True
-    print(f"[{ASSET_ID}] {sig_name} received — notifying backend", flush=True)
+    print(f"[{ASSET_ID}] {sig_name} received - notifying backend", flush=True)
 
     inflight = _collect_inflight_objects()
     if inflight:
@@ -468,11 +500,13 @@ signal.signal(signal.SIGINT, _handle_shutdown)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=f"{ASSET_TYPE} asset service")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
-    parser.add_argument("--type", help="(informational only — ASSET_TYPE env wins)")
+    parser.add_argument("--type", help="(informational only - ASSET_TYPE env wins)")
     args = parser.parse_args()
 
     print(f"[{ASSET_ID}] {ASSET_TYPE} service starting on port {args.port}", flush=True)
-    print(f"[{ASSET_ID}] backend={DEFAULT_HOST}, "
-          f"upstream={UPSTREAM_URL or '-'}, downstream={DOWNSTREAM_URL or '-'}",
-          flush=True)
+    print(
+        f"[{ASSET_ID}] backend={DEFAULT_HOST}, "
+        f"upstream={UPSTREAM_URL or '-'}, downstream={DOWNSTREAM_URL or '-'}",
+        flush=True,
+    )
     app.run(host="0.0.0.0", port=args.port)

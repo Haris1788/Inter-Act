@@ -61,7 +61,7 @@ class AssetController(Module):
         try:
             asset_state.set_status(self.id, new_state, reason)
         except (KeyError, ValueError):
-            # Status not in asset_state's vocabulary — ignore gracefully.
+            # Status not in asset_state's vocabulary - ignore gracefully.
             pass
 
     def _emit_event(self, obj_id: str, state: str, **extra) -> None:
@@ -73,7 +73,9 @@ class AssetController(Module):
             if "carrier_asset" in extra and extra["carrier_asset"]:
                 extra["owner_id"] = extra["carrier_asset"]
                 extra["owner_type"] = "asset"
-            elif isinstance(state, str) and (state.startswith("on_") or state.startswith("at_")):
+            elif isinstance(state, str) and (
+                state.startswith("on_") or state.startswith("at_")
+            ):
                 extra["owner_id"] = self.id
                 extra["owner_type"] = "asset"
         try:
@@ -120,7 +122,7 @@ class AssetController(Module):
 
         Phase 9: distinguishes `stop_event` (terminate) from `fail_event`
         (halt processing, await recovery). The thread does NOT exit on
-        failure — it idle-waits so `recover()` can resume work in-place.
+        failure - it idle-waits so `recover()` can resume work in-place.
         Only `stop_module()` (or hitting non-keep_alive completion) ends
         the thread.
         """
@@ -131,7 +133,10 @@ class AssetController(Module):
                     continue
 
                 if self.state == "draining":
-                    if self._current_object is not None and self._downstream_path_ready():
+                    if (
+                        self._current_object is not None
+                        and self._downstream_path_ready()
+                    ):
                         self.set_state("busy")
                         self.emit()
                     elif self._current_object is None:
@@ -146,15 +151,18 @@ class AssetController(Module):
                 # Hard halt while failed or recovering. Accept queues stay
                 # populated; new POSTs are refused at the HTTP layer.
                 # Drain remaining products as long as we stay healthy.
-                while (self.processed < self.num_products
-                       and not self._stop_event.is_set()
-                       and self.state not in ("failed", "recovering", "draining", "stopped")):
+                while (
+                    self.processed < self.num_products
+                    and not self._stop_event.is_set()
+                    and self.state
+                    not in ("failed", "recovering", "draining", "stopped")
+                ):
                     self._cycle_one_product()
 
                 if self.processed >= self.num_products and not self.keep_alive:
                     break
 
-                # keep_alive idle wait — do nothing destructive to state.
+                # keep_alive idle wait - do nothing destructive to state.
                 if self.state == "busy":
                     self.set_state("idle")
                 time.sleep(0.1)
@@ -187,7 +195,7 @@ class AssetController(Module):
             return
         # Phase 9 race-fix: state may have flipped to failed/recovering AFTER
         # an object landed in the queue but BEFORE we checked. Put it back so
-        # nothing is processed during halt — caller can replay later.
+        # nothing is processed during halt - caller can replay later.
         if self._hard_stopped() or not self._is_running():
             try:
                 self.input_tp.place(obj_id)
@@ -202,7 +210,7 @@ class AssetController(Module):
             return
         self.accept(obj_id)
 
-        # process — subclasses do real work and may abort early on fail/stop.
+        # process - subclasses do real work and may abort early on fail/stop.
         try:
             self.process()
         except Exception as exc:
@@ -249,14 +257,16 @@ class AssetController(Module):
                     self.set_state("draining")
                 attempts += 1
                 if attempts == 1 or attempts % 15 == 0:
-                    self._log_flow(f"{self.id} draining ({obj_id} held, downstream blocked)")
+                    self._log_flow(
+                        f"{self.id} draining ({obj_id} held, downstream blocked)"
+                    )
                 return
             ok = self.output_tp.wait_until_empty(timeout=2.0, cancel_check=drop_cancel)
             if ok:
                 break
             attempts += 1
             if attempts == 1 or attempts % 15 == 0:
-                self._log(f"holding {obj_id} — downstream blocked (attempt {attempts})")
+                self._log(f"holding {obj_id} - downstream blocked (attempt {attempts})")
             # Loop and retry. Any caller can call stop_module() to break.
 
         if self._hard_stopped():
@@ -278,6 +288,7 @@ class AssetController(Module):
 
 
 # ── Vehicle ───────────────────────────────────────────────────────────
+
 
 class VehicleController(AssetController):
     """Linear shuttle: accept, simulate travel time, emit."""
@@ -302,7 +313,8 @@ class VehicleController(AssetController):
         travel_total_s = self.travel_time * self.speed
         start_ms = int(time.time() * 1000)
         self._emit_event(
-            obj_id, "carried",
+            obj_id,
+            "carried",
             carrier_asset=self.id,
             start_time=start_ms,
             duration_ms=int(travel_total_s * 1000),
@@ -316,5 +328,3 @@ class VehicleController(AssetController):
             if not self._is_running() or self._hard_stopped():
                 return
             time.sleep(min(0.2, deadline - time.time()))
-
-

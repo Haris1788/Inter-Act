@@ -1,4 +1,4 @@
-"""Tests for pipeline_config — the Single Source of Truth module.
+"""Tests for pipeline_config - the Single Source of Truth module.
 
 Verifies handover state names scale dynamically with arm count, and that
 the SSOT contract (no hardcoded handover_a/b, etc.) holds.
@@ -45,8 +45,12 @@ class TestValidHandoverStates:
         with patch.object(pipeline_config, "get_arm_count", return_value=5):
             states = pipeline_config.get_valid_handover_states()
         assert states == (
-            "intake", "carried",
-            "handover_1", "handover_2", "handover_3", "handover_4",
+            "intake",
+            "carried",
+            "handover_1",
+            "handover_2",
+            "handover_3",
+            "handover_4",
             "output",
         )
 

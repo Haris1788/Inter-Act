@@ -1,6 +1,6 @@
 /* Phase 3: frontend no longer simulates pipeline progress.
  *
- * All asset state — vehicle position, asset status —
+ * All asset state - vehicle position, asset status -
  * is driven exclusively by backend SocketIO events (`object_update`,
  * `state_update`, `arm_health`, `asset_health`). This file used to host
  * `tickVehicle` / `driveTransits` / `checkProximityHandovers`;
@@ -13,5 +13,5 @@
  */
 
 export function tick(_now) {
-    // No-op: backend is the sole driver of pipeline progress.
+  // No-op: backend is the sole driver of pipeline progress.
 }

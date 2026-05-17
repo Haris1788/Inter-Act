@@ -1,12 +1,12 @@
-# INTER.act — Project Goal
+# INTER.act - Project Goal
 
 ## Project Goal
 
-Build a multi-agent simulation system in which autonomous actors — robotic arms and Automated Guided Vehicles (AGVs) — self-organize to complete a transport task from a given input to a given output, **without any central controller deciding how**.
+Build a multi-agent simulation system in which autonomous actors - robotic arms and Automated Guided Vehicles (AGVs) - self-organize to complete a transport task from a given input to a given output, **without any central controller deciding how**.
 
 The system receives a plain-English goal (e.g., _"Move 3 objects from Input to Output, shortest time"_), interprets it, and then lets the actors negotiate among themselves over a shared message bus to agree on a path, assign roles, and execute. The path is not pre-defined. The actors define it at runtime.
 
-![INTER.act: the shift from centralized control to decentralized multi-agent coordination. Left — why central orchestrators break in the real world. Middle — a feature-by-feature comparison. Right — the three-phase decentralized workflow: goal interpretation, negotiation and consensus, peer-to-peer execution.](./interact-decentralized-overview.png)
+![INTER.act: the shift from centralized control to decentralized multi-agent coordination. Left - why central orchestrators break in the real world. Middle - a feature-by-feature comparison. Right - the three-phase decentralized workflow: goal interpretation, negotiation and consensus, peer-to-peer execution.](./interact-decentralized-overview.png)
 
 ---
 
@@ -99,7 +99,7 @@ This is intentional. The path emerges from negotiation, not from a pre-written t
                │
                ▼
 ┌──────────────────────────────────────────────┐
-│  Interpreter  (AI — likely larger than 0.5B) │
+│  Interpreter  (AI - likely larger than 0.5B) │
 │  Parses: source, destination, constraint,    │
 │          object count                        │
 └──────────────┬───────────────────────────────┘
@@ -107,7 +107,7 @@ This is intentional. The path emerges from negotiation, not from a pre-written t
                ▼
 ┌──────────────────────────────────────────────┐
 │             Message Bus                      │
-│  (Central shared channel — all actors        │
+│  (Central shared channel - all actors        │
 │   subscribe and publish here)                │
 └──┬───────┬────────────┬──────────┬───────────┘
    │       │            │          │
@@ -116,7 +116,7 @@ This is intentional. The path emerges from negotiation, not from a pre-written t
  (A1)    (A2)         (V1)       (V2)
 ```
 
-**Phase 1 — Capability Broadcast (on message bus):**
+**Phase 1 - Capability Broadcast (on message bus):**
 
 Each actor publishes its profile to the bus.:
 
@@ -128,17 +128,17 @@ V2: can_reach=[H1, H2],  position=[5,4],  speed=4m/s,  capacity=2
 V3: can_reach=[H1, H2],  position=[5,5],  speed=10m/s, capacity=3
 ```
 
-**Phase 2 — Negotiation and Path Agreement (on message bus):**
+**Phase 2 - Negotiation and Path Agreement (on message bus):**
 
 Given the task "move from I to O" with constraint "shortest time":
 
 - A1 is required (only one that can reach Input).
 - A2 is required (only one that can reach Output).
-- Among V1, V2, V3 — all can bridge H1 to H2 — the constraint "shortest time" means V3 is preferred (fastest).
+- Among V1, V2, V3 - all can bridge H1 to H2 - the constraint "shortest time" means V3 is preferred (fastest).
 - Actors agree on path: `A1 → V3 → A2`
 - The chosen actors enter "busy" state. Non-chosen actors remain free for other tasks.
 
-**Phase 3 — Execution (peer-to-peer, off the bus):**
+**Phase 3 - Execution (peer-to-peer, off the bus):**
 
 Once the path is agreed:
 
@@ -148,7 +148,7 @@ Once the path is agreed:
 
 Peer-to-peer messages after planning do **not** go through the message bus. Only the initial negotiation and status broadcasts do. This keeps bus traffic manageable.
 
-**Phase 4 — Failure Handling:**
+**Phase 4 - Failure Handling:**
 
 - If an actor fails mid-task, it broadcasts "path blocked" / "I am unavailable" to the bus.
 - Downstream actors in the current chain halt.
@@ -198,7 +198,7 @@ Peer-to-peer messages after planning do **not** go through the message bus. Only
 
 ## Model Selection
 
-> **Note:** This section supersedes the 0.5B note in *Hard Constraints* above. It is the result of a separate analysis of the three cognitive roles the system actually has, and the model properties each one needs.
+> **Note:** This section supersedes the 0.5B note in _Hard Constraints_ above. It is the result of a separate analysis of the three cognitive roles the system actually has, and the model properties each one needs.
 
 The 0.5B actor brain (Ollama `qwen2.5:0.5b`) is a known limitation. It cannot do arithmetic reliably, its JSON output is inconsistent, and once there are three or more vehicles at different positions and speeds with a constraint like "shortest time," it picks the wrong vehicle often enough that the consensus breaks. Scaling up across the board is one option, but the three cognitive roles in this system have genuinely different requirements, so a single model size is the wrong tradeoff for at least one of them.
 
@@ -273,10 +273,10 @@ The Interpreter and the negotiation coordinator run once per task, not per cycle
 Three costs are acknowledged upfront:
 
 1. A full decision round across 8 actors takes 12–20 seconds. The simulation is not real-time. This is the honest price of using a model whose script selection is stable.
-2. The negotiation is not fully distributed in this MVP. A single QwQ call evaluates every actor's capability declaration and outputs the path plan; the actors then execute their assigned roles. The research claim — that path choice emerges from declared capabilities under a constraint — is preserved, but the consensus itself is centralized in one model call rather than spread across N actors. Fully distributed consensus is left for a later phase.
+2. The negotiation is not fully distributed in this MVP. A single QwQ call evaluates every actor's capability declaration and outputs the path plan; the actors then execute their assigned roles. The research claim - that path choice emerges from declared capabilities under a constraint - is preserved, but the consensus itself is centralized in one model call rather than spread across N actors. Fully distributed consensus is left for a later phase.
 3. Two Ollama models, two prompt templates, and a thinking-block stripper for QwQ output. Small but real maintenance cost compared to a single-model setup.
 
-**Confidence: ~82%.** The main sources of uncertainty are: (a) Qwen3 availability — if Qwen3-30B is reachable via Ollama at deployment time, its per-call thinking toggle could collapse this back into a single model; (b) the unresolved question of whether the negotiation must eventually be fully distributed, which would change the QwQ-as-coordinator framing; (c) actual GPU VRAM. QwQ-32B at Q4_K_M needs roughly 20 GB, and without that the Interpreter call falls back to CPU offloading at minutes-per-call latency.
+**Confidence: ~82%.** The main sources of uncertainty are: (a) Qwen3 availability - if Qwen3-30B is reachable via Ollama at deployment time, its per-call thinking toggle could collapse this back into a single model; (b) the unresolved question of whether the negotiation must eventually be fully distributed, which would change the QwQ-as-coordinator framing; (c) actual GPU VRAM. QwQ-32B at Q4_K_M needs roughly 20 GB, and without that the Interpreter call falls back to CPU offloading at minutes-per-call latency.
 
 ---
 
@@ -305,7 +305,7 @@ Three costs are acknowledged upfront:
 - **Multi-input, multi-output warehouse topologies**: considered for later phases.
 - **Real physical hardware integration**: this is a simulation only.
 - **Cloud-hosted or remote LLMs**: Ollama local only.
-- **Node-RED style drag-and-drop builder**: planned for a later phase.
+- **Visual orchestration workspace (drag-and-drop topology authoring)**: now implemented (ReactFlow + Konva).
 
 ---
 
@@ -339,10 +339,10 @@ The immediate engineering target is:
 
 1. Replace the prompt-less "Run All" button with a text input that feeds a goal to an Interpreter.
 2. The Interpreter structures the task and publishes it to a message bus.
-3. All actors — arms and AGVs — subscribe to the bus, declare their capabilities, and negotiate which of them handles which leg of the task.
+3. All actors - arms and AGVs - subscribe to the bus, declare their capabilities, and negotiate which of them handles which leg of the task.
 4. The negotiated path is executed peer-to-peer, not through a central runner.
 5. The UI makes the negotiation and execution visible: message bus log, actor states, object movement on canvas.
 
 The system does not need to be perfect. It needs to be **demonstrably non-deterministic** in how it finds solutions, meaning the path taken should emerge from actor negotiation based on the constraint given in the prompt, not from code that pre-defines the route. When the constraint is "shortest time," the fastest available AGV wins. When the constraint is "shortest distance," the nearest one does. When no constraint is given, the first actor to respond wins. None of these decisions are hard-coded. They fall out of the negotiation.
 
-That is the project. Everything else (conveyor belts, complex routing, package weights, collision avoidance, Node-RED UI) is downstream of making this core loop work first.
+That is the project. Everything else (conveyor belts, complex routing, package weights, collision avoidance, the visual orchestration workspace) is downstream of making this core loop work first.

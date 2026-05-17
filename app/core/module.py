@@ -1,6 +1,6 @@
 """Unified Module interface for pipeline assets (Phase 4).
 
-Every pipeline component — arm, vehicle, future types — is a
+Every pipeline component - arm, vehicle, future types - is a
 `Module`. Modules communicate ONLY via TransferPoint. The pipeline builder
 treats them uniformly: read flow order from config, connect TPs linearly,
 spawn threads. There are no type-specific branches outside each module's
@@ -15,7 +15,7 @@ Spec contract (from Phase 4 brief):
 `Module.run` provides a generic accept/process/emit loop. Subclasses with
 existing complex behaviour (ArmController) override `run` directly while
 still inheriting the Module identity, state machine, and TransferPoint
-plumbing — so the pipeline builder can stay unaware of asset type.
+plumbing - so the pipeline builder can stay unaware of asset type.
 
 Note on naming: `threading.Thread.is_alive()` is reserved by stdlib for
 "thread is currently running". Module liveness for the pipeline (i.e. "this
@@ -28,14 +28,13 @@ import threading
 import time
 from typing import Optional
 
-
 VALID_MODULE_STATES = (
-    "idle",         # registered, nothing in flight
-    "busy",         # currently processing an object
-    "draining",     # finishing in-flight work, then stopping
-    "failed",       # explicit failure; downstream sees this as upstream-dead
-    "recovering",   # post-failure, waiting for next cycle
-    "stopped",      # terminal — no further work
+    "idle",  # registered, nothing in flight
+    "busy",  # currently processing an object
+    "draining",  # finishing in-flight work, then stopping
+    "failed",  # explicit failure; downstream sees this as upstream-dead
+    "recovering",  # post-failure, waiting for next cycle
+    "stopped",  # terminal - no further work
 )
 
 
@@ -45,7 +44,7 @@ class Module(threading.Thread):
     Subclasses are expected to override at least one of:
       * `accept`/`process`/`emit` (recommended; the default `run` will
         invoke them in sequence per object), or
-      * `run` (when existing logic is too coupled to split — wrap as-is).
+      * `run` (when existing logic is too coupled to split - wrap as-is).
     """
 
     module_type = "module"
@@ -54,8 +53,8 @@ class Module(threading.Thread):
         super().__init__(name=f"Module-{module_id}", daemon=True)
         self.id = module_id
         self.label = label or module_id
-        self.input_tp = None        # TransferPoint or None for source modules
-        self.output_tp = None       # TransferPoint or None for sink modules
+        self.input_tp = None  # TransferPoint or None for source modules
+        self.output_tp = None  # TransferPoint or None for sink modules
         self._state = "idle"
         self._state_lock = threading.RLock()
         self._stop_event = threading.Event()
@@ -110,7 +109,7 @@ class Module(threading.Thread):
         auto-transitions to `idle` (ready for work).
         """
         if self.state not in ("failed", "recovering"):
-            self._log(f"recover() ignored — already {self.state}")
+            self._log(f"recover() ignored - already {self.state}")
             return
         self._fail_reason = None
         self._fail_event.clear()
@@ -124,15 +123,18 @@ class Module(threading.Thread):
     def _finish_recovery(self) -> None:
         if self.state == "recovering":
             self.set_state("idle")
-            self._log("Recovery complete — ready")
+            self._log("Recovery complete - ready")
 
     def _is_running(self) -> bool:
         return not self._stop_event.is_set() and not self._fail_event.is_set()
 
     def _can_process(self) -> bool:
         """True only when the module is healthy enough to handle objects."""
-        return (self._is_running()
-                and self.state not in ("failed", "recovering", "stopped"))
+        return self._is_running() and self.state not in (
+            "failed",
+            "recovering",
+            "stopped",
+        )
 
     # ── default accept/process/emit hooks ─────────────────────────────
 
@@ -178,7 +180,7 @@ class Module(threading.Thread):
 
         Phase 5 lifecycle: loop continues until `stop_module()` is called.
         A short blocking pick on the input TP keeps the loop responsive but
-        idle when nothing arrives — the module never exits just because the
+        idle when nothing arrives - the module never exits just because the
         pipeline is momentarily empty.
 
         Subclasses with complex flow (e.g. ArmController, AssetController)
@@ -187,7 +189,7 @@ class Module(threading.Thread):
         try:
             while not self._stop_event.is_set():
                 if self.input_tp is None:
-                    # Source/sink module with no upstream — idle until stopped.
+                    # Source/sink module with no upstream - idle until stopped.
                     time.sleep(0.1)
                     continue
                 obj = self.input_tp.wait_and_pick(
@@ -195,7 +197,7 @@ class Module(threading.Thread):
                     cancel_check=lambda: not self._stop_event.is_set(),
                 )
                 if obj is None:
-                    # Idle — loop instead of exiting so the pipeline stays alive.
+                    # Idle - loop instead of exiting so the pipeline stays alive.
                     continue
                 if not self.can_accept(obj):
                     continue
@@ -204,7 +206,7 @@ class Module(threading.Thread):
                 if self._stop_event.is_set():
                     return
                 self.emit()
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception as exc:  # pragma: no cover - defensive
             self.set_state("failed", str(exc))
             self._log(f"FATAL: {exc}")
         finally:

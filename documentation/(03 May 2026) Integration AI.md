@@ -15,26 +15,26 @@ Two roads. They didn't meet. Today they do.
 Today's work merged them into a single branch (`feature/Integration-AI-on-multi-assets`) and rebuilt the AI layer to be:
 
 - Generic across any number of arms (config-driven from `pipeline.yaml`).
-- Aware of intermediate assets — arms refuse to relay when the shuttle / belt are dead.
+- Aware of intermediate assets - arms refuse to relay when the shuttle / belt are dead.
 - Aware of asset health both upstream (chain) and immediately downstream.
 - Fast on idle polls (no Qwen call when the answer is forced).
-- Surfaced through a `Run All` button that fires N parallel actor loops — every actor watches its own input independently.
+- Surfaced through a `Run All` button that fires N parallel actor loops - every actor watches its own input independently.
 
 ---
 
 ## Before vs After
 
-| | Before today | After today |
-|---|---|---|
-| **Pipeline width** | 3 arms only | 5 arms + 1 shuttle + 1 conveyor (config-driven) |
-| **AI scope** | Hardcoded for arms 1/2/3 | Generic — derived from `pipeline.yaml` at runtime |
-| **Asset decisions** | n/a | Shuttle + conveyor have their own (deterministic) mini-brain |
-| **Coordination** | One arm at a time, sequential | All actors run their own loop in parallel |
-| **Spawn at intake (UI)** | Object visible immediately | Object visible immediately (fixed bug where new owner namespace was missing) |
-| **Idle pipeline** | Spammed `▶ START / face / ■ DONE / ✅ Task completed` per actor every 1 s | Each actor logs ONE `🛌 idle: …` line then goes silent |
-| **Kill shuttle / belt** | AI ignored asset health; objects "teleported" past dead assets | Brain forces hold; pipeline naturally pauses + resumes around the failure window |
-| **Qwen on idle calls** | Called every poll (5–30 s on CPU) | Skipped — fast-path returns `hold` in ~0 ms when source empty / assets dead |
-| **Run All semantics** | Single sequential pass | N parallel loops; each actor polls its own input until Stop |
+|                          | Before today                                                              | After today                                                                      |
+| ------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **Pipeline width**       | 3 arms only                                                               | 5 arms + 1 shuttle + 1 conveyor (config-driven)                                  |
+| **AI scope**             | Hardcoded for arms 1/2/3                                                  | Generic - derived from `pipeline.yaml` at runtime                                |
+| **Asset decisions**      | n/a                                                                       | Shuttle + conveyor have their own (deterministic) mini-brain                     |
+| **Coordination**         | One arm at a time, sequential                                             | All actors run their own loop in parallel                                        |
+| **Spawn at intake (UI)** | Object visible immediately                                                | Object visible immediately (fixed bug where new owner namespace was missing)     |
+| **Idle pipeline**        | Spammed `▶ START / face / ■ DONE / ✅ Task completed` per actor every 1 s | Each actor logs ONE `🛌 idle: …` line then goes silent                           |
+| **Kill shuttle / belt**  | AI ignored asset health; objects "teleported" past dead assets            | Brain forces hold; pipeline naturally pauses + resumes around the failure window |
+| **Qwen on idle calls**   | Called every poll (5–30 s on CPU)                                         | Skipped - fast-path returns `hold` in ~0 ms when source empty / assets dead      |
+| **Run All semantics**    | Single sequential pass                                                    | N parallel loops; each actor polls its own input until Stop                      |
 
 ---
 
@@ -42,28 +42,28 @@ Today's work merged them into a single branch (`feature/Integration-AI-on-multi-
 
 ### New / heavily rewritten
 
-| File | Lines | What |
-|---|---|---|
-| [INTEGRATION.md](../INTEGRATION.md) | ~220 | Public-facing integration readme: before / after / build / run / what Qwen can do. |
-| [app/services/arm_scripts.py](../app/services/arm_scripts.py) | ~360 | Rewritten as actor-aware (arms + assets), zones derived from full flow order. Adds shuttle / conveyor relay scripts that animate the asset. Hold scripts accept `quiet=True`. |
+| File                                                          | Lines | What                                                                                                                                                                          |
+| ------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [INTEGRATION.md](../INTEGRATION.md)                           | ~220  | Public-facing integration readme: before / after / build / run / what Qwen can do.                                                                                            |
+| [app/services/arm_scripts.py](../app/services/arm_scripts.py) | ~360  | Rewritten as actor-aware (arms + assets), zones derived from full flow order. Adds shuttle / conveyor relay scripts that animate the asset. Hold scripts accept `quiet=True`. |
 
 ### Modified (backend logic)
 
-| File | What changed |
-|---|---|
-| [app/services/arm_brain.py](../app/services/arm_brain.py) | `pick_script` derives per-arm geometry from `pipeline.yaml` (no more `per_arm_facts` dict). New `_dead_intermediates()` checks both upstream chain AND immediate downstream actor. New fast-path: skip Qwen entirely when source empty / assets dead. |
-| [app/routes/arm_routes.py](../app/routes/arm_routes.py) | `/run_script` accepts `actor_id` (string for assets) plus legacy `arm_id` (int). `_pick_for_asset` deterministic mini-brain for shuttle / conveyor. New `/topology` endpoint. New `/actor_scripts/<id>` endpoint. `/objects/spawn` emits new owner namespace. Per-actor `_actor_last_decision` memory suppresses repeat-idle log spam. |
-| [scripts/demo_runner_server.py](../scripts/demo_runner_server.py) | Parked the `use_brain` pass-through (kept the arg in the wrapper but no longer forwarded into `run_pipeline()`). |
-| [docker-compose.yml](../docker-compose.yml) | Regenerated via `python scripts/generate_compose.py` for 5 arms. |
+| File                                                              | What changed                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [app/services/arm_brain.py](../app/services/arm_brain.py)         | `pick_script` derives per-arm geometry from `pipeline.yaml` (no more `per_arm_facts` dict). New `_dead_intermediates()` checks both upstream chain AND immediate downstream actor. New fast-path: skip Qwen entirely when source empty / assets dead.                                                                                  |
+| [app/routes/arm_routes.py](../app/routes/arm_routes.py)           | `/run_script` accepts `actor_id` (string for assets) plus legacy `arm_id` (int). `_pick_for_asset` deterministic mini-brain for shuttle / conveyor. New `/topology` endpoint. New `/actor_scripts/<id>` endpoint. `/objects/spawn` emits new owner namespace. Per-actor `_actor_last_decision` memory suppresses repeat-idle log spam. |
+| [scripts/demo_runner_server.py](../scripts/demo_runner_server.py) | Parked the `use_brain` pass-through (kept the arg in the wrapper but no longer forwarded into `run_pipeline()`).                                                                                                                                                                                                                       |
+| [docker-compose.yml](../docker-compose.yml)                       | Regenerated via `python scripts/generate_compose.py` for 5 arms.                                                                                                                                                                                                                                                                       |
 
 ### Modified (frontend)
 
-| File | What changed |
-|---|---|
-| [app/templates/index.html](../app/templates/index.html) | New `#ai-bar` markup with Reset / Spawn / Run All / actor buttons. Cache-busted to `?v=28`. |
-| [app/static/js/ui/controls.js](../app/static/js/ui/controls.js) | AI-bar wiring, per-actor button rendering from `state.assets`, parallel loops in `Run All`, Run / Stop toggle, idle backoff per actor, per-actor busy state. |
+| File                                                            | What changed                                                                                                                                                                                       |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [app/templates/index.html](../app/templates/index.html)         | New `#ai-bar` markup with Reset / Spawn / Run All / actor buttons. Cache-busted to `?v=28`.                                                                                                        |
+| [app/static/js/ui/controls.js](../app/static/js/ui/controls.js) | AI-bar wiring, per-actor button rendering from `state.assets`, parallel loops in `Run All`, Run / Stop toggle, idle backoff per actor, per-actor busy state.                                       |
 | [app/static/js/core/socket.js](../app/static/js/core/socket.js) | `script_chosen` handler with honest labels: `🛌 idle` for rule fast-path, `🎬 Qwen chose` for actual LLM, `⚖️ Override →` for safety-net correction. Reads `actor_id` (back-compat with `arm_id`). |
-| [app/static/css/style.css](../app/static/css/style.css) | `#ai-bar` block + status colours. |
+| [app/static/css/style.css](../app/static/css/style.css)         | `#ai-bar` block + status colours.                                                                                                                                                                  |
 
 ---
 
@@ -165,18 +165,18 @@ done
 A 0.5 B model is too small to invent angles, follow nuanced multi-step rules, or refuse on its own. The integration leans on three patterns to work around that:
 
 1. **Closed menu of 3 scripts per actor.** Multiple choice, not essay. The model picks one name from a list.
-2. **Deterministic safety net.** After Qwen replies, a rule layer overrides if Qwen contradicts the world (object available but Qwen picked rest, or no object but Qwen picked relay, or intermediate assets dead). The override is logged alongside the AI suggestion — both visible.
+2. **Deterministic safety net.** After Qwen replies, a rule layer overrides if Qwen contradicts the world (object available but Qwen picked rest, or no object but Qwen picked relay, or intermediate assets dead). The override is logged alongside the AI suggestion - both visible.
 3. **Fast-path bypass.** When the answer is forced ("nothing to do" or "can't do it"), the brain returns the override answer directly without consulting the LLM. Idle polls cost ~1 s instead of 5–30 s.
 
-Each actor reads only its own slice of the world — no actor messages another. Coordination emerges from shared state (object positions, asset health, transfer-point occupancy). This matches how real factory automation works.
+Each actor reads only its own slice of the world - no actor messages another. Coordination emerges from shared state (object positions, asset health, transfer-point occupancy). This matches how real factory automation works.
 
 ---
 
 ## Known gaps (carried forward)
 
 - The shuttle and conveyor have their own deterministic mini-brain (no Qwen). Adding LLM-driven shift decisions to the conveyor would require a per-object cache layer (the conveyor's continuous slot-shift loop ticks every 50 ms; Qwen takes 5–30 s).
-- The AI manual demo path (`Run All (Qwen)`) and the auto-pipeline (`Run Demo`) are decoupled. Both update the canvas, but they should not run simultaneously — the AI demo writes object state directly while the auto-pipeline drives state through `Module` threads.
-- Qwen reasonings are occasionally nonsensical (the 0.5 B model's writing quality). The safety net catches actual contradictions; nonsense reasoning is cosmetic. Bigger model (`qwen2.5:7b`) eliminates this — one env var change.
+- The AI manual demo path (`Run All (Qwen)`) and the auto-pipeline (`Run Demo`) are decoupled. Both update the canvas, but they should not run simultaneously - the AI demo writes object state directly while the auto-pipeline drives state through `Module` threads.
+- Qwen reasonings are occasionally nonsensical (the 0.5 B model's writing quality). The safety net catches actual contradictions; nonsense reasoning is cosmetic. Bigger model (`qwen2.5:7b`) eliminates this - one env var change.
 
 ---
 

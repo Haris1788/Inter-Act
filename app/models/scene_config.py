@@ -1,4 +1,4 @@
-"""Scene configuration — delegates to pipeline_config for dynamic arm layout.
+"""Scene configuration - delegates to pipeline_config for dynamic arm layout.
 
 Angle constants stay here (they're physics, not layout).
 Everything else comes from pipeline.yaml via pipeline_config.

@@ -1,5 +1,5 @@
 """
-Notifications — Send task result alerts to frontend.
+Notifications - Send task result alerts to frontend.
 
 WHAT THIS DOES:
 ===============
@@ -69,22 +69,22 @@ class TaskNotification:
         """
 
         # Get current time for timestamp
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        timestamp = datetime.now().strftime("%H:%M:%S")
 
         # WHAT TO SEND TO FRONTEND:
         # This data will appear in the browser
         notification_data = {
-            "status": "processing",      # Task is in progress
-            "arm_id": arm_id,            # Which arm
-            "action": action,            # What it's doing
-            "timestamp": timestamp,      # When did this happen?
+            "status": "processing",  # Task is in progress
+            "arm_id": arm_id,  # Which arm
+            "action": action,  # What it's doing
+            "timestamp": timestamp,  # When did this happen?
             "message": f"⏳ Arm {arm_id} is {action}...",  # Display text
-            "emoji": "⏳"                # Visual indicator
+            "emoji": "⏳",  # Visual indicator
         }
 
         # Send to frontend via WebSocket
         # All browsers listening to 'task_status' receive this
-        socketio.emit('task_status', notification_data)
+        socketio.emit("task_status", notification_data)
 
         print(f"[NOTIFICATION] {notification_data['message']}")
 
@@ -110,35 +110,35 @@ class TaskNotification:
         """
 
         # Get current time
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        timestamp = datetime.now().strftime("%H:%M:%S")
 
         # MAIN NOTIFICATION (for task completion display)
         task_complete_data = {
-            "status": "success",                              # Task succeeded
-            "arm_id": arm_id,                                # Which arm
-            "action": action,                                # What it did
-            "confidence": confidence,                        # Qwen's confidence
-            "timestamp": timestamp,                         # When?
+            "status": "success",  # Task succeeded
+            "arm_id": arm_id,  # Which arm
+            "action": action,  # What it did
+            "confidence": confidence,  # Qwen's confidence
+            "timestamp": timestamp,  # When?
             "message": f"✅ Arm {arm_id} completed '{action}' successfully",
-            "emoji": "✅",                                   # Visual indicator
-            "details": f"Confidence: {confidence*100:.1f}%"  # Extra info
+            "emoji": "✅",  # Visual indicator
+            "details": f"Confidence: {confidence*100:.1f}%",  # Extra info
         }
 
         # Send to frontend
         # Browsers listening to 'task_complete' receive this
-        socketio.emit('task_complete', task_complete_data)
+        socketio.emit("task_complete", task_complete_data)
 
         # ALSO LOG IT (for the log panel)
         # The log panel shows a detailed history of all actions
         log_data = {
-            'timestamp': timestamp,
-            'source': f'arm_{arm_id}',                      # Which arm?
-            'message': f'✅ Task completed: {action}',      # What happened?
-            'level': 'success'                              # Success level
+            "timestamp": timestamp,
+            "source": f"arm_{arm_id}",  # Which arm?
+            "message": f"✅ Task completed: {action}",  # What happened?
+            "level": "success",  # Success level
         }
 
         # Send log entry to frontend
-        socketio.emit('log_message', log_data)
+        socketio.emit("log_message", log_data)
 
         # Also print to console (for debugging)
         print(f"[SUCCESS] Arm {arm_id}: {action} completed (Confidence: {confidence})")
@@ -165,34 +165,34 @@ class TaskNotification:
         """
 
         # Get current time
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        timestamp = datetime.now().strftime("%H:%M:%S")
 
         # MAIN NOTIFICATION (for task failure display)
         task_complete_data = {
-            "status": "failed",                            # Task FAILED
-            "arm_id": arm_id,                             # Which arm
-            "action": action,                             # What was it doing?
-            "reason": reason,                             # Why did it fail?
-            "timestamp": timestamp,                       # When?
+            "status": "failed",  # Task FAILED
+            "arm_id": arm_id,  # Which arm
+            "action": action,  # What was it doing?
+            "reason": reason,  # Why did it fail?
+            "timestamp": timestamp,  # When?
             "message": f"❌ Arm {arm_id} FAILED: {reason}",
-            "emoji": "❌",                                 # Visual indicator
-            "details": f"Task: {action}"                  # What was being done?
+            "emoji": "❌",  # Visual indicator
+            "details": f"Task: {action}",  # What was being done?
         }
 
         # Send to frontend
         # Browsers listening to 'task_complete' receive this
-        socketio.emit('task_complete', task_complete_data)
+        socketio.emit("task_complete", task_complete_data)
 
         # ALSO LOG IT (for the log panel)
         log_data = {
-            'timestamp': timestamp,
-            'source': f'arm_{arm_id}',
-            'message': f'❌ Task failed: {reason}',
-            'level': 'error'
+            "timestamp": timestamp,
+            "source": f"arm_{arm_id}",
+            "message": f"❌ Task failed: {reason}",
+            "level": "error",
         }
 
         # Send log entry to frontend
-        socketio.emit('log_message', log_data)
+        socketio.emit("log_message", log_data)
 
         # Also print to console (for debugging)
         print(f"[FAILURE] Arm {arm_id}: {action} failed - {reason}")
@@ -220,7 +220,7 @@ class TaskNotification:
         """
 
         # Get current time
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        timestamp = datetime.now().strftime("%H:%M:%S")
 
         # Determine emoji and color based on health
         if health_status == "alive" or health_status == "idle":
@@ -246,23 +246,30 @@ class TaskNotification:
             "error": error,
             "timestamp": timestamp,
             "message": message,
-            "emoji": emoji
+            "emoji": emoji,
         }
 
         # Send to frontend
-        socketio.emit('arm_health', health_data)
+        socketio.emit("arm_health", health_data)
 
         # Also log it
         log_data = {
-            'timestamp': timestamp,
-            'source': f'arm_{arm_id}',
-            'message': f'{emoji} Health: {health_status}' + (f' - {error}' if error else ''),
-            'level': 'warning' if health_status == 'unhealthy' else 'error' if health_status == 'dead' else 'info'
+            "timestamp": timestamp,
+            "source": f"arm_{arm_id}",
+            "message": f"{emoji} Health: {health_status}"
+            + (f" - {error}" if error else ""),
+            "level": (
+                "warning"
+                if health_status == "unhealthy"
+                else "error" if health_status == "dead" else "info"
+            ),
         }
 
-        socketio.emit('log_message', log_data)
+        socketio.emit("log_message", log_data)
 
-        print(f"[HEALTH] Arm {arm_id}: {health_status}" + (f" - {error}" if error else ""))
+        print(
+            f"[HEALTH] Arm {arm_id}: {health_status}" + (f" - {error}" if error else "")
+        )
 
     # ========================================================================
     # NOTIFICATION 5: DECISION MADE (Qwen made a decision)
@@ -292,34 +299,36 @@ class TaskNotification:
         """
 
         # Get current time
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        timestamp = datetime.now().strftime("%H:%M:%S")
 
         # Create notification showing Qwen's decision
         decision_data = {
             "arm_id": arm_id,
-            "action": decision.get('action'),
-            "target_angle": decision.get('target_angle'),
-            "confidence": decision.get('confidence'),
-            "reasoning": decision.get('reasoning'),
+            "action": decision.get("action"),
+            "target_angle": decision.get("target_angle"),
+            "confidence": decision.get("confidence"),
+            "reasoning": decision.get("reasoning"),
             "timestamp": timestamp,
             "message": f"🧠 Arm {arm_id} brain decided: {decision.get('action')} at {decision.get('target_angle')}°",
-            "emoji": "🧠"
+            "emoji": "🧠",
         }
 
         # Send to frontend (if you want to show brain decisions in UI)
-        socketio.emit('brain_decision', decision_data)
+        socketio.emit("brain_decision", decision_data)
 
         # Log it
         log_data = {
-            'timestamp': timestamp,
-            'source': f'arm_{arm_id}_brain',
-            'message': f'🧠 Decision: {decision.get("action")} @ {decision.get("target_angle")}° (confidence: {decision.get("confidence")})',
-            'level': 'info'
+            "timestamp": timestamp,
+            "source": f"arm_{arm_id}_brain",
+            "message": f'🧠 Decision: {decision.get("action")} @ {decision.get("target_angle")}° (confidence: {decision.get("confidence")})',
+            "level": "info",
         }
 
-        socketio.emit('log_message', log_data)
+        socketio.emit("log_message", log_data)
 
-        print(f"[DECISION] Arm {arm_id}: {decision.get('action')} at {decision.get('target_angle')}°")
+        print(
+            f"[DECISION] Arm {arm_id}: {decision.get('action')} at {decision.get('target_angle')}°"
+        )
 
 
 # ============================================================================
@@ -352,6 +361,7 @@ def get_notification_service() -> TaskNotification:
 # HELPER FUNCTION: Quick notification
 # ============================================================================
 
+
 def send_notification(notification_type: str, **kwargs):
     """
     Quick way to send any notification.
@@ -374,34 +384,25 @@ def send_notification(notification_type: str, **kwargs):
     notif = get_notification_service()
 
     if notification_type == "processing":
-        notif.notify_processing(kwargs.get('arm_id'), kwargs.get('action'))
+        notif.notify_processing(kwargs.get("arm_id"), kwargs.get("action"))
 
     elif notification_type == "success":
         notif.notify_success(
-            kwargs.get('arm_id'),
-            kwargs.get('action'),
-            kwargs.get('confidence', 1.0)
+            kwargs.get("arm_id"), kwargs.get("action"), kwargs.get("confidence", 1.0)
         )
 
     elif notification_type == "failure":
         notif.notify_failure(
-            kwargs.get('arm_id'),
-            kwargs.get('reason'),
-            kwargs.get('action', 'unknown')
+            kwargs.get("arm_id"), kwargs.get("reason"), kwargs.get("action", "unknown")
         )
 
     elif notification_type == "health":
         notif.notify_arm_health(
-            kwargs.get('arm_id'),
-            kwargs.get('health_status'),
-            kwargs.get('error')
+            kwargs.get("arm_id"), kwargs.get("health_status"), kwargs.get("error")
         )
 
     elif notification_type == "decision":
-        notif.notify_decision(
-            kwargs.get('arm_id'),
-            kwargs.get('decision')
-        )
+        notif.notify_decision(kwargs.get("arm_id"), kwargs.get("decision"))
 
     else:
         print(f"[WARNING] Unknown notification type: {notification_type}")

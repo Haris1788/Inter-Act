@@ -84,11 +84,11 @@ from app.services.arm_brain import get_arm_brain
 # This remembers where each arm is located
 from app.models import arm_state
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # CLASS: ArmExecutor
 # PURPOSE: One execution engine per arm - executes brain's decisions
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class ArmExecutor:
     """
@@ -203,10 +203,7 @@ class ArmExecutor:
         # ═════════════════════════════════════════════════════════════════
         # FIGURE OUT: Where is this arm's server?
         # ═════════════════════════════════════════════════════════════════
-        self.arm_server = os.environ.get(
-            'ARM_SERVER',
-            f'http://arm-{arm_id}:8000'
-        )
+        self.arm_server = os.environ.get("ARM_SERVER", f"http://arm-{arm_id}:8000")
         """
         arm_server (str): URL where this arm's server is running
 
@@ -349,7 +346,7 @@ class ArmExecutor:
                 "arm_id": self.arm_id,
                 "reason": f"Cannot get arm state: {str(e)}",
                 "action": "error",
-                "message": f"❌ Arm {self.arm_id} FAILED: Cannot read state"
+                "message": f"❌ Arm {self.arm_id} FAILED: Cannot read state",
             }
 
         # ========================================================================
@@ -391,7 +388,7 @@ class ArmExecutor:
                 "arm_id": self.arm_id,
                 "reason": f"Brain error: {decision.get('error')}",
                 "action": "error",
-                "message": f"❌ Arm {self.arm_id} FAILED: Brain error"
+                "message": f"❌ Arm {self.arm_id} FAILED: Brain error",
             }
 
         # ────────────────────────────────────────────────────────────────
@@ -402,7 +399,7 @@ class ArmExecutor:
         # The frontend gets a success-with-noop so the operator sees that
         # the system understood the request.
         if decision.get("action") == "noop":
-            print(f"🚫 Brain returned noop — not moving arm {self.arm_id}")
+            print(f"🚫 Brain returned noop - not moving arm {self.arm_id}")
             return {
                 "status": "success",
                 "arm_id": self.arm_id,
@@ -441,7 +438,7 @@ class ArmExecutor:
             response = requests.post(
                 f"{self.arm_server}/move",
                 json={"angle": target_angle},
-                timeout=15  # Wait max 15 seconds for arm to respond
+                timeout=15,  # Wait max 15 seconds for arm to respond
             )
 
             # Check if request was successful (HTTP 200-299)
@@ -460,7 +457,7 @@ class ArmExecutor:
                 "arm_id": self.arm_id,
                 "reason": "Arm server timeout - no response after 15 seconds",
                 "action": decision.get("action"),
-                "message": f"❌ Arm {self.arm_id} FAILED: Server timeout"
+                "message": f"❌ Arm {self.arm_id} FAILED: Server timeout",
             }
 
         except requests.exceptions.ConnectionError:
@@ -476,7 +473,7 @@ class ArmExecutor:
                 "arm_id": self.arm_id,
                 "reason": f"Cannot connect to arm server: {self.arm_server}",
                 "action": decision.get("action"),
-                "message": f"❌ Arm {self.arm_id} FAILED: Connection error"
+                "message": f"❌ Arm {self.arm_id} FAILED: Connection error",
             }
 
         except Exception as e:
@@ -488,7 +485,7 @@ class ArmExecutor:
                 "arm_id": self.arm_id,
                 "reason": f"Execution error: {str(e)}",
                 "action": decision.get("action"),
-                "message": f"❌ Arm {self.arm_id} FAILED: {str(e)}"
+                "message": f"❌ Arm {self.arm_id} FAILED: {str(e)}",
             }
 
         # ========================================================================
@@ -521,7 +518,7 @@ class ArmExecutor:
 
         # ========================================================================
         # STEP 5: ARM STATE IS ALREADY UP-TO-DATE
-        # PURPOSE: No-op — kept for documentation
+        # PURPOSE: No-op - kept for documentation
         # ========================================================================
         # The arm container's /move handler proxies to backend's /set_angle,
         # which has already written `arm_state` AND emitted `state_update`
@@ -529,7 +526,9 @@ class ArmExecutor:
         # successfully above. Writing again here would (a) duplicate the
         # `state_update` event, making the canvas re-trigger its easing
         # animation, and (b) waste a lock acquisition. So we skip it.
-        print(f"\n📊 Arm state already updated by proxy chain (single source of truth).")
+        print(
+            f"\n📊 Arm state already updated by proxy chain (single source of truth)."
+        )
 
         # ========================================================================
         # STEP 6: RETURN SUCCESS RESULT
@@ -561,7 +560,7 @@ class ArmExecutor:
             "confidence": decision.get("confidence"),
             "reasoning": decision.get("reasoning"),
             "timestamp": datetime.now().isoformat(),
-            "message": f"✅ Arm {self.arm_id} completed '{decision.get('action')}' successfully"
+            "message": f"✅ Arm {self.arm_id} completed '{decision.get('action')}' successfully",
         }
 
         print(f"\n{'='*60}")

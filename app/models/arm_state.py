@@ -3,9 +3,14 @@
 import time
 import threading
 from app.models.pipeline_config import (
-    generate_arm_state, get_arm_count, get_arm_ids,
-    get_all_downstream, is_critical,
-    MIN_ANGLE, MAX_ANGLE, DEFAULT_ANGLE,
+    generate_arm_state,
+    get_arm_count,
+    get_arm_ids,
+    get_all_downstream,
+    is_critical,
+    MIN_ANGLE,
+    MAX_ANGLE,
+    DEFAULT_ANGLE,
 )
 
 _lock = threading.Lock()
@@ -14,7 +19,7 @@ _state = generate_arm_state()
 # Health status per arm: {arm_id: {"health": "alive|unhealthy|dead|stopped", "last_seen": timestamp, "error": str|None}}
 _health = {}
 
-# Pipeline-wide stop flag — set when a critical arm fails
+# Pipeline-wide stop flag - set when a critical arm fails
 _pipeline_stopped = False
 
 
@@ -25,12 +30,13 @@ def _init_health():
         for arm_id in _state
     }
 
+
 _init_health()
 
 
 def set_angle(arm_id, angle):
     if arm_id not in _state:
-        valid = ', '.join(str(i) for i in sorted(_state.keys()))
+        valid = ", ".join(str(i) for i in sorted(_state.keys()))
         raise ValueError(f"Invalid arm_id: {arm_id}. Must be one of: {valid}")
     if not isinstance(angle, (int, float)):
         raise ValueError(f"angle must be a number, got {type(angle).__name__}")
@@ -48,7 +54,7 @@ def set_angle(arm_id, angle):
 
 def get_state(arm_id):
     if arm_id not in _state:
-        valid = ', '.join(str(i) for i in sorted(_state.keys()))
+        valid = ", ".join(str(i) for i in sorted(_state.keys()))
         raise ValueError(f"Invalid arm_id: {arm_id}. Must be one of: {valid}")
     with _lock:
         return dict(_state[arm_id])
@@ -60,6 +66,7 @@ def get_all():
 
 
 # --- Health tracking ---
+
 
 def set_health(arm_id, health, error=None):
     """Update health status for an arm. Health: alive, unhealthy, dead, stopped, idle."""

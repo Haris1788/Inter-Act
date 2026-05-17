@@ -1,4 +1,4 @@
-"""Tests for concurrent arm state access — thread safety verification.
+"""Tests for concurrent arm state access - thread safety verification.
 
 Arm IDs and angles are derived from pipeline_config so this test scales
 to any arm count defined in pipeline.yaml.
@@ -26,9 +26,11 @@ def test_concurrent_writes_no_corruption(client):
 
     def set_arm(arm_id, angle):
         try:
-            resp = client.post('/set_angle',
-                               data=json.dumps({"arm_id": arm_id, "angle": angle}),
-                               content_type='application/json')
+            resp = client.post(
+                "/set_angle",
+                data=json.dumps({"arm_id": arm_id, "angle": angle}),
+                content_type="application/json",
+            )
             if resp.status_code != 200:
                 errors.append(f"arm {arm_id} angle {angle}: status {resp.status_code}")
         except Exception as e:
@@ -48,8 +50,10 @@ def test_concurrent_writes_no_corruption(client):
     assert len(errors) == 0, f"Concurrent errors: {errors}"
 
     # Verify final state matches the last write per arm
-    resp = client.get('/state')
+    resp = client.get("/state")
     data = resp.get_json()
     arms = {a["arm_id"]: a["angle"] for a in data["arms"]}
     for arm_id, angle in arm_angle_pairs:
-        assert arms[arm_id] == angle, f"arm {arm_id} expected {angle}, got {arms[arm_id]}"
+        assert (
+            arms[arm_id] == angle
+        ), f"arm {arm_id} expected {angle}, got {arms[arm_id]}"

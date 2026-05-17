@@ -41,14 +41,20 @@ def fake_config(cfg_dict):
 def _arms_cfg(n=3):
     arms = []
     for i in range(1, n + 1):
-        arms.append({
-            "id": i, "label": f"Arm {i}", "color": "#000",
-            "depends_on": [i - 1] if i > 1 else [], "critical": True,
-        })
+        arms.append(
+            {
+                "id": i,
+                "label": f"Arm {i}",
+                "color": "#000",
+                "depends_on": [i - 1] if i > 1 else [],
+                "critical": True,
+            }
+        )
     return arms
 
 
 # ── Module base contract ─────────────────────────────────────────────
+
 
 class TestModuleBase:
     def test_is_thread_subclass(self):
@@ -87,15 +93,16 @@ class TestModuleBase:
 
 # ── Inheritance check ────────────────────────────────────────────────
 
+
 class TestInheritance:
     def test_asset_controller_is_module(self):
-        a = AssetController("veh", "Veh", input_tp=None, output_tp=None,
-                            num_products=1)
+        a = AssetController("veh", "Veh", input_tp=None, output_tp=None, num_products=1)
         assert isinstance(a, Module)
 
     def test_vehicle_controller_is_module(self):
-        v = VehicleController("veh", "Veh", input_tp=None, output_tp=None,
-                              num_products=1)
+        v = VehicleController(
+            "veh", "Veh", input_tp=None, output_tp=None, num_products=1
+        )
         assert isinstance(v, Module)
 
 
@@ -116,7 +123,7 @@ class TestArmBackpressure:
 
     def test_arm_buffers_in_tp_while_downstream_arm_is_occupied(self):
         """arm-1 places into an empty TP even when arm-2 is currently carrying
-        an object — the TP is a passive 1-slot buffer, not a gating signal."""
+        an object - the TP is a passive 1-slot buffer, not a gating signal."""
         tp = TransferPoint("TP arm-1->arm-2")
 
         arm2 = self._arm(2, input_tp=tp)
@@ -128,7 +135,7 @@ class TestArmBackpressure:
             downstream_alive=lambda: arm2.is_ready_for_input(),
         )
 
-        # arm1 must complete immediately — TP is empty so buffering is allowed
+        # arm1 must complete immediately - TP is empty so buffering is allowed
         arm1._process_one_product("Obj3")
 
         assert not tp.is_empty(), "Obj3 must be buffered in TP"
@@ -136,7 +143,7 @@ class TestArmBackpressure:
 
     def test_arm_blocks_at_pre_pickup_when_tp_full(self):
         """If the output TP is already occupied, arm-1 must not pick up a new
-        object — capacity=1 enforced before the pickup phase."""
+        object - capacity=1 enforced before the pickup phase."""
         tp = TransferPoint("TP arm-1->arm-2")
         tp.place("Existing")  # pre-occupy
 
@@ -218,6 +225,7 @@ class TestArmBackpressure:
 
 # ── Flow order helper ────────────────────────────────────────────────
 
+
 class TestFlowOrder:
     def test_arms_only_flow(self):
         cfg = {
@@ -233,10 +241,14 @@ class TestFlowOrder:
             "pipeline": {"mode": "dependency"},
             "arms": _arms_cfg(3),
             "assets": [
-                {"id": "veh-a", "type": "vehicle",
-                 "speed": 100,
-                 "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
-                 "upstream": ["arm-2"], "downstream": ["arm-3"]},
+                {
+                    "id": "veh-a",
+                    "type": "vehicle",
+                    "speed": 100,
+                    "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
+                    "upstream": ["arm-2"],
+                    "downstream": ["arm-3"],
+                },
             ],
         }
         with fake_config(cfg):
@@ -248,14 +260,22 @@ class TestFlowOrder:
             "pipeline": {"mode": "dependency"},
             "arms": _arms_cfg(3),
             "assets": [
-                {"id": "veh-a", "type": "vehicle",
-                 "speed": 100,
-                 "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
-                 "upstream": ["arm-2"], "downstream": ["veh-b"]},
-                {"id": "veh-b", "type": "vehicle",
-                 "speed": 100,
-                 "waypoints": [{"x": 10, "y": 0}, {"x": 30, "y": 0}],
-                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
+                {
+                    "id": "veh-a",
+                    "type": "vehicle",
+                    "speed": 100,
+                    "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
+                    "upstream": ["arm-2"],
+                    "downstream": ["veh-b"],
+                },
+                {
+                    "id": "veh-b",
+                    "type": "vehicle",
+                    "speed": 100,
+                    "waypoints": [{"x": 10, "y": 0}, {"x": 30, "y": 0}],
+                    "upstream": ["veh-a"],
+                    "downstream": ["arm-3"],
+                },
             ],
         }
         with fake_config(cfg):
@@ -267,21 +287,34 @@ class TestFlowOrder:
             "pipeline": {"mode": "dependency"},
             "arms": _arms_cfg(5),
             "assets": [
-                {"id": "veh-a", "type": "vehicle",
-                 "speed": 120,
-                 "waypoints": [{"x": 0, "y": 0}, {"x": 20, "y": 0}],
-                 "upstream": ["arm-2"], "downstream": ["arm-3"]},
-                {"id": "veh-b", "type": "vehicle",
-                 "speed": 120,
-                 "waypoints": [{"x": 0, "y": 0}, {"x": 20, "y": 0}],
-                 "upstream": ["arm-4"], "downstream": ["arm-5"]},
+                {
+                    "id": "veh-a",
+                    "type": "vehicle",
+                    "speed": 120,
+                    "waypoints": [{"x": 0, "y": 0}, {"x": 20, "y": 0}],
+                    "upstream": ["arm-2"],
+                    "downstream": ["arm-3"],
+                },
+                {
+                    "id": "veh-b",
+                    "type": "vehicle",
+                    "speed": 120,
+                    "waypoints": [{"x": 0, "y": 0}, {"x": 20, "y": 0}],
+                    "upstream": ["arm-4"],
+                    "downstream": ["arm-5"],
+                },
             ],
         }
         with fake_config(cfg):
             order = pipeline_config.get_module_flow_order()
         assert order == [
-            "arm-1", "arm-2", "veh-a",
-            "arm-3", "arm-4", "veh-b", "arm-5",
+            "arm-1",
+            "arm-2",
+            "veh-a",
+            "arm-3",
+            "arm-4",
+            "veh-b",
+            "arm-5",
         ]
 
     def test_asset_ordering_in_yaml_does_not_break_chain(self):
@@ -290,14 +323,22 @@ class TestFlowOrder:
             "arms": _arms_cfg(3),
             "assets": [
                 # Intentionally reversed: downstream listed before upstream.
-                {"id": "veh-b", "type": "vehicle",
-                 "speed": 100,
-                 "waypoints": [{"x": 10, "y": 0}, {"x": 30, "y": 0}],
-                 "upstream": ["veh-a"], "downstream": ["arm-3"]},
-                {"id": "veh-a", "type": "vehicle",
-                 "speed": 100,
-                 "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
-                 "upstream": ["arm-2"], "downstream": ["veh-b"]},
+                {
+                    "id": "veh-b",
+                    "type": "vehicle",
+                    "speed": 100,
+                    "waypoints": [{"x": 10, "y": 0}, {"x": 30, "y": 0}],
+                    "upstream": ["veh-a"],
+                    "downstream": ["arm-3"],
+                },
+                {
+                    "id": "veh-a",
+                    "type": "vehicle",
+                    "speed": 100,
+                    "waypoints": [{"x": 0, "y": 0}, {"x": 10, "y": 0}],
+                    "upstream": ["arm-2"],
+                    "downstream": ["veh-b"],
+                },
             ],
         }
         with fake_config(cfg):
@@ -342,6 +383,7 @@ class TestRunDemoTopologySync:
 
 
 # ── Linear TP wiring (the heart of the new builder) ──────────────────
+
 
 class StubTP:
     def __init__(self, name="tp"):
@@ -396,7 +438,7 @@ class TestLinearPipelineWiring:
         m3 = VehicleController("v3", "V3", None, None, num_products=1, travel_time=0.05)
         modules = [m1, m2, m3]
 
-        # Same loop the pipeline builder uses — no type-specific code.
+        # Same loop the pipeline builder uses - no type-specific code.
         for i in range(len(modules) - 1):
             tp = StubTP(f"tp-{i}")
             modules[i].output_tp = tp
@@ -414,10 +456,12 @@ class TestLinearPipelineWiring:
         source.place("Obj1")
         # Drain sink as a downstream consumer.
         result = []
+
         def consumer():
             obj = sink.wait_and_pick(timeout=5.0)
             if obj:
                 result.append(obj)
+
         t = threading.Thread(target=consumer, daemon=True)
         t.start()
 
@@ -429,6 +473,7 @@ class TestLinearPipelineWiring:
 
 
 # ── Plug/unplug a new module type without builder changes ────────────
+
 
 class _DoubleBufferModule(AssetController):
     """Hypothetical new module type added without touching pipeline code.
@@ -467,10 +512,12 @@ class TestPluggability:
         src.place("X")
 
         result = []
+
         def consumer():
             obj = sink.wait_and_pick(timeout=5.0)
             if obj:
                 result.append(obj)
+
         t = threading.Thread(target=consumer, daemon=True)
         t.start()
         for m in modules:
@@ -482,6 +529,7 @@ class TestPluggability:
 
 # ── Logging contract ────────────────────────────────────────────────
 
+
 class TestModuleLogging:
     def test_module_logs_accept_emit(self):
         asset_state.reset()
@@ -490,9 +538,9 @@ class TestModuleLogging:
         def log_fn(src, msg):
             captured.append((src, msg))
 
-        m = VehicleController("v1", "V1", None, None,
-                              num_products=1, travel_time=0.02,
-                              log_fn=log_fn)
+        m = VehicleController(
+            "v1", "V1", None, None, num_products=1, travel_time=0.02, log_fn=log_fn
+        )
         src = StubTP("src")
         sink = StubTP("sink")
         m.input_tp = src
@@ -503,6 +551,7 @@ class TestModuleLogging:
 
         def drain():
             sink.wait_and_pick(timeout=2.0)
+
         threading.Thread(target=drain, daemon=True).start()
         m.join(timeout=3.0)
 

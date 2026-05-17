@@ -81,7 +81,6 @@ from typing import Dict, Any, Optional
 # This gives us access to the LLM (Large Language Model)
 from app.services.qwen_brain import get_qwen_brain
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # CONSTANTS: Output validation
 # ═══════════════════════════════════════════════════════════════════════════
@@ -103,11 +102,11 @@ MAX_ANGLE = 180.0
 # ═══════════════════════════════════════════════════════════════════════════
 # Two task families that must NOT be left to a 0.5 B model:
 #
-# 1. "stop / don't move / halt / stay" — a small LLM gladly converts these
+# 1. "stop / don't move / halt / stay" - a small LLM gladly converts these
 #    into a "drop" or "move" because those are the only verbs it knows.
 #    Disastrous: the arm executes the opposite of what was asked.
 #
-# 2. "rotate to N degrees" / "move to N" — these are unambiguous and
+# 2. "rotate to N degrees" / "move to N" - these are unambiguous and
 #    deterministic; sending them to Qwen wastes 2-8 s of CPU inference.
 #
 # We handle both before the LLM is consulted.
@@ -160,7 +159,11 @@ def _try_pre_filter(task: str) -> Optional[Dict[str, Any]]:
             "confidence": 1.0,
             "reasoning": (
                 f"Literal angle {angle}° parsed from task"
-                + (f" (clamped to {clamped}° because {MIN_ANGLE}–{MAX_ANGLE}° is the safe range)" if out_of_range else "")
+                + (
+                    f" (clamped to {clamped}° because {MIN_ANGLE}–{MAX_ANGLE}° is the safe range)"
+                    if out_of_range
+                    else ""
+                )
             ),
             "status": "success",
             "source": "rule:numeric",
@@ -180,11 +183,11 @@ def _validate_decision(decision: Dict[str, Any]) -> Dict[str, Any]:
     Failure dicts (status="failed") pass through unchanged.
     """
     # qwen_brain.ask_decision uses three failure tags depending on the cause:
-    #   "failed"    — Ollama returned non-200 OR JSON could not be parsed
-    #   "timeout"   — request exceeded our 30 s budget
-    #   "exception" — connection error / DNS failure / misc.
+    #   "failed"    - Ollama returned non-200 OR JSON could not be parsed
+    #   "timeout"   - request exceeded our 30 s budget
+    #   "exception" - connection error / DNS failure / misc.
     # All three mean "no usable LLM output." We must preserve that failure
-    # signal — the validator's job is to clamp valid output, not to invent
+    # signal - the validator's job is to clamp valid output, not to invent
     # a default `move @ 90, conf 0.5` that would silently ship a fabricated
     # decision to the arm. Normalise to "failed" for the executor.
     if decision.get("status") in ("failed", "timeout", "exception"):
@@ -196,7 +199,7 @@ def _validate_decision(decision: Dict[str, Any]) -> Dict[str, Any]:
         action = "move"
 
     if action == "noop":
-        # noop has no target angle — the executor must not move the arm.
+        # noop has no target angle - the executor must not move the arm.
         angle = None
     else:
         raw_angle = decision.get("target_angle")
@@ -227,6 +230,7 @@ def _validate_decision(decision: Dict[str, Any]) -> Dict[str, Any]:
 # CLASS: ArmBrain
 # PURPOSE: One AI decision-maker per arm
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class ArmBrain:
     """
@@ -303,7 +307,7 @@ class ArmBrain:
         # Qwen 0.5b on CPU takes 2–3 s per call. Repeats are common ("pick"
         # at angle 0 → 180 happens every cycle). We bucket the current
         # angle to 15° intervals so 47° and 53° share a cache slot.
-        # Capped at 64 entries — small enough that we never need eviction.
+        # Capped at 64 entries - small enough that we never need eviction.
         self._cache: Dict[Any, Dict[str, Any]] = {}
         self._cache_max = 64
         """
@@ -486,13 +490,15 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         # STEP 2.5: DETERMINISTIC PRE-FILTERS
         # PURPOSE: Catch "stop/don't move" + literal angles BEFORE the LLM
         # ═════════════════════════════════════════════════════════════════
-        # A 0.5 B model cannot reliably handle these — it converts "stop" into
+        # A 0.5 B model cannot reliably handle these - it converts "stop" into
         # the closest verb in its vocabulary, which can move the arm in the
         # opposite direction of what the user asked. Rules win here.
         rule_decision = _try_pre_filter(task)
         if rule_decision is not None:
-            print(f"[BRAIN] pre-filter hit ({rule_decision.get('source')}): "
-                  f"{rule_decision['action']} @ {rule_decision.get('target_angle')}")
+            print(
+                f"[BRAIN] pre-filter hit ({rule_decision.get('source')}): "
+                f"{rule_decision['action']} @ {rule_decision.get('target_angle')}"
+            )
             decision = _validate_decision(dict(rule_decision))
             decision["arm_id"] = self.arm_id
             decision["cache_hit"] = False
@@ -581,7 +587,6 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         #     "arm_id": 1          ← WE ADDED THIS
         # }
 
-
     def _dead_intermediates(self):
         """Return non-arm assets surrounding this arm that are not alive.
 
@@ -590,7 +595,7 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         - Upstream chain: assets between the previous arm and this arm. If
           any is dead, the object can't have legitimately reached this arm's
           input zone (e.g. arm-3 must not pick from handover_2 if veh-a is
-          failed — the object got there only because it used to be alive,
+          failed - the object got there only because it used to be alive,
           and re-relaying would break the demo's physical story).
 
         - Immediate downstream actor: if this arm is about to drop onto an
@@ -623,11 +628,12 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
                 if i_self > i_prev + 1:
                     upstream_between = flow[i_prev + 1 : i_self]
                     dead.extend(
-                        aid for aid in upstream_between
+                        aid
+                        for aid in upstream_between
                         if not aid.startswith("arm-") and not asset_state.is_alive(aid)
                     )
 
-        # Immediate downstream actor — if it's an asset and dead, hold.
+        # Immediate downstream actor - if it's an asset and dead, hold.
         if i_self + 1 < len(flow):
             nxt = flow[i_self + 1]
             if not nxt.startswith("arm-") and not asset_state.is_alive(nxt):
@@ -638,14 +644,15 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         return [a for a in dead if not (a in seen or seen.add(a))]
 
     # ════════════════════════════════════════════════════════════════════
-    # SCRIPT DISPATCHER — Qwen picks one named behaviour from a per-arm menu
+    # SCRIPT DISPATCHER - Qwen picks one named behaviour from a per-arm menu
     # ════════════════════════════════════════════════════════════════════
     # Different from `decide_action`. Instead of inventing an angle, Qwen
     # is asked to classify the task into one of N (~3) script names. This
-    # is a much smaller cognitive load — a 0.5 B model can do it reliably.
+    # is a much smaller cognitive load - a 0.5 B model can do it reliably.
 
-    def pick_script(self, task: str, scripts: list,
-                    object_summary: Dict[str, int] = None) -> Dict[str, Any]:
+    def pick_script(
+        self, task: str, scripts: list, object_summary: Dict[str, int] = None
+    ) -> Dict[str, Any]:
         """
         Ask Qwen to choose one script name from this arm's menu.
 
@@ -668,12 +675,13 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         hold_options = [n for n in valid_list if n.startswith("hold_")]
         rest_option = "return_to_rest" if "return_to_rest" in valid_names else None
 
-        # Per-arm geometry derived from pipeline.yaml — works for any arm count.
+        # Per-arm geometry derived from pipeline.yaml - works for any arm count.
         # Each arm always picks at 180° (its upstream reach) and drops at 0°
         # (its downstream reach). The zone names ("intake", "handover_<i>",
         # "on_<asset>", "output") come from pipeline_config so the same code
         # handles any pipeline shape without changes.
         from app.services.arm_scripts import _actor_zones  # local import avoids cycle
+
         zones = _actor_zones(self.arm_id)
         my_source = zones["upstream"]
         my_dest = zones["downstream"]
@@ -695,12 +703,15 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         # event still fires, so the operator sees the (synthetic)
         # decision in the log panel.
         if dead_intermediates_pre:
-            forced = (hold_options[0] if hold_options
-                      else (rest_option or (valid_list[0] if valid_list else "")))
+            forced = (
+                hold_options[0]
+                if hold_options
+                else (rest_option or (valid_list[0] if valid_list else ""))
+            )
             return {
                 "status": "success",
                 "script": forced,
-                "qwen_suggested": "(skipped — LLM not consulted)",
+                "qwen_suggested": "(skipped - LLM not consulted)",
                 "qwen_raw": "",
                 "reasoning": (
                     f"intermediate asset(s) not alive: "
@@ -716,12 +727,15 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
                 "arm_id": self.arm_id,
             }
         if my_source and source_count_pre == 0:
-            forced = (hold_options[0] if hold_options
-                      else (rest_option or (valid_list[0] if valid_list else "")))
+            forced = (
+                hold_options[0]
+                if hold_options
+                else (rest_option or (valid_list[0] if valid_list else ""))
+            )
             return {
                 "status": "success",
                 "script": forced,
-                "qwen_suggested": "(skipped — LLM not consulted)",
+                "qwen_suggested": "(skipped - LLM not consulted)",
                 "qwen_raw": "",
                 "reasoning": f"{my_source} is empty; nothing to relay",
                 "override_reason": None,
@@ -744,7 +758,7 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         )
 
         # Tell the model ONLY about its own source location (in plain English,
-        # not a structured count) — a 0.5 B model handles "yes/no" prose much
+        # not a structured count) - a 0.5 B model handles "yes/no" prose much
         # better than "intake=1, handover_1=0, …".
         source_count = (object_summary or {}).get(my_source, 0) if my_source else 0
         if source_count >= 1:
@@ -769,9 +783,11 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
 
         # Surface Qwen failure as failure (not as a fake success).
         if raw.get("status") in ("failed", "timeout", "exception"):
-            return {"status": "failed",
-                    "error": raw.get("error", "LLM unavailable"),
-                    "arm_id": self.arm_id}
+            return {
+                "status": "failed",
+                "error": raw.get("error", "LLM unavailable"),
+                "arm_id": self.arm_id,
+            }
 
         qwen_raw = str(raw.get("script", "")).strip()
         qwen_reasoning = str(raw.get("reasoning", ""))
@@ -789,7 +805,11 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
                 typo_corrected = True
             else:
                 # No close match. Use a safe default and mark it.
-                qwen_suggested = "return_to_rest" if "return_to_rest" in valid_names else valid_list[0]
+                qwen_suggested = (
+                    "return_to_rest"
+                    if "return_to_rest" in valid_names
+                    else valid_list[0]
+                )
                 typo_corrected = True
 
         # ── Step B: deterministic override based on source availability ──
@@ -808,9 +828,7 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
         # Enforce: the final choice MUST be a relay_*. If Qwen tried to
         # hold or rest while the source has an object, override.
         if not final_choice.startswith("relay_") and relay_options:
-            override_reason = (
-                f"object present at {my_source}; relay_* is required"
-            )
+            override_reason = f"object present at {my_source}; relay_* is required"
             final_choice = relay_options[0]
 
         return {
@@ -821,7 +839,9 @@ Respond with ONLY the JSON decision. No explanation, no markdown."""
             "reasoning": qwen_reasoning,
             "override_reason": override_reason,
             "typo_corrected": typo_corrected,
-            "fallback": typo_corrected and qwen_raw not in valid_names and not difflib.get_close_matches(qwen_raw, valid_list, n=1, cutoff=0.6),
+            "fallback": typo_corrected
+            and qwen_raw not in valid_names
+            and not difflib.get_close_matches(qwen_raw, valid_list, n=1, cutoff=0.6),
             "confidence": 1.0,
             "arm_id": self.arm_id,
         }

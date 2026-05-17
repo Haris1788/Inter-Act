@@ -1,5 +1,5 @@
 """
-QwenBrain — AI decision-making service for robotic arms.
+QwenBrain - AI decision-making service for robotic arms.
 
 Calls Ollama/Qwen to decide arm actions based on package state and behavior rules.
 """
@@ -9,12 +9,13 @@ import json
 import requests
 from typing import Dict, Any, Optional
 
+
 class QwenBrain:
     """Interface to Qwen 2.5 (0.5b) LLM via Ollama for arm decision-making."""
 
     def __init__(self):
-        self.ollama_url = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
-        self.model = os.environ.get('OLLAMA_MODEL', 'qwen2.5:0.5b')
+        self.ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.model = os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b")
         self.timeout = 30  # Increased for CPU inference (Qwen 0.5b is slow)
         self.temperature = 0.1  # Deterministic decisions
 
@@ -50,21 +51,19 @@ Analyze and reply with ONLY valid JSON. No explanation, no markdown."""
             "prompt": f"{system_prompt}\n\n{user_message}",
             "stream": False,
             "format": "json",
-            "temperature": self.temperature
+            "temperature": self.temperature,
         }
 
         try:
             response = requests.post(
-                f"{self.ollama_url}/api/generate",
-                json=payload,
-                timeout=self.timeout
+                f"{self.ollama_url}/api/generate", json=payload, timeout=self.timeout
             )
 
             if response.status_code != 200:
                 return {
                     "error": f"Ollama error {response.status_code}",
                     "decision": "error",
-                    "status": "failed"
+                    "status": "failed",
                 }
 
             result = response.json()
@@ -79,37 +78,26 @@ Analyze and reply with ONLY valid JSON. No explanation, no markdown."""
                 return {
                     "error": f"Invalid JSON: {response_text[:100]}",
                     "decision": "error",
-                    "status": "failed"
+                    "status": "failed",
                 }
 
         except requests.Timeout:
             return {
                 "error": f"Timeout ({self.timeout}s)",
                 "decision": "error",
-                "status": "timeout"
+                "status": "timeout",
             }
         except Exception as e:
-            return {
-                "error": str(e),
-                "decision": "error",
-                "status": "exception"
-            }
+            return {"error": str(e), "decision": "error", "status": "exception"}
 
     def test_connection(self) -> Dict[str, Any]:
         """Health check: is Ollama reachable?"""
         try:
-            response = requests.get(
-                f"{self.ollama_url}/api/tags",
-                timeout=5
-            )
+            response = requests.get(f"{self.ollama_url}/api/tags", timeout=5)
             if response.status_code == 200:
                 data = response.json()
                 models = [m["name"] for m in data.get("models", [])]
-                return {
-                    "status": "connected",
-                    "models": models,
-                    "url": self.ollama_url
-                }
+                return {"status": "connected", "models": models, "url": self.ollama_url}
             return {"status": "error", "code": response.status_code}
         except Exception as e:
             return {"status": "disconnected", "error": str(e)}
@@ -117,6 +105,7 @@ Analyze and reply with ONLY valid JSON. No explanation, no markdown."""
 
 # Singleton instance
 _qwen_brain = None
+
 
 def get_qwen_brain() -> QwenBrain:
     """Get or create QwenBrain singleton."""

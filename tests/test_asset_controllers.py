@@ -9,7 +9,7 @@ Covers:
 
 These tests exercise the controllers in isolation by stubbing
 TransferPoints and event callbacks. They do NOT spin up Flask or
-sockets — pure threading + state machine validation.
+sockets - pure threading + state machine validation.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ import pytest
 from app.models import asset_state
 from app.services.asset_controllers import VehicleController
 
-
 # ── Test doubles ──────────────────────────────────────────────────────
+
 
 class StubTP:
     """Minimal TransferPoint compatible with AssetController contract."""
@@ -100,6 +100,7 @@ def _drain(controllers, timeout=10.0):
 
 # ── arm -> vehicle -> arm ─────────────────────────────────────────────
 
+
 class TestArmVehicleArmFlow:
     def test_vehicle_ferries_object_between_arms(self):
         in_tp = StubTP("arm1->veh")
@@ -107,16 +108,19 @@ class TestArmVehicleArmFlow:
         ev = EventLog()
 
         veh = VehicleController(
-            asset_id="veh-a", label="Shuttle",
-            input_tp=in_tp, output_tp=out_tp,
-            speed_factor=0.05,        # fast for test
+            asset_id="veh-a",
+            label="Shuttle",
+            input_tp=in_tp,
+            output_tp=out_tp,
+            speed_factor=0.05,  # fast for test
             object_event_fn=ev,
             num_products=1,
             travel_time=0.3,
         )
         veh.start()
 
-        in_tp.place("Obj1")          # arm1 places
+        in_tp.place("Obj1")  # arm1 places
+
         # Drain output as if arm2 picks immediately.
         def consumer():
             for _ in range(50):
@@ -125,6 +129,7 @@ class TestArmVehicleArmFlow:
                     return obj
                 time.sleep(0.02)
             return None
+
         t = threading.Thread(target=consumer, daemon=True)
         t.start()
         _drain([veh], timeout=5.0)
@@ -139,6 +144,7 @@ class TestArmVehicleArmFlow:
 
 # ── arm -> vehicle -> vehicle -> arm ─────────────────────────────────
 
+
 class TestMultiVehicleChain:
     def test_two_vehicles_in_series(self):
         a1_to_v1 = StubTP("arm1->v1")
@@ -147,16 +153,20 @@ class TestMultiVehicleChain:
         ev = EventLog()
 
         v1 = VehicleController(
-            asset_id="veh-a", label="Shuttle A",
-            input_tp=a1_to_v1, output_tp=v1_to_v2,
+            asset_id="veh-a",
+            label="Shuttle A",
+            input_tp=a1_to_v1,
+            output_tp=v1_to_v2,
             speed_factor=0.05,
             object_event_fn=ev,
             num_products=1,
             travel_time=0.2,
         )
         v2 = VehicleController(
-            asset_id="veh-b", label="Shuttle B",
-            input_tp=v1_to_v2, output_tp=v2_to_a2,
+            asset_id="veh-b",
+            label="Shuttle B",
+            input_tp=v1_to_v2,
+            output_tp=v2_to_a2,
             speed_factor=0.05,
             object_event_fn=ev,
             num_products=1,
@@ -184,6 +194,7 @@ class TestMultiVehicleChain:
 
 # ── Failure handling ─────────────────────────────────────────────────
 
+
 class TestVehicleFailure:
     def test_fail_blocks_downstream(self):
         in_tp = StubTP("in")
@@ -191,12 +202,14 @@ class TestVehicleFailure:
         ev = EventLog()
 
         veh = VehicleController(
-            asset_id="veh-a", label="Shuttle",
-            input_tp=in_tp, output_tp=out_tp,
+            asset_id="veh-a",
+            label="Shuttle",
+            input_tp=in_tp,
+            output_tp=out_tp,
             speed_factor=1.0,
             object_event_fn=ev,
             num_products=1,
-            travel_time=5.0,         # long enough to fail mid-travel
+            travel_time=5.0,  # long enough to fail mid-travel
         )
         veh.start()
 
@@ -216,8 +229,10 @@ class TestVehicleBackpressure:
         in_tp = StubTP("in")
         out_tp = StubTP("out")
         veh = VehicleController(
-            asset_id="veh-bp", label="Shuttle",
-            input_tp=in_tp, output_tp=out_tp,
+            asset_id="veh-bp",
+            label="Shuttle",
+            input_tp=in_tp,
+            output_tp=out_tp,
             speed_factor=0.05,
             num_products=1,
             travel_time=0.05,
@@ -242,8 +257,10 @@ class TestVehicleBackpressure:
         out_tp = StubTP("out")
 
         veh = VehicleController(
-            asset_id="veh-hold", label="Shuttle",
-            input_tp=in_tp, output_tp=out_tp,
+            asset_id="veh-hold",
+            label="Shuttle",
+            input_tp=in_tp,
+            output_tp=out_tp,
             speed_factor=1.0,
             num_products=1,
             travel_time=0.6,
@@ -253,7 +270,9 @@ class TestVehicleBackpressure:
         veh.start()
         in_tp.place("Obj1")
         deadline = time.time() + 2.0
-        while time.time() < deadline and getattr(veh, "_current_object", None) != "Obj1":
+        while (
+            time.time() < deadline and getattr(veh, "_current_object", None) != "Obj1"
+        ):
             time.sleep(0.02)
         assert getattr(veh, "_current_object", None) == "Obj1"
         out_tp.place("blocker")
@@ -272,13 +291,16 @@ class TestVehicleBackpressure:
 
 # ── Recovery ─────────────────────────────────────────────────────────
 
+
 class TestRecovery:
     def test_recover_clears_failed_state(self):
         in_tp = StubTP("in")
         out_tp = StubTP("out")
         veh = VehicleController(
-            asset_id="veh-a", label="Shuttle",
-            input_tp=in_tp, output_tp=out_tp,
+            asset_id="veh-a",
+            label="Shuttle",
+            input_tp=in_tp,
+            output_tp=out_tp,
             num_products=1,
             travel_time=0.1,
         )
@@ -295,6 +317,7 @@ class TestRecovery:
 
 
 # ── State registry ───────────────────────────────────────────────────
+
 
 class TestAssetStateRegistry:
     def test_register_then_get(self):

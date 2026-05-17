@@ -1,5 +1,5 @@
 """
-Named actor behaviours — generic, config-driven, for arms AND assets.
+Named actor behaviours - generic, config-driven, for arms AND assets.
 
 A "script" here is a small Python function that performs a complete physical
 behaviour for one actor (an arm or a shuttle). It is the unit Qwen picks
@@ -16,9 +16,9 @@ Generalisation
 The registry is built from `pipeline.yaml` so it scales to any number of
 arms and any combination of assets in between. For each actor, three
 scripts are generated automatically:
-  - relay_<upstream>_to_<downstream>  — pick from upstream zone, drop downstream
-  - hold_at_<upstream>                — stay put, do nothing
-  - return_to_rest                    — go to neutral position (arms only)
+  - relay_<upstream>_to_<downstream>  - pick from upstream zone, drop downstream
+  - hold_at_<upstream>                - stay put, do nothing
+  - return_to_rest                    - go to neutral position (arms only)
 
 Zones are derived from the flow order in `pipeline.yaml`:
   - 'intake' (before the first actor)
@@ -49,15 +49,14 @@ from app.models import arm_state
 from app.models import asset_state
 from app.models import pipeline_config
 
-
 REST_ANGLE = 90.0
 PICK_ANGLE = 180.0
 DROP_ANGLE = 0.0
 STEP_PAUSE = 1.2
-SHUTTLE_TRAVEL_MS = 2000   # shuttle animation duration
+SHUTTLE_TRAVEL_MS = 2000  # shuttle animation duration
 
 
-ActorId = Union[int, str]   # arm = int, asset = str
+ActorId = Union[int, str]  # arm = int, asset = str
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -74,12 +73,15 @@ def _source_label(actor_id: ActorId) -> str:
 
 def _log(actor_id: ActorId, message: str, level: str = "info") -> None:
     src = _source_label(actor_id)
-    socketio.emit("log_message", {
-        "timestamp": datetime.now().strftime("%H:%M:%S"),
-        "source": src,
-        "message": message,
-        "level": level,
-    })
+    socketio.emit(
+        "log_message",
+        {
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "source": src,
+            "message": message,
+            "level": level,
+        },
+    )
     print(f"[{src}] {message}")
 
 
@@ -113,20 +115,23 @@ def _zone_to_owner(state: str, carrier_arm: int = None, carrier_asset: str = Non
     return "zone", state
 
 
-def _emit_object(object_id: str,
-                 state: str,
-                 carrier_arm: int = None,
-                 carrier_asset: str = None,
-                 extra_fields: dict = None) -> None:
+def _emit_object(
+    object_id: str,
+    state: str,
+    carrier_arm: int = None,
+    carrier_asset: str = None,
+    extra_fields: dict = None,
+) -> None:
     """Update an object's position and emit object_update.
 
-    Bypasses /object_event validation — the manual AI demo path manages
+    Bypasses /object_event validation - the manual AI demo path manages
     its own state transitions.
     """
     from app.routes import arm_routes
 
-    owner_type, owner_id = _zone_to_owner(state, carrier_arm=carrier_arm,
-                                          carrier_asset=carrier_asset)
+    owner_type, owner_id = _zone_to_owner(
+        state, carrier_arm=carrier_arm, carrier_asset=carrier_asset
+    )
     payload = {
         "object_id": object_id,
         "state": state,
@@ -147,11 +152,12 @@ def _emit_object(object_id: str,
 
 def _find_object_at(zone: str):
     from app.routes import arm_routes
+
     return arm_routes.find_object_at(zone)
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Topology — derive each actor's upstream / downstream from pipeline.yaml
+# Topology - derive each actor's upstream / downstream from pipeline.yaml
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -180,7 +186,9 @@ def _actor_zones(actor_id: ActorId) -> Dict[str, str]:
         return {"upstream": "", "downstream": ""}
     i = flow.index(actor_str)
     upstream = "intake" if i == 0 else _zone_between(flow[i - 1], actor_str)
-    downstream = "output" if i == len(flow) - 1 else _zone_between(actor_str, flow[i + 1])
+    downstream = (
+        "output" if i == len(flow) - 1 else _zone_between(actor_str, flow[i + 1])
+    )
     return {"upstream": upstream, "downstream": downstream}
 
 
@@ -197,7 +205,7 @@ def _pretty(zone: str) -> str:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Generic script bodies — arms
+# Generic script bodies - arms
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -209,7 +217,11 @@ def _relay_arm(arm_id: int, **_kwargs) -> Dict[str, Any]:
 
     obj = _find_object_at(upstream)
     if obj is None:
-        _log(arm_id, f"✋ no object at {_pretty(upstream)} — nothing to relay", level="warning")
+        _log(
+            arm_id,
+            f"✋ no object at {_pretty(upstream)} - nothing to relay",
+            level="warning",
+        )
         return {"script": script_name, "object_id": None, "status": "no_object"}
     object_id = obj["object_id"]
 
@@ -261,7 +273,7 @@ def _return_to_rest(arm_id: int, quiet: bool = False, **_kwargs) -> Dict[str, An
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Generic script bodies — shuttle (vehicle)
+# Generic script bodies - shuttle (vehicle)
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -273,13 +285,17 @@ def _relay_vehicle(asset_id: str, **_kwargs) -> Dict[str, Any]:
 
     obj = _find_object_at(upstream)
     if obj is None:
-        _log(asset_id, f"✋ no object at {_pretty(upstream)} — nothing to relay", level="warning")
+        _log(
+            asset_id,
+            f"✋ no object at {_pretty(upstream)} - nothing to relay",
+            level="warning",
+        )
         return {"script": script_name, "object_id": None, "status": "no_object"}
     object_id = obj["object_id"]
 
     _log(asset_id, f"▶ START {script_name} (object={object_id})")
 
-    # Pickup — object is carried by this shuttle. Setting start_time +
+    # Pickup - object is carried by this shuttle. Setting start_time +
     # duration_ms makes the frontend animate the shuttle from waypoint[0]
     # to waypoint[-1] over `duration_ms` ms.
     start_ms = int(time.time() * 1000)
@@ -293,10 +309,10 @@ def _relay_vehicle(asset_id: str, **_kwargs) -> Dict[str, Any]:
     socketio.emit("asset_health", asset_state.get(asset_id) or {})
     _log(asset_id, f"  • picked {object_id} from {_pretty(upstream)}")
 
-    # Travel — wait the animation duration so the canvas can interpolate.
+    # Travel - wait the animation duration so the canvas can interpolate.
     time.sleep(SHUTTLE_TRAVEL_MS / 1000)
 
-    # Drop — hand off to downstream zone (could be another asset or a handover).
+    # Drop - hand off to downstream zone (could be another asset or a handover).
     if downstream.startswith("on_"):
         next_asset = downstream[3:]
         _emit_object(object_id, downstream, carrier_asset=next_asset)
@@ -323,7 +339,7 @@ def _hold_vehicle(asset_id: str, quiet: bool = False, **_kwargs) -> Dict[str, An
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Registry — one menu per actor, built from pipeline.yaml
+# Registry - one menu per actor, built from pipeline.yaml
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -402,6 +418,8 @@ def run_script(actor_id: ActorId, script_name: str, **kwargs) -> Dict[str, Any]:
     if not scripts:
         raise ValueError(f"Unknown actor_id: {actor_id}")
     if script_name not in scripts:
-        raise ValueError(f"Unknown script for actor {actor_id}: {script_name}. "
-                         f"Valid: {list(scripts.keys())}")
+        raise ValueError(
+            f"Unknown script for actor {actor_id}: {script_name}. "
+            f"Valid: {list(scripts.keys())}"
+        )
     return scripts[script_name]["fn"](actor_id, **kwargs)

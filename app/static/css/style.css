@@ -126,7 +126,7 @@ h1 {
     outline-offset: 2px;
 }
 
-/* AI bar — Qwen-driven script dispatch */
+/* AI bar - Qwen-driven script dispatch */
 #ai-bar {
     display: flex;
     flex-wrap: wrap;
@@ -235,7 +235,7 @@ h1 {
     cursor: pointer;
 }
 
-/* US #16 — Send Task (Qwen brain) bar */
+/* US #16 - Send Task (Qwen brain) bar */
 #task-bar {
     display: flex;
     align-items: center;
@@ -304,7 +304,7 @@ h1 {
     color: #e74c3c;
 }
 
-/* US 17 — Role bar (Qwen picks a script per arm) */
+/* US 17 - Role bar (Qwen picks a script per arm) */
 #role-bar {
     display: flex;
     align-items: center;
