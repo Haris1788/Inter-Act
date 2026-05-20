@@ -25,7 +25,9 @@ services:
     - SERVER_HOST=http://backend:5000
     - DEMO_RUNNER_HOST=http://demo-runner:6000
     - OLLAMA_BASE_URL=http://ollama:11434
-    - OLLAMA_MODEL=qwen2.5:0.5b
+    - LLM_BASE_URL=http://host.docker.internal:11500
+    - OLLAMA_MODEL_PLANNER=qwq:32b-q4_K_M
+    - OLLAMA_MODEL_TACTICAL=qwen2.5:14b-instruct-q4_K_M
     - PIPELINE_CONFIG=/config/pipeline.yaml
     - FLASK_ENV=production
     - FLASK_DEBUG=0
@@ -46,6 +48,8 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+    extra_hosts:
+    - host.docker.internal:host-gateway
     depends_on:
       ollama:
         condition: service_healthy
@@ -82,6 +86,51 @@ services:
       timeout: 3s
       retries: 10
       start_period: 3s
+    depends_on:
+      backend:
+        condition: service_healthy
+  agv-1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agv
+    container_name: interact-agv-1
+    ports:
+    - 8101:8100
+    environment:
+    - AGV_ID=agv-1
+    - SERVER_HOST=http://backend:5000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - PYTHONUNBUFFERED=1
+    depends_on:
+      backend:
+        condition: service_healthy
+  agv-2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agv
+    container_name: interact-agv-2
+    ports:
+    - 8102:8100
+    environment:
+    - AGV_ID=agv-2
+    - SERVER_HOST=http://backend:5000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - PYTHONUNBUFFERED=1
+    depends_on:
+      backend:
+        condition: service_healthy
+  agv-3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agv
+    container_name: interact-agv-3
+    ports:
+    - 8103:8100
+    environment:
+    - AGV_ID=agv-3
+    - SERVER_HOST=http://backend:5000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - PYTHONUNBUFFERED=1
     depends_on:
       backend:
         condition: service_healthy

@@ -88,6 +88,13 @@ _lock = threading.RLock()
 _occupancy: Dict[str, Cell] = {}          # agv_id -> (col,row)
 _lane_lock = LaneLock()
 
+# ── Per-station arm docking locks (same semantics as LaneLock) ───────────────
+# Only one AGV may be at the input or output arm station at once.
+_station_locks: Dict[str, LaneLock] = {
+    "input_arm": LaneLock(),
+    "output_arm": LaneLock(),
+}
+
 
 def reset() -> None:
     """Clear occupancy and free the lane. Called at pipeline start."""
@@ -125,6 +132,13 @@ def is_cell_free(cell: List[int], ignore: Optional[str] = None) -> bool:
 def lane() -> LaneLock:
     """The process-wide shared-lane lock."""
     return _lane_lock
+
+
+def station_lock(name: str) -> LaneLock:
+    """Return the per-station docking lock ('input_arm' or 'output_arm')."""
+    if name not in _station_locks:
+        _station_locks[name] = LaneLock()
+    return _station_locks[name]
 
 
 def snapshot() -> dict:

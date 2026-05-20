@@ -259,15 +259,29 @@ export interface DockGlow {
   fadeMsLeft?: number | null;
 }
 
+export interface TablePackage {
+  id: string;
+  color: string;
+}
+
 export interface SpatialSlice {
   agvKinematics: Record<ActorId, AgvKinematics>;
   trajectories: Trajectory[];
   dockGlows: DockGlow[];
   reachability: { id: string; path: string; opacity: number }[];
+  /** Arm angles in degrees (0=right, 90=down, 180=left, 270=up). Default 270. */
+  armAngles: Record<string, number>;
+  /** Packages currently visible on each arm's table. station → list. */
+  tablePkgs: Record<string, TablePackage[]>;
+  /** Packages currently carried by each AGV. agv_id → package_id | null. */
+  agvCargo: Record<string, string | null>;
   tick: (dtMs: number) => void;
   // Phase 2 - runtime-driven, ephemeral. Driven by object_update events.
   setAgvKinematics: (id: ActorId, patch: Partial<AgvKinematics>) => void;
   setAgvTarget: (id: ActorId, target: Vec2 | null, speed?: number) => void;
+  setArmAngle: (armId: string, angle: number) => void;
+  setTablePkgs: (station: string, pkgs: TablePackage[]) => void;
+  setAgvCargo: (agvId: string, packageId: string | null) => void;
   emitTrajectory: (t: Trajectory) => void;
   emitDockGlow: (g: DockGlow) => void;
   clearSpatialRuntime: () => void;

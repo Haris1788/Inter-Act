@@ -40,10 +40,17 @@ from typing import Any, Dict, Optional
 import requests
 
 # ── Configuration (env-driven, same pattern as qwen_brain) ───────────────────
-# Default to the reverse-tunnel endpoint on the company server (the real
-# Clausthal GPU models). qwen_brain keeps its own 11434 default for the local
-# CPU 0.5b model — these two clients are intentionally separate.
-BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11500")
+# This client is intentionally SEPARATE from qwen_brain: qwen_brain stays on
+# the local CPU 0.5b container via OLLAMA_BASE_URL, while the heavy two-model
+# AI layer points at the TU Clausthal GPU tunnel. LLM_BASE_URL lets us repoint
+# ONLY this layer without disturbing qwen_brain. Precedence: LLM_BASE_URL
+# (our docker separation) -> OLLAMA_BASE_URL (documented company-server
+# convention) -> the reverse-tunnel default.
+BASE_URL = (
+    os.environ.get("LLM_BASE_URL")
+    or os.environ.get("OLLAMA_BASE_URL")
+    or "http://127.0.0.1:11500"
+)
 MODEL_PLANNER = os.environ.get("OLLAMA_MODEL_PLANNER", "qwq:32b-q4_K_M")
 MODEL_TACTICAL = os.environ.get("OLLAMA_MODEL_TACTICAL", "qwen2.5:14b-instruct-q4_K_M")
 

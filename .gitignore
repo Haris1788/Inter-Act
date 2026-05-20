@@ -13,6 +13,7 @@ build/
 *.swo
 .claude/
 planning/
+Doc-check/
 .cursor/rules/humanized-docs.mdc
 graphify-out/
 presentation/

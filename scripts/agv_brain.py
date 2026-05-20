@@ -24,11 +24,19 @@ import requests
 AGV_ID: str = os.environ.get("AGV_ID", "agv-1")
 DEFAULT_HOST: str = os.environ.get("SERVER_HOST", "http://localhost:5000")
 
-MOVE_STEP_SLEEP: float = 0.8    # seconds between cell-move POSTs
+MOVE_STEP_SLEEP: float = 0.5    # cadence between cell hops; tuned so the
+                                # frontend's eased motion never catches up and
+                                # stalls -> continuous vehicle-like travel
 LANE_ACQUIRE_TIMEOUT: float = 60.0
 LOAD_SIGNAL_TIMEOUT: float = 120.0
 UNLOAD_SIGNAL_TIMEOUT: float = 120.0
 MAX_STEP_RETRIES: int = 3
+
+# AI-driven decision loop: before EVERY script the tactical brain (qwen2.5:14b)
+# is consulted with live shared status and decides proceed / hold / fault.
+# The deterministic _NORMAL_STEPS order is the safety rail + fallback.
+MAX_DECISION_ITERS: int = 120   # cap so a permanent 'hold' can't loop forever
+HOLD_SLEEP: float = 3.0         # wait between coordination re-evaluations
 
 
 # ── HTTP helpers ───────────────────────────────────────────────────────────────
@@ -66,6 +74,36 @@ def _script_move_to_input(ctx: dict) -> bool:
         if res is None:
             return False
         time.sleep(MOVE_STEP_SLEEP)
+    return True
+
+
+def _script_acquire_input_station(ctx: dict) -> bool:
+    """Wait until the input arm station is free, then claim it."""
+    res = _post(
+        "/agv/station/acquire",
+        {"agv_id": AGV_ID, "station": "input_arm", "timeout": LANE_ACQUIRE_TIMEOUT},
+        timeout=LANE_ACQUIRE_TIMEOUT + 5.0,
+    )
+    return res is not None and res.get("status") == "acquired"
+
+
+def _script_release_input_station(ctx: dict) -> bool:
+    _post("/agv/station/release", {"agv_id": AGV_ID, "station": "input_arm"})
+    return True
+
+
+def _script_acquire_output_station(ctx: dict) -> bool:
+    """Wait until the output arm station is free, then claim it."""
+    res = _post(
+        "/agv/station/acquire",
+        {"agv_id": AGV_ID, "station": "output_arm", "timeout": LANE_ACQUIRE_TIMEOUT},
+        timeout=LANE_ACQUIRE_TIMEOUT + 5.0,
+    )
+    return res is not None and res.get("status") == "acquired"
+
+
+def _script_release_output_station(ctx: dict) -> bool:
+    _post("/agv/station/release", {"agv_id": AGV_ID, "station": "output_arm"})
     return True
 
 
@@ -128,13 +166,12 @@ def _script_release_lane(ctx: dict) -> bool:
 
 
 def _script_return_to_bay(ctx: dict) -> bool:
-    res = _post(
-        f"/agv/{AGV_ID}/move",
-        {"cell": ctx["bay"], "status": "returning"},
-    )
-    if res is None:
-        return False
-    time.sleep(MOVE_STEP_SLEEP)
+    # Travel the path back to the bay cell-by-cell (was a single instant jump).
+    for cell in ctx.get("route_to_bay") or [ctx["bay"]]:
+        res = _post(f"/agv/{AGV_ID}/move", {"cell": cell, "status": "returning"})
+        if res is None:
+            return False
+        time.sleep(MOVE_STEP_SLEEP)
     return True
 
 
@@ -150,6 +187,10 @@ def _script_fault(ctx: dict) -> bool:
 
 
 SCRIPT_REGISTRY: Dict[str, Any] = {
+    "acquire_input_station":  _script_acquire_input_station,
+    "release_input_station":  _script_release_input_station,
+    "acquire_output_station": _script_acquire_output_station,
+    "release_output_station": _script_release_output_station,
     "move_to_input":  _script_move_to_input,
     "acquire_lane":   _script_acquire_lane,
     "traverse_lane":  _script_traverse_lane,
@@ -163,15 +204,20 @@ SCRIPT_REGISTRY: Dict[str, Any] = {
 }
 
 # Deterministic step order — no AI involved in normal execution.
+# Station locks ensure only one AGV docks at each arm at a time.
 _NORMAL_STEPS = [
-    "move_to_input",
-    "load_package",
-    "acquire_lane",
-    "traverse_lane",
-    "move_to_output",
-    "unload_package",
-    "release_lane",
-    "return_to_bay",
+    "acquire_input_station",  # wait for input arm to be free
+    "move_to_input",          # travel bay→input cell
+    "load_package",           # wait for arm to place package
+    "release_input_station",  # free the input station for next AGV
+    "acquire_lane",           # mutual exclusion on shared lane
+    "traverse_lane",          # travel input→output along the lane
+    "acquire_output_station", # wait for output arm to be free
+    "move_to_output",         # dock at output cell
+    "unload_package",         # wait for arm to take package
+    "release_output_station", # free the output station
+    "release_lane",           # release lane
+    "return_to_bay",          # travel output→bay
 ]
 
 
@@ -207,17 +253,100 @@ def _ask_tactical(situation: str) -> str:
 
 # ── State machine ──────────────────────────────────────────────────────────────
 
+def _coord_snapshot() -> dict:
+    """Shared coordination state: all AGVs, lane/station holders, arms, plan.
+
+    This is how THIS AGV 'sees' the others — the basis for AI coordination
+    (AGV<->AGV and AGV<->arm) instead of barging blindly into a held lane/dock.
+    """
+    return _get("/coord/snapshot") or {}
+
+
+def _run_step(step_name: str, ctx: dict) -> bool:
+    """Execute one script with bounded retries + AI recovery on failure.
+
+    This is the anomaly path (a step actually failing). The higher-level
+    'which script next' decision is made in run_task by the tactical AI.
+    """
+    script_fn = SCRIPT_REGISTRY[step_name]
+    for attempt in range(1, MAX_STEP_RETRIES + 1):
+        _log(f"step {step_name} (attempt {attempt}/{MAX_STEP_RETRIES})")
+        if script_fn(ctx):
+            return True
+        if attempt < MAX_STEP_RETRIES:
+            advice = _ask_tactical(
+                f"Step '{step_name}' failed {attempt} time(s). "
+                f"Package: {ctx['package_id']}. What recovery script?"
+            )
+            _log(f"AI recovery advice after {step_name} failure: {advice}")
+            if advice == "fault":
+                ctx["fault_reason"] = (
+                    f"AI advised fault after {step_name} failed {attempt}x"
+                )
+                return False
+            if advice != step_name and advice in SCRIPT_REGISTRY:
+                SCRIPT_REGISTRY[advice](ctx)
+    return False
+
+
+def _decide_next_script(ctx: dict, completed: list, det_next: str,
+                        snap: dict) -> str:
+    """Tactical AI (qwen2.5:14b via backend /ai/tactical) decides the next move
+    from LIVE shared status. The AI owns pacing/coordination; Python owns
+    sequence integrity (the safety rail).
+
+    Allowed answers: `det_next` (proceed), 'hold' (wait — another AGV holds
+    the lane/station I need), 'fault' (abort). Unknown / HTTP 409 (planner
+    running) / timeout -> `det_next`, so the run NEVER deadlocks on the AI.
+    """
+    agvs = snap.get("agvs", {})
+    others = {a: {"cell": v.get("cell"), "status": v.get("status")}
+              for a, v in agvs.items() if a != AGV_ID}
+    system = (
+        f"You are the tactical brain of AGV {AGV_ID} in a shared warehouse. "
+        f"ONLY one AGV may hold the travel lane at a time, and only one AGV "
+        f"may dock at each arm station at a time — a collision is a failure. "
+        f"Use the live status to coordinate with the other AGVs. Respond with "
+        f'ONLY JSON {{"script":"<name>"}} where <name> is exactly one of: '
+        f'"{det_next}" = proceed with the planned next step; '
+        f'"hold" = another AGV holds the lane/station I need, wait; '
+        f'"fault" = unrecoverable, abort.'
+    )
+    user = (
+        f"Package {ctx.get('package_id')} "
+        f"(sequence {ctx.get('assignment', {}).get('sequence')}). "
+        f"Steps I have completed: {completed}. "
+        f"My planned next step: '{det_next}'. "
+        f"Live status — lane_holder: {snap.get('lane_holder')}; "
+        f"station_holders: {snap.get('station_holders')}; "
+        f"other AGVs: {others}. "
+        f"Do I run '{det_next}' now, 'hold', or 'fault'?"
+    )
+    try:
+        r = requests.post(
+            f"{DEFAULT_HOST}/ai/tactical",
+            json={"system": system, "user": user},
+            timeout=65,
+        )
+        if r.status_code == 409:
+            return det_next  # planning window open — proceed deterministically
+        choice = (r.json().get("script") or "").strip().lower()
+    except Exception:
+        return det_next  # fail-safe: never block the run on the AI
+    if choice in ("hold", "fault"):
+        return choice
+    return det_next  # firewall: only the planned step is a valid 'proceed'
+
+
 def run_task(assignment: dict, route_ctx: Optional[dict] = None) -> bool:
-    """Execute one full assignment cycle. Returns True on success, False on fault.
+    """Execute one assignment. The tactical AI is consulted BEFORE every script
+    with live shared status and decides proceed / hold / fault; the
+    deterministic _NORMAL_STEPS order is the safety rail and the fallback.
 
-    `assignment` is the dict produced by CentralBrain / plan_validator:
-        {"package_id": "pkg-1", "agv_id": "agv-1", "sequence": 1,
-         "route": ["bay","input","output","bay"], "label": "red"}
-
-    `route_ctx` (optional, for testing) provides the resolved grid cells:
-        {"bay": [c,r], "route_to_input": [[c,r],...],
-         "lane_cells": [[c,r],...], "route_to_output": [[c,r],...]}
-    If None, fetched from GET /grid.
+    `assignment` (from CentralBrain / plan_validator):
+        {"package_id":"pkg-1","agv_id":"agv-1","sequence":1,
+         "route":["bay","input","output","bay"],"label":"red"}
+    `route_ctx` optional (testing); else fetched from GET /grid.
     """
     if route_ctx is None:
         route_ctx = _fetch_route_ctx()
@@ -234,40 +363,47 @@ def run_task(assignment: dict, route_ctx: Optional[dict] = None) -> bool:
 
     _log(f"task start: pkg={ctx['package_id']} label={assignment.get('label', '')}")
 
-    for step_name in _NORMAL_STEPS:
-        script_fn = SCRIPT_REGISTRY[step_name]
-        ok = False
+    completed: list = []
+    iterations = 0
+    while iterations < MAX_DECISION_ITERS:
+        iterations += 1
+        remaining = [s for s in _NORMAL_STEPS if s not in completed]
+        if not remaining:
+            break
+        det_next = remaining[0]
 
-        for attempt in range(1, MAX_STEP_RETRIES + 1):
-            _log(f"step {step_name} (attempt {attempt}/{MAX_STEP_RETRIES})")
-            ok = script_fn(ctx)
-            if ok:
-                break
+        snap = _coord_snapshot()
+        choice = _decide_next_script(ctx, completed, det_next, snap)
 
-            if attempt < MAX_STEP_RETRIES:
-                situation = (
-                    f"Step '{step_name}' failed {attempt} time(s). "
-                    f"Package: {ctx['package_id']}. "
-                    f"What script should I run to recover?"
-                )
-                advice = _ask_tactical(situation)
-                _log(f"AI advice after {step_name} failure: {advice}")
-                if advice == "fault":
-                    ctx["fault_reason"] = (
-                        f"AI advised fault after {step_name} failed {attempt} time(s)"
-                    )
-                    _script_fault(ctx)
-                    return False
-                # Run the suggested recovery script once, then retry the step.
-                if advice != step_name and advice in SCRIPT_REGISTRY:
-                    SCRIPT_REGISTRY[advice](ctx)
-
-        if not ok:
+        if choice == "hold":
+            _log(
+                f"AI decision: HOLD before '{det_next}' "
+                f"(lane={snap.get('lane_holder')}, "
+                f"stations={snap.get('station_holders')})"
+            )
+            time.sleep(HOLD_SLEEP)
+            continue
+        if choice == "fault":
             ctx["fault_reason"] = (
-                f"{step_name} failed after {MAX_STEP_RETRIES} attempts"
+                f"AI tactical decision: fault before {det_next}"
             )
             _script_fault(ctx)
             return False
+
+        _log(f"AI decision: run '{det_next}'")
+        if not _run_step(det_next, ctx):
+            ctx.setdefault(
+                "fault_reason",
+                f"{det_next} failed after {MAX_STEP_RETRIES} attempts",
+            )
+            _script_fault(ctx)
+            return False
+        completed.append(det_next)
+
+    if [s for s in _NORMAL_STEPS if s not in completed]:
+        ctx["fault_reason"] = "decision loop hit iteration cap before completion"
+        _script_fault(ctx)
+        return False
 
     _log(f"task complete: pkg={ctx['package_id']}")
     _post(f"/agv/{AGV_ID}/health", {"health": "alive"})
@@ -289,16 +425,21 @@ def _fetch_route_ctx() -> Optional[dict]:
         return None
 
     stations = wh.get("stations", {})
-    lane_cells = wh.get("lanes", [])
-    bay = list(agv_cfg.get("bay_cell", [0, 0]))
-    input_station = list(stations.get("input_arm", bay))
-    output_station = list(stations.get("output_arm", bay))
+    lane = wh.get("lane", {})
+    lane_cells = [list(c) for c in lane.get("cells", [])]
+    bay = list(agv_cfg.get("bay", [0, 0]))
+    in_st = stations.get("input_arm", {})
+    out_st = stations.get("output_arm", {})
+    # AGV parks at the DOCK cell beside the arm — never on the arm's own cell.
+    input_dock = list(in_st.get("dock") or in_st.get("cell", bay))
+    output_dock = list(out_st.get("dock") or out_st.get("cell", bay))
 
     return {
         "bay": bay,
-        "route_to_input": _straight_path(bay, input_station),
-        "lane_cells": [list(c) for c in lane_cells] or [input_station],
-        "route_to_output": _straight_path(input_station, output_station),
+        "route_to_input": _straight_path(bay, input_dock),
+        "lane_cells": lane_cells or _straight_path(input_dock, output_dock),
+        "route_to_output": [output_dock],
+        "route_to_bay": _straight_path(output_dock, bay),
     }
 
 

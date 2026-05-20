@@ -152,6 +152,22 @@ def plan_task():
             bus.publish("plan", plan_result["plan"])
             n = len(plan_result["plan"].get("assignments", []))
             _emit_log("info", f"Plan ready: {n} assignments", "planner")
+            # Deliver the Master-AI plan to the AGV/arm agents. This runs
+            # OUTSIDE the planning_window (closed above), so the agents'
+            # tactical qwen14b calls during execution are allowed (the one
+            # qwq:32b->qwen14b swap happens here and stays resident).
+            try:
+                from app.services.plan_executor import dispatch_plan
+                exec_res = dispatch_plan(plan_result["plan"])
+                plan_result["execution"] = exec_res
+                _emit_log(
+                    "info",
+                    f"Plan handed to agents: {len(exec_res.get('dispatched', []))} "
+                    f"AGV(s) executing",
+                    "planner",
+                )
+            except Exception as exc:  # noqa: BLE001
+                _emit_log("error", f"Plan dispatch failed: {exc}", "planner")
         else:
             _emit_log("error", f"Plan failed: {plan_result.get('error', '?')}", "planner")
 

@@ -27,7 +27,7 @@ from typing import Dict, Any
 from flask import Blueprint, jsonify, request
 
 from app import socketio
-from app.models import agv_state, grid_state, pipeline_config
+from app.models import agv_state, arm_state, grid_state, pipeline_config
 
 # ── Load/unload signal registry (transient, cleared per task) ─────────────────
 # Maps agv_id -> {"load_ready": bool, "unload_ready": bool, "object_id": str|None}
@@ -87,6 +87,49 @@ def get_grid():
     return jsonify({
         "warehouse": pipeline_config.get_warehouse_scene(),
         "runtime": grid_state.snapshot(),
+    })
+
+
+@agv_bp.route("/coord/snapshot", methods=["GET"])
+def coord_snapshot():
+    """Full live coordination state for an agent's tactical AI.
+
+    This is the 'shared status' channel: every AGV/arm brain reads this before
+    deciding its next script, so each agent's qwen14b reasons about what the
+    OTHERS are doing (who holds the lane, who is docked where, arm health,
+    the master plan's assignments) — i.e. AGV<->AGV and AGV<->arm coordinate
+    through this single snapshot rather than peer-to-peer.
+    """
+    agvs = {
+        aid: {
+            "cell": rec.get("cell"),
+            "status": rec.get("status"),
+            "carried_object": rec.get("carried_object"),
+            "bay": rec.get("bay"),
+        }
+        for aid, rec in agv_state.get_all().items()
+    }
+    station_holders = {
+        name: grid_state.station_lock(name).holder()
+        for name in ("input_arm", "output_arm")
+    }
+    try:
+        arms = arm_state.get_all_health()
+    except Exception:
+        arms = {}
+    try:
+        from app.agents.central_brain import get_brain
+        plan = get_brain().get_current_plan() or {}
+        assignments = plan.get("assignments", [])
+    except Exception:
+        assignments = []
+
+    return jsonify({
+        "agvs": agvs,
+        "lane_holder": grid_state.lane().holder(),
+        "station_holders": station_holders,
+        "arms": arms,
+        "assignments": assignments,
     })
 
 
@@ -188,6 +231,64 @@ def set_agv_health(agv_id):
     if updated:
         _emit_agv(updated)
     return jsonify({"status": "ok", "agv": _agv_payload(updated or rec)})
+
+
+# ── Station docking locks — one AGV at input/output arm at a time ─────────────
+
+@agv_bp.route("/agv/station/acquire", methods=["POST"])
+def acquire_station():
+    """Block until an arm station is free, then grant it to agv_id.
+
+    Body: {"agv_id": "agv-1", "station": "input_arm", "timeout": 60}
+    Returns: {"status": "acquired"|"timeout"|"cancelled"}
+    """
+    data = request.get_json(silent=True) or {}
+    agv_id = (data.get("agv_id") or "").strip()
+    station = (data.get("station") or "").strip()
+    timeout = float(data.get("timeout", 60.0))
+
+    if not agv_id or not station:
+        return jsonify({"status": "error", "error": "agv_id and station required"}), 400
+
+    lock = grid_state.station_lock(station)
+
+    def cancel_check() -> bool:
+        return agv_state.is_alive(agv_id)
+
+    ok = lock.acquire(agv_id, timeout=timeout, cancel_check=cancel_check)
+    if ok:
+        socketio.emit("log_message", {
+            "timestamp": _ts(), "source": agv_id,
+            "message": f"{agv_id} acquired station {station}",
+        })
+        socketio.emit("grid_update", grid_state.snapshot())
+        return jsonify({"status": "acquired"})
+
+    if not cancel_check():
+        return jsonify({"status": "cancelled"})
+    return jsonify({"status": "timeout"})
+
+
+@agv_bp.route("/agv/station/release", methods=["POST"])
+def release_station():
+    """Release an arm station held by agv_id.
+
+    Body: {"agv_id": "agv-1", "station": "input_arm"}
+    Returns: {"status": "released"|"not_holder"}
+    """
+    data = request.get_json(silent=True) or {}
+    agv_id = (data.get("agv_id") or "").strip()
+    station = (data.get("station") or "").strip()
+    if not agv_id or not station:
+        return jsonify({"status": "error", "error": "agv_id and station required"}), 400
+
+    released = grid_state.station_lock(station).release(agv_id)
+    socketio.emit("log_message", {
+        "timestamp": _ts(), "source": agv_id,
+        "message": f"{agv_id} {'released' if released else 'tried to release (not holder)'} station {station}",
+    })
+    socketio.emit("grid_update", grid_state.snapshot())
+    return jsonify({"status": "released" if released else "not_holder"})
 
 
 # ── Phase 5: shared lane mutual-exclusion endpoints ───────────────────────────
