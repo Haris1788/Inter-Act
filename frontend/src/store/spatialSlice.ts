@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { AgvKinematics, RootStore, SpatialSlice } from "./types";
+import type { AgvKinematics, RootStore, SpatialSlice, TablePackage } from "./types";
 
 const DEFAULT_KIN: AgvKinematics = {
   pos: { x: 0, y: 0 },
@@ -21,6 +21,9 @@ export const createSpatialSlice: StateCreator<
   trajectories: [],
   dockGlows: [],
   reachability: [],
+  armAngles: {},
+  tablePkgs: {},
+  agvCargo: {},
 
   tick: (dtMs) =>
     set((s) => {
@@ -134,6 +137,15 @@ export const createSpatialSlice: StateCreator<
       };
     }),
 
+  setArmAngle: (armId, angle) =>
+    set((s) => ({ armAngles: { ...s.armAngles, [armId]: angle } })),
+
+  setTablePkgs: (station, pkgs: TablePackage[]) =>
+    set((s) => ({ tablePkgs: { ...s.tablePkgs, [station]: pkgs } })),
+
+  setAgvCargo: (agvId, packageId) =>
+    set((s) => ({ agvCargo: { ...s.agvCargo, [agvId]: packageId } })),
+
   emitTrajectory: (t) =>
     set((s) => ({
       trajectories: [...s.trajectories.filter((x) => x.id !== t.id), t].slice(
@@ -148,10 +160,12 @@ export const createSpatialSlice: StateCreator<
 
   clearSpatialRuntime: () =>
     set((s) => ({
-      // keep persistent (fadeMsLeft == null) items, drop runtime ones
       trajectories: s.trajectories.filter((t) => t.fadeMsLeft == null),
       dockGlows: s.dockGlows.filter((g) => g.fadeMsLeft == null),
       agvKinematics: {},
+      armAngles: {},
+      tablePkgs: {},
+      agvCargo: {},
     })),
 
   hydrateSpatial: (patch) => set(() => ({ ...patch })),

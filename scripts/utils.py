@@ -238,3 +238,43 @@ def print_result(arm_id, angle, step=None, total=None):
         print(f"[Step {step}/{total}] Arm {arm_id} -> {angle:.1f} deg")
     else:
         print(f"Arm {arm_id} -> {angle:.1f} deg")
+
+
+# ---------------------------------------------------------------------------
+# AGV helpers (Phase 5).
+# ---------------------------------------------------------------------------
+
+def send_agv_move(host, agv_id, cell):
+    """POST /agv/<id>/move to update AGV position on the backend."""
+    try:
+        resp = requests.post(
+            f"{host}/agv/{agv_id}/move",
+            json={"cell": list(cell)},
+            timeout=5,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def send_agv_health(host, agv_id, health, error=None):
+    """POST /agv/<id>/health to report AGV container health."""
+    try:
+        requests.post(
+            f"{host}/agv/{agv_id}/health",
+            json={"health": health, "error": error},
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def is_agv_allowed_http(host, agv_id):
+    """Return True if the AGV is in a non-faulted state (fail-open)."""
+    try:
+        resp = requests.get(f"{host}/agv/state/{agv_id}", timeout=5)
+        if resp.status_code == 200:
+            return resp.json().get("status") not in ("faulted", "stopped")
+    except Exception:
+        pass
+    return True

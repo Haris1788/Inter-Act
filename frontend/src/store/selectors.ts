@@ -62,3 +62,6 @@ export const useTrajectories = () => useStore((s) => s.trajectories);
 export const useReachability = () => useStore((s) => s.reachability);
 export const useDockGlows = () => useStore((s) => s.dockGlows);
 export const useAgvKinematics = () => useStore((s) => s.agvKinematics);
+export const useArmAngles = () => useStore((s) => s.armAngles);
+export const useTablePkgs = () => useStore((s) => s.tablePkgs);
+export const useAgvCargo = () => useStore((s) => s.agvCargo);

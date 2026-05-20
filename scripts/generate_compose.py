@@ -70,6 +70,15 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
     arms = cfg.get("arms") or []
     assets = _non_arm_assets(cfg)
     asset_ports = _asset_host_ports(assets)
+    agvs = (cfg.get("warehouse") or {}).get("agvs") or []
+    ai_cfg = cfg.get("ai") or {}
+    ollama_base_url = ai_cfg.get("ollama_base_url", "http://ollama:11434")
+    # The heavy two-model AI layer (llm_service) points at the TU Clausthal
+    # tunnel, separate from qwen_brain's local container. Defaults to the
+    # ollama url if not configured (back-compat).
+    llm_base_url = ai_cfg.get("llm_base_url", ollama_base_url)
+    model_planner = ai_cfg.get("model_planner", "qwq:32b-q4_K_M")
+    model_tactical = ai_cfg.get("model_tactical", "qwen2.5:14b-instruct-q4_K_M")
 
     services = {
         "ollama": {
@@ -92,8 +101,10 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
             "environment": [
                 "SERVER_HOST=http://backend:5000",
                 "DEMO_RUNNER_HOST=http://demo-runner:6000",
-                "OLLAMA_BASE_URL=http://ollama:11434",
-                "OLLAMA_MODEL=qwen2.5:0.5b",
+                f"OLLAMA_BASE_URL={ollama_base_url}",
+                f"LLM_BASE_URL={llm_base_url}",
+                f"OLLAMA_MODEL_PLANNER={model_planner}",
+                f"OLLAMA_MODEL_TACTICAL={model_tactical}",
                 "PIPELINE_CONFIG=/config/pipeline.yaml",
                 "FLASK_ENV=production",
                 "FLASK_DEBUG=0",
@@ -119,6 +130,10 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
                 "retries": 20,
                 "start_period": "5s",
             },
+            # So the container can reach the TU Clausthal reverse-SSH tunnel
+            # bound on the host (host.docker.internal:11500). Resolves
+            # automatically on Docker Desktop; required on a Linux host.
+            "extra_hosts": ["host.docker.internal:host-gateway"],
             "depends_on": {"ollama": {"condition": "service_healthy"}},
         },
         "frontend": {
@@ -152,18 +167,24 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
         },
     }
 
-    # ARMS & ASSETS ARE NO LONGER COMPOSE SERVICES.
-    #
-    # Actor containers are ephemeral runtime entities owned by topology
-    # reconciliation (app/services/container_manager.reconcile_actors),
-    # tagged with explicit `interact.role=actor` labels. Compose now only
-    # defines the persistent core infrastructure (ollama / backend /
-    # frontend / demo-runner). This kills the static-compose-vs-bridge
-    # namespace fragmentation: one ownership model, label-based, decentralised.
-    #
-    # `arms`/`assets` are still parsed above so `type: conveyor` is rejected
-    # loudly at compose-gen time and the run summary stays informative.
-    _ = (arms, asset_ports)  # parsed for validation/summary only
+    # Arms are managed dynamically by topology reconciliation (container_manager).
+    # AGVs are static infrastructure — always running, one container per AGV.
+    _ = (arms, asset_ports)  # arms parsed for validation/summary only
+
+    for i, agv in enumerate(agvs, start=1):
+        agv_id = agv["id"]
+        services[agv_id] = {
+            "build": {"context": ".", "dockerfile": "docker/Dockerfile.agv"},
+            "container_name": f"{COMPOSE_PREFIX}-{agv_id}",
+            "ports": [f"{8100 + i}:8100"],
+            "environment": [
+                f"AGV_ID={agv_id}",
+                "SERVER_HOST=http://backend:5000",
+                f"OLLAMA_BASE_URL={ollama_base_url}",
+                "PYTHONUNBUFFERED=1",
+            ],
+            "depends_on": {"backend": {"condition": "service_healthy"}},
+        }
 
     compose = {"services": services, "volumes": {"ollama_data": {}}}
 
@@ -171,14 +192,13 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
         yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
 
     arm_names = ", ".join(f"arm-{a['id']}" for a in arms) if arms else "-"
-    asset_names = ", ".join(a["id"] for a in assets) if assets else "-"
-    print(f"Generated {output_path} (core infrastructure only)")
-    print(f"  Core services : {len(services)} (ollama, backend, frontend, demo-runner)")
-    print(f"  Actors (reconciled at deploy, NOT compose):")
-    print(f"    Arms   : {len(arms)} ({arm_names})")
-    print(f"    Assets : {len(assets)} ({asset_names})")
-    print("\nRun core: docker compose up -d --build")
-    print("Actors are created/removed by topology reconciliation on Deploy.")
+    agv_names = ", ".join(a["id"] for a in agvs) if agvs else "-"
+    print(f"Generated {output_path}")
+    print(f"  Core    : ollama, backend, frontend, demo-runner")
+    print(f"  AGVs    : {len(agvs)} ({agv_names})  — static compose services")
+    print(f"  Arms    : {len(arms)} ({arm_names})  — reconciled at deploy")
+    print(f"  Ollama  : {ollama_base_url}")
+    print("\nRun: docker compose up --build")
 
 
 if __name__ == "__main__":

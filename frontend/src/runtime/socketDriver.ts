@@ -357,6 +357,56 @@ export function createSocketDriver(): RuntimeDriver {
         },
       );
 
+      socket.on(
+        "agv_update",
+        (p: {
+          id: string;
+          status?: string;
+          color?: string;
+          px?: { x: number; y: number } | null;
+          target_px?: { x: number; y: number } | null;
+          carried_object?: string | null;
+          error?: string | null;
+        }) => {
+          const s = st();
+          const existing = s.agvKinematics[p.id];
+          const dest = p.target_px ?? p.px;
+          if (!existing || !existing.pos) {
+            // First sighting: drop the AGV at its real position (its bay) so
+            // it doesn't animate in from the origin.
+            if (p.px) s.setAgvKinematics(p.id, { pos: { x: p.px.x, y: p.px.y } });
+          } else if (dest) {
+            // Subsequent updates: set the new cell as a TARGET and let the
+            // spatial tick() ease the body there — continuous vehicle motion
+            // instead of cell-to-cell snapping. Speed is tuned ABOVE the
+            // backend cell cadence (120px / 0.5s = 240px/s) so the visual
+            // token tracks the AGV's logical cell instead of lagging behind
+            // it; otherwise arm/load choreography (which keys off the logical
+            // cell) fires while the token is still mid-path.
+            s.setAgvTarget(p.id, { x: dest.x, y: dest.y }, 260);
+          }
+          const status =
+            p.status === "faulted" || p.status === "stopped" ? "down"
+            : p.status === "moving" || p.status === "loading" || p.status === "unloading" || p.status === "returning" ? "warn"
+            : "ok";
+          s.setActorRuntime(p.id, { status, phase: p.status ?? "" });
+          if (p.carried_object !== undefined) {
+            s.setAgvCargo(p.id, p.carried_object ?? null);
+          }
+        },
+      );
+
+      socket.on("arm_angle_update", (p: { arm_id: number; angle: number }) => {
+        st().setArmAngle(`arm-${p.arm_id}`, p.angle);
+      });
+
+      socket.on(
+        "table_update",
+        (p: { station: string; packages: Array<{ id: string; color: string }> }) => {
+          st().setTablePkgs(p.station, p.packages);
+        },
+      );
+
       socket.on("objects_reset", () => {
         objSeq.clear();
         objOwner.clear();

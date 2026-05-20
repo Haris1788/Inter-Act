@@ -389,6 +389,10 @@ def generate_scene_config():  # noqa: F811 - intentional override
     valid, errors = validate_asset_graph()
     base["graph_valid"] = valid
     base["graph_errors"] = errors
+    # Warehouse grid + AGV bays for the React/Konva overlay.
+    wh = get_warehouse_scene()
+    if wh:
+        base["warehouse"] = wh
     return base
 
 
@@ -927,3 +931,122 @@ def reload():
     global _config
     _config = None
     load_config()
+
+
+# ---------------------------------------------------------------------------
+# Warehouse / AGV grid (Phase 2).
+# ---------------------------------------------------------------------------
+
+_GRID_DEFAULTS = {"cols": 12, "rows": 6, "cell_px": 54}
+_ORIGIN_DEFAULTS = {"x": 120, "y": 620}
+
+
+def get_warehouse_config():
+    """Return the raw `warehouse:` dict, or {} when not configured."""
+    return get_config().get("warehouse") or {}
+
+
+def has_warehouse():
+    return bool(get_warehouse_config())
+
+
+def get_grid():
+    """Return {cols, rows, cell_px, origin:{x,y}} with defaults filled in."""
+    wh = get_warehouse_config()
+    if not wh:
+        return {}
+    grid = {**_GRID_DEFAULTS, **(wh.get("grid") or {})}
+    grid["origin"] = {**_ORIGIN_DEFAULTS, **(wh.get("origin") or {})}
+    return grid
+
+
+def get_agvs():
+    """Return the list of AGV config dicts ({id,label,color,bay:[c,r]})."""
+    return list(get_warehouse_config().get("agvs") or [])
+
+
+def get_agv_ids():
+    return [a["id"] for a in get_agvs()]
+
+
+def get_agv(agv_id):
+    for a in get_agvs():
+        if a["id"] == agv_id:
+            return a
+    return None
+
+
+def get_lane_cells():
+    """Ordered list of [col,row] cells forming the shared travel lane."""
+    return [list(c) for c in (get_warehouse_config().get("lane") or [])]
+
+
+def get_stations():
+    """Return {input_arm:{cell,label,served_by}, output_arm:{...}}."""
+    return dict(get_warehouse_config().get("stations") or {})
+
+
+def get_station(name):
+    return get_stations().get(name)
+
+
+def cell_to_px(cell):
+    """Convert a [col,row] grid cell to the pixel CENTRE of that cell."""
+    grid = get_grid()
+    if not grid or not cell or len(cell) < 2:
+        return None
+    col, row = cell[0], cell[1]
+    ox, oy = grid["origin"]["x"], grid["origin"]["y"]
+    cp = grid["cell_px"]
+    return {"x": ox + (col + 0.5) * cp, "y": oy + (row + 0.5) * cp}
+
+
+def cell_in_grid(cell):
+    """True when [col,row] is inside the configured grid bounds."""
+    grid = get_grid()
+    if not grid or not cell or len(cell) < 2:
+        return False
+    col, row = cell[0], cell[1]
+    return 0 <= col < grid["cols"] and 0 <= row < grid["rows"]
+
+
+def get_warehouse_scene():
+    """Build the px-space warehouse scene for /config (or {} if none)."""
+    wh = get_warehouse_config()
+    if not wh:
+        return {}
+    grid = get_grid()
+    grid_out = {
+        **grid,
+        "width": grid["cols"] * grid["cell_px"],
+        "height": grid["rows"] * grid["cell_px"],
+    }
+
+    stations = {}
+    for name, st in get_stations().items():
+        cell = list(st.get("cell", [0, 0]))
+        dock = list(st.get("dock") or cell)
+        stations[name] = {
+            "cell": cell,
+            "px": cell_to_px(cell),
+            "dock": dock,
+            "dock_px": cell_to_px(dock),
+            "label": st.get("label", name),
+            "served_by": st.get("served_by"),
+        }
+
+    lane_cells = get_lane_cells()
+    lane = {"cells": lane_cells, "px": [cell_to_px(c) for c in lane_cells]}
+
+    agvs = []
+    for a in get_agvs():
+        bay = list(a.get("bay", [0, 0]))
+        agvs.append({
+            "id": a["id"],
+            "label": a.get("label", a["id"]),
+            "color": a.get("color", "#16a085"),
+            "bay": bay,
+            "bay_px": cell_to_px(bay),
+        })
+
+    return {"grid": grid_out, "stations": stations, "lane": lane, "agvs": agvs}
