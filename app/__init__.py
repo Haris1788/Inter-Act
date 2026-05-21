@@ -75,6 +75,9 @@ def create_app(config_class=None):
     bus = SocketIOBus()                  # SocketIOBus() — no args; uses app.socketio internally
     set_bus(bus)                          # module-level singleton (used by get_bus())
     actor_registry.attach(bus)            # subscribe to ACTOR_ONLINE / CAPABILITY_DECLARED / ACTOR_OFFLINE
+
+    from app.services import task_availability
+    task_availability.attach(bus)
     app.extensions["message_bus"] = bus
     app.extensions["central_brain"] = CentralBrain(bus)
 

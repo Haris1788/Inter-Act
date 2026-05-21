@@ -104,6 +104,48 @@ def assign():
     }), 202
 
 
+@app.route("/evaluate_task", methods=["POST"])
+def evaluate_task():
+    """Backend asks: 'can you do this task?' AGV checks locally and replies
+    via the bus (TASK_AVAILABILITY). Returns 202 immediately."""
+    from events import TASK_AVAILABILITY, make_envelope
+    import bus_client
+
+    data = request.get_json(silent=True) or {}
+    task_id = data.get("taskId")
+    task = data.get("task", {})
+    if not task_id:
+        return jsonify({"error": "missing taskId"}), 400
+
+    def _evaluate_and_reply():
+        # Local evaluation: am I free? Can I reach what the task needs?
+        with _task_lock:
+            busy = (_task_status == "running")
+        required_stations = task.get("requiredStations") or []
+        # In this layout every AGV can reach both stations; this still keeps
+        # the check honest if capabilities ever diverge per AGV.
+        can_reach = all(s in ["input_arm", "output_arm"]
+                        for s in required_stations)
+
+        available = (not busy) and can_reach
+        reason = (
+            "busy" if busy else
+            "cannot reach required station" if not can_reach else
+            "ready"
+        )
+        # Simple score: free + reachable = 1.0; tweak in Step 4 if needed.
+        score = 1.0 if available else 0.0
+
+        bus_client.publish(make_envelope(
+            TASK_AVAILABILITY, AGV_ID,
+            {"available": available, "score": score, "reason": reason},
+            task_id=task_id,
+        ))
+
+    threading.Thread(target=_evaluate_and_reply, daemon=True).start()
+    return jsonify({"status": "accepted"}), 202
+
+
 def _handle_shutdown(signum, frame) -> None:
     """On SIGTERM/SIGINT: notify backend immediately, then exit.
 

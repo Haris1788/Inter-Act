@@ -88,6 +88,36 @@ def sequence():
     )
 
 
+@app.route("/evaluate_task", methods=["POST"])
+def evaluate_task():
+    from events import TASK_AVAILABILITY, make_envelope
+    import bus_client
+
+    data = request.get_json(silent=True) or {}
+    task_id = data.get("taskId")
+    task = data.get("task", {})
+    if not task_id:
+        return jsonify({"error": "missing taskId"}), 400
+
+    def _evaluate_and_reply():
+        actor_id = f"arm-{ARM_ID}"
+        required_roles = task.get("requiredRoles") or []
+        # role was set in Step 2 via /grid. For Step 3 we keep it simple:
+        # arm participates if no roles are demanded, or its role is in the list.
+        my_role = os.environ.get("ARM_ROLE", "generic")
+        available = (not required_roles) or (my_role in required_roles)
+
+        bus_client.publish(make_envelope(
+            TASK_AVAILABILITY, actor_id,
+            {"available": available, "score": 1.0 if available else 0.0,
+             "reason": "ready" if available else f"role {my_role} not required"},
+            task_id=task_id,
+        ))
+
+    threading.Thread(target=_evaluate_and_reply, daemon=True).start()
+    return jsonify({"status": "accepted"}), 202
+
+
 def _handle_shutdown(signum, frame):
     """Immediately notify backend that this arm is shutting down, then exit.
 

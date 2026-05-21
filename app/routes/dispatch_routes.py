@@ -252,6 +252,59 @@ def bus_roster():
     return jsonify({"actors": actor_registry.list_actors()})
 
 
+@dispatch_bp.route("/bus/task/create", methods=["POST"])
+def bus_task_create():
+    """Phase-2 Step 3: publish TASK_CREATED and ask each actor to self-evaluate.
+
+    Body: {"taskId":"task-abc","task":{"requiredStations":["input_arm","output_arm"],
+                                       "requiredRoles":["input","output"], ...}}
+    Returns: collected TASK_AVAILABILITY responses after a 1.5s window.
+    """
+    from flask import request, jsonify
+    from app.agents.events import TASK_CREATED, make_envelope
+    from app.agents.message_bus import get_bus
+    from app.services import actor_registry, task_availability
+    import requests as _req
+    import uuid
+
+    body = request.get_json(silent=True) or {}
+    task_id = body.get("taskId") or f"task-{uuid.uuid4().hex[:8]}"
+    task = body.get("task") or {}
+
+    task_availability.open_round(task_id)
+
+    # Publish TASK_CREATED (for UI / logs / Sneh's Message-bus tab).
+    get_bus().publish(TASK_CREATED, make_envelope(
+        TASK_CREATED, "interpreter", task, task_id=task_id
+    ))
+
+    # Transitional HTTP fan-out (replace with bus.publish once SSE lands).
+    actor_urls = {
+        # Inside the docker network, actors are reachable by service name.
+        "agv-1": "http://agv-1:8100",
+        "agv-2": "http://agv-2:8100",
+        "agv-3": "http://agv-3:8100",
+        "arm-1": "http://arm-1:8000",
+        "arm-2": "http://arm-2:8000",
+    }
+    for actor in actor_registry.list_actors():
+        url = actor_urls.get(actor["actorId"])
+        if not url:
+            continue
+        try:
+            _req.post(f"{url}/evaluate_task",
+                      json={"taskId": task_id, "task": task}, timeout=1.0)
+        except Exception:
+            pass  # missing actors fail their own evaluation by silence
+
+    responses = task_availability.collect(task_id, window_s=1.5)
+    return jsonify({
+        "taskId": task_id,
+        "responses": responses,
+        "count": len(responses),
+    })
+
+
 @dispatch_bp.route("/demo/dispatch", methods=["POST"])
 def dispatch():
     """Dispatch packages through the AGV workflow.
