@@ -1,49 +1,22 @@
-"""Phase 2 event taxonomy — single source of truth.
+"""Backend re-export of the Phase-2 event taxonomy.
 
-ALL bus traffic uses one of the constants below as its `type` field.
-Adding a new event? Add it here first, then commit, then use it.
+The actual definitions live in scripts/events.py so that AGV and arm
+containers (which only COPY scripts/) can import them too. Keep this file
+to a re-export only — never duplicate constants here.
 """
+from __future__ import annotations
 
-# ── Lifecycle ────────────────────────────────────────────────────────────────
-ACTOR_ONLINE         = "ACTOR_ONLINE"          # actor boots, announces itself
-ACTOR_OFFLINE        = "ACTOR_OFFLINE"         # actor shuts down cleanly
-CAPABILITY_DECLARED  = "CAPABILITY_DECLARED"   # actor advertises what it can do
+import sys
+import pathlib
 
-# ── Task lifecycle ───────────────────────────────────────────────────────────
-TASK_CREATED         = "TASK_CREATED"          # Interpreter → all actors
-TASK_AVAILABILITY    = "TASK_AVAILABILITY"     # actor → Interpreter (can I participate?)
-PATH_PROPOSED        = "PATH_PROPOSED"         # Interpreter → named actors
-PATH_ACCEPTED        = "PATH_ACCEPTED"         # actor → bus
-PATH_REJECTED        = "PATH_REJECTED"         # actor → bus, with reason
-TASK_COMPLETED       = "TASK_COMPLETED"        # final actor → bus
+_SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "scripts"
+sys.path.insert(0, str(_SCRIPTS_DIR))
 
-# ── Busy state ───────────────────────────────────────────────────────────────
-ACTOR_BUSY           = "ACTOR_BUSY"
-ACTOR_FREE           = "ACTOR_FREE"
-
-# ── Failure ──────────────────────────────────────────────────────────────────
-ACTOR_FAILED         = "ACTOR_FAILED"
-REPLAN_REQUIRED      = "REPLAN_REQUIRED"
-
-
-def make_envelope(event_type: str, actor_id: str, payload: dict,
-                  task_id: str | None = None,
-                  correlation_id: str | None = None) -> dict:
-    """Build a Phase-2 envelope. Used by every publisher.
-
-    Shape:
-        {"type", "actorId", "taskId"?, "correlationId"?, "ts", "payload"}
-    """
-    import time, uuid
-    env = {
-        "type": event_type,
-        "actorId": actor_id,
-        "ts": time.time(),
-        "msgId": uuid.uuid4().hex,
-        "payload": payload,
-    }
-    if task_id is not None:
-        env["taskId"] = task_id
-    if correlation_id is not None:
-        env["correlationId"] = correlation_id
-    return env
+from events import (  # noqa: F401  (re-export)
+    ACTOR_ONLINE, ACTOR_OFFLINE, CAPABILITY_DECLARED,
+    TASK_CREATED, TASK_AVAILABILITY, PATH_PROPOSED,
+    PATH_ACCEPTED, PATH_REJECTED, TASK_COMPLETED,
+    ACTOR_BUSY, ACTOR_FREE,
+    ACTOR_FAILED, REPLAN_REQUIRED,
+    make_envelope,
+)

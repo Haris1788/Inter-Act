@@ -233,6 +233,25 @@ def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c") 
         pass
 
 
+@dispatch_bp.route("/bus/publish", methods=["POST"])
+def bus_publish_stub():
+    from flask import request, jsonify
+    from app.agents.message_bus import get_bus
+    env = request.get_json(silent=True) or {}
+    try:
+        get_bus().publish(env.get("type", "unknown"), env)
+        return jsonify({"status": "ok"})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+@dispatch_bp.route("/bus/roster", methods=["GET"])
+def bus_roster():
+    from app.services import actor_registry
+    from flask import jsonify
+    return jsonify({"actors": actor_registry.list_actors()})
+
+
 @dispatch_bp.route("/demo/dispatch", methods=["POST"])
 def dispatch():
     """Dispatch packages through the AGV workflow.

@@ -5,7 +5,9 @@ WORKDIR /agv
 # Install only what the AGV microservice needs
 RUN pip install --no-cache-dir flask requests
 
-# Copy scripts directory (agv_server.py, agv_brain.py, utils.py)
+# Copy scripts directory (agv_server.py, agv_brain.py, utils.py,
+# bus_client.py, events.py — the Phase-2 event taxonomy lives in scripts/
+# so actor containers don't need the backend app/ package).
 COPY scripts/ ./scripts/
 
 EXPOSE 8100

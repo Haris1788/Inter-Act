@@ -12,6 +12,7 @@ Usage:
 
 import os
 import sys
+import time
 import signal
 import threading
 import argparse
@@ -117,6 +118,41 @@ def _handle_shutdown(signum, frame) -> None:
 
 signal.signal(signal.SIGTERM, _handle_shutdown)
 signal.signal(signal.SIGINT, _handle_shutdown)
+
+
+# ── Phase 2: announce on the bus at startup (with retry until backend ready) ──
+def _announce_self() -> None:
+    """Publish ACTOR_ONLINE then CAPABILITY_DECLARED.
+
+    Retries every 2s until backend's /bus/publish accepts the message — this
+    covers the boot race where the AGV starts before backend's routes register.
+    """
+    import bus_client
+    from events import (
+        ACTOR_ONLINE, CAPABILITY_DECLARED, make_envelope,
+    )
+
+    online_env = make_envelope(ACTOR_ONLINE, AGV_ID, {"kind": "agv"})
+    cap_env = make_envelope(CAPABILITY_DECLARED, AGV_ID, {
+        "kind": "agv",
+        "canReach": ["input_arm", "output_arm"],
+        "speed": float(os.environ.get("SPEED_FACTOR", "1.0")),
+        "capacity": 1,
+        "status": "FREE",
+    })
+
+    # Retry loop — gives up after ~60s but keeps the AGV alive either way.
+    for attempt in range(30):
+        if bus_client.publish(online_env):
+            bus_client.publish(cap_env)
+            print(f"[{AGV_ID}] announced on bus (attempt {attempt+1})", flush=True)
+            return
+        time.sleep(2.0)
+    print(f"[{AGV_ID}] WARN: could not announce on bus after 30 attempts", flush=True)
+
+
+# Run the announce in a daemon thread so Flask startup isn't blocked.
+threading.Thread(target=_announce_self, daemon=True).start()
 
 
 if __name__ == "__main__":

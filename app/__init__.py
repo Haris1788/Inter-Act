@@ -67,17 +67,16 @@ def create_app(config_class=None):
     except Exception as exc:
         print(f"[startup] AGV pre-register skipped: {exc}")
 
-    # Init AI planning pipeline: MessageBus + CentralBrain singletons.
-    try:
-        from app.agents.message_bus import SocketIOBus
-        from app.agents.central_brain import CentralBrain
+    # Phase 2 bus + registry + central brain. Loud on failure — no try/except.
+    from app.agents.message_bus import SocketIOBus, set_bus
+    from app.agents.central_brain import CentralBrain
+    from app.services import actor_registry
 
-        bus = SocketIOBus(socketio)
-        brain = CentralBrain(bus)
-        app.extensions["central_brain"] = brain
-        app.extensions["message_bus"] = bus
-    except Exception as exc:
-        print(f"[startup] central_brain init skipped: {exc}")
+    bus = SocketIOBus()                  # SocketIOBus() — no args; uses app.socketio internally
+    set_bus(bus)                          # module-level singleton (used by get_bus())
+    actor_registry.attach(bus)            # subscribe to ACTOR_ONLINE / CAPABILITY_DECLARED / ACTOR_OFFLINE
+    app.extensions["message_bus"] = bus
+    app.extensions["central_brain"] = CentralBrain(bus)
 
     # Start health monitor for arm + asset containers (runs in background thread)
     from app.services.health_monitor import start as start_health_monitor

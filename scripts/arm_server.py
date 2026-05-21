@@ -106,6 +106,34 @@ signal.signal(signal.SIGTERM, _handle_shutdown)
 signal.signal(signal.SIGINT, _handle_shutdown)
 
 
+def _announce_self() -> None:
+    """Publish ACTOR_ONLINE then CAPABILITY_DECLARED with retry."""
+    import bus_client
+    from events import (
+        ACTOR_ONLINE, CAPABILITY_DECLARED, make_envelope,
+    )
+
+    actor_id = f"arm-{ARM_ID}"
+    online_env = make_envelope(ACTOR_ONLINE, actor_id, {"kind": "arm"})
+    cap_env = make_envelope(CAPABILITY_DECLARED, actor_id, {
+        "kind": "arm",
+        "role": os.environ.get("ARM_ROLE", "generic"),
+        "reach_radius_deg": 180,
+        "status": "FREE",
+    })
+
+    for attempt in range(30):
+        if bus_client.publish(online_env):
+            bus_client.publish(cap_env)
+            print(f"[arm-{ARM_ID}] announced on bus (attempt {attempt+1})", flush=True)
+            return
+        time.sleep(2.0)
+    print(f"[arm-{ARM_ID}] WARN: could not announce on bus after 30 attempts", flush=True)
+
+
+threading.Thread(target=_announce_self, daemon=True).start()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=f"Arm {ARM_ID} Microservice")
     parser.add_argument(
