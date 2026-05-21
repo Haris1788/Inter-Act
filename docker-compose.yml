@@ -1,0 +1,138 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+    - ${OLLAMA_HOST_PORT:-11434}:11434
+    volumes:
+    - ollama_data:/root/.ollama
+    environment:
+    - OLLAMA_KEEP_ALIVE=24h
+    healthcheck:
+      test:
+      - CMD
+      - ollama
+      - list
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+  backend:
+    build: .
+    container_name: interact-backend
+    ports:
+    - ${BACKEND_HOST_PORT:-5000}:5000
+    environment:
+    - SERVER_HOST=http://backend:5000
+    - DEMO_RUNNER_HOST=http://demo-runner:6000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - LLM_BASE_URL=http://host.docker.internal:11500
+    - OLLAMA_MODEL_PLANNER=qwq:32b-q4_K_M
+    - OLLAMA_MODEL_TACTICAL=qwen2.5:14b-instruct-q4_K_M
+    - PIPELINE_CONFIG=/config/pipeline.yaml
+    - FLASK_ENV=production
+    - FLASK_DEBUG=0
+    - PYTHONUNBUFFERED=1
+    - CONTAINER_CONTROL=on
+    - COMPOSE_CONTAINER_PREFIX=interact
+    volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - ./pipeline.yaml:/config/pipeline.yaml:rw
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:5000/health',
+        timeout=3).read()
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    depends_on:
+      ollama:
+        condition: service_healthy
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    ports:
+    - 8080:80
+    depends_on:
+      backend:
+        condition: service_healthy
+  demo-runner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.demo-runner
+    container_name: interact-demo-runner
+    ports:
+    - ${DEMO_RUNNER_HOST_PORT:-6000}:6000
+    environment:
+    - SERVER_HOST=http://backend:5000
+    - PIPELINE_CONFIG=/config/pipeline.yaml
+    - PYTHONUNBUFFERED=1
+    volumes:
+    - ./pipeline.yaml:/config/pipeline.yaml:ro
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:6000/health',
+        timeout=3).read()
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+    depends_on:
+      backend:
+        condition: service_healthy
+  agv-1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agv
+    container_name: interact-agv-1
+    ports:
+    - 8101:8100
+    environment:
+    - AGV_ID=agv-1
+    - SERVER_HOST=http://backend:5000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - PYTHONUNBUFFERED=1
+    depends_on:
+      backend:
+        condition: service_healthy
+  agv-2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agv
+    container_name: interact-agv-2
+    ports:
+    - 8102:8100
+    environment:
+    - AGV_ID=agv-2
+    - SERVER_HOST=http://backend:5000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - PYTHONUNBUFFERED=1
+    depends_on:
+      backend:
+        condition: service_healthy
+  agv-3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agv
+    container_name: interact-agv-3
+    ports:
+    - 8103:8100
+    environment:
+    - AGV_ID=agv-3
+    - SERVER_HOST=http://backend:5000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - PYTHONUNBUFFERED=1
+    depends_on:
+      backend:
+        condition: service_healthy
+volumes:
+  ollama_data: {}
