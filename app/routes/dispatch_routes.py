@@ -24,6 +24,19 @@ from app.models import agv_state, pipeline_config
 
 dispatch_bp = Blueprint("dispatch", __name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2 design rule (US #29):
+#   - The MESSAGE BUS carries negotiation: TASK_CREATED, PATH_PROPOSED,
+#     PATH_ACCEPTED/REJECTED, ACTOR_BUSY/FREE, ACTOR_FAILED, TASK_COMPLETED.
+#   - EXECUTION traffic (move, load_ready, station/acquire, …) stays on the
+#     actors' existing direct HTTP endpoints. The bus is not a transport for
+#     position updates or signal polling — that would make it heavy.
+#   - Bridge between the two: the dispatch endpoint's final block above
+#     calls /assign on the chosen AGV after an 'agreed' path. From that
+#     point on, the bus sees nothing about this task until ACTOR_FAILED,
+#     TASK_COMPLETED, or ACTOR_FREE.
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Map of AGV container ports (host-side) so the backend can reach them.
 # Container-to-container: agv-1 listens on port 8100 inside docker network.
 _AGV_CONTAINER_URLS = {
@@ -391,6 +404,45 @@ def bus_task_dispatch():
         rejecters = [aid for aid, r in responses.items() if not r["accepted"]]
 
         if not rejecters and len(responses) == len(path):
+            # ── Step 6: peer-to-peer execution trigger ───────────────────────
+            # Bus served its purpose (negotiation). From here, execution rides
+            # the actors' existing HTTP endpoints — no more bus traffic.
+            chosen_agv = next((p for p in path if p.startswith("agv-")), None)
+            if chosen_agv:
+                package_id = f"pkg-{task_id[-8:]}"
+                color = (task.get("color")
+                         or _color_for(task.get("label", ""), 0)
+                         if "_color_for" in globals()
+                         else "#3498db")
+
+                # 1. Hand the assignment to the AGV's own /assign — its
+                #    agv_brain.run_task loop takes over from here.
+                try:
+                    _req.post(
+                        f"{actor_urls[chosen_agv]}/assign",
+                        json={
+                            "package_id": package_id,
+                            "agv_id": chosen_agv,
+                            "sequence": 1,
+                            "route": ["bay", "input", "output", "bay"],
+                            "label": task.get("label", ""),
+                        },
+                        timeout=1.0,
+                    )
+                except Exception:
+                    pass
+
+                # 2. Kick off the arm pick/place choreography that the AGV
+                #    will synchronise against (existing _auto_arm_signals
+                #    talks directly to arm containers via /set_angle).
+                if "_auto_arm_signals" in globals():
+                    import threading as _t
+                    _t.Thread(
+                        target=_auto_arm_signals,
+                        args=(chosen_agv, package_id, color),
+                        daemon=True,
+                    ).start()
+
             return jsonify({
                 "taskId": task_id, "status": "agreed",
                 "path": path, "responses": responses, "attempts": attempt + 1,

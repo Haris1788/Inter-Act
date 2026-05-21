@@ -119,7 +119,7 @@ def evaluate_task():
 
     def _evaluate_and_reply():
         with _task_lock:
-            busy = (_task_status == "running")
+            busy = _task_status in ("reserved", "running")
         required_stations = task.get("requiredStations") or []
         can_reach = all(s in ["input_arm", "output_arm"]
                         for s in required_stations)
@@ -154,14 +154,14 @@ def propose_path():
         from events import ACTOR_BUSY  # locally imported so we only pay if needed
         global _task_status
         with _task_lock:
-            busy = (_task_status == "running")
+            busy = _task_status in ("reserved", "running")
         in_path = AGV_ID in path
 
         if in_path and not busy:
             # Mark BUSY *before* publishing accept so subsequent TASK_CREATEDs
             # arriving in the same tick see the busy flag.
             with _task_lock:
-                _task_status = "running"
+                _task_status = "reserved"
                 _current_task = {"taskId": task_id, "path": path}
             bus_client.publish(make_envelope(
                 PATH_ACCEPTED, AGV_ID,
