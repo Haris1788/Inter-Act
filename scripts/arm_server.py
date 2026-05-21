@@ -118,6 +118,38 @@ def evaluate_task():
     return jsonify({"status": "accepted"}), 202
 
 
+@app.route("/propose_path", methods=["POST"])
+def propose_path():
+    from events import PATH_ACCEPTED, PATH_REJECTED, make_envelope
+    import bus_client
+
+    data = request.get_json(silent=True) or {}
+    task_id = data.get("taskId")
+    path = data.get("path", [])
+    if not task_id:
+        return jsonify({"error": "missing taskId"}), 400
+
+    def _decide_and_reply():
+        actor_id = f"arm-{ARM_ID}"
+        in_path = actor_id in path
+        # MVP: arms accept anything they're named in. Add busy check in Step 5.
+        if in_path:
+            bus_client.publish(make_envelope(
+                PATH_ACCEPTED, actor_id,
+                {"path": path, "reason": "named in path"},
+                task_id=task_id,
+            ))
+        else:
+            bus_client.publish(make_envelope(
+                PATH_REJECTED, actor_id,
+                {"path": path, "reason": "not in proposed path"},
+                task_id=task_id,
+            ))
+
+    threading.Thread(target=_decide_and_reply, daemon=True).start()
+    return jsonify({"status": "deciding"}), 202
+
+
 def _handle_shutdown(signum, frame):
     """Immediately notify backend that this arm is shutting down, then exit.
 

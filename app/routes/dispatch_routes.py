@@ -305,6 +305,108 @@ def bus_task_create():
     })
 
 
+@dispatch_bp.route("/bus/task/dispatch", methods=["POST"])
+def bus_task_dispatch():
+    """Full Phase-2 negotiation pipeline.
+
+    1. Publish TASK_CREATED.
+    2. Fan out /evaluate_task; collect TASK_AVAILABILITY.
+    3. Pick a path deterministically from highest-scored available actors.
+    4. Publish PATH_PROPOSED; fan out /propose_path to named actors.
+    5. Collect PATH_ACCEPTED / PATH_REJECTED.
+    6. If any reject -> exclude rejector, re-pick, retry (max 3).
+    """
+    from flask import request, jsonify
+    from app.agents.events import TASK_CREATED, PATH_PROPOSED, make_envelope
+    from app.agents.message_bus import get_bus
+    from app.services import actor_registry, task_availability, path_negotiation
+    import requests as _req
+    import uuid
+
+    body = request.get_json(silent=True) or {}
+    task_id = body.get("taskId") or f"task-{uuid.uuid4().hex[:8]}"
+    task = body.get("task") or {}
+
+    actor_urls = {
+        "agv-1": "http://agv-1:8100", "agv-2": "http://agv-2:8100",
+        "agv-3": "http://agv-3:8100",
+        "arm-1": "http://arm-1:8000", "arm-2": "http://arm-2:8000",
+    }
+
+    # ── 1+2: TASK_CREATED + availability round ──────────────────────────────
+    task_availability.open_round(task_id)
+    get_bus().publish(TASK_CREATED, make_envelope(
+        TASK_CREATED, "interpreter", task, task_id=task_id))
+    for actor in actor_registry.list_actors():
+        url = actor_urls.get(actor["actorId"])
+        if url:
+            try:
+                _req.post(f"{url}/evaluate_task",
+                          json={"taskId": task_id, "task": task}, timeout=1.0)
+            except Exception:
+                pass
+
+    avail = task_availability.collect(task_id, window_s=1.5)
+    free_agvs = sorted(
+        [a for a in avail if a["actorId"].startswith("agv-") and a["available"]],
+        key=lambda a: -a["score"],
+    )
+    free_arms = [a["actorId"] for a in avail
+                 if a["actorId"].startswith("arm-") and a["available"]]
+
+    if not free_agvs or len(free_arms) < 2:
+        return jsonify({"taskId": task_id, "status": "no_resources",
+                        "availabilities": avail}), 409
+
+    # ── 3-6: propose + accept/reject with retry ──────────────────────────────
+    excluded: set[str] = set()
+    last_path: list[str] = []
+    last_responses: dict[str, dict] = {}
+    for attempt in range(3):
+        candidates = [a for a in free_agvs if a["actorId"] not in excluded]
+        if not candidates:
+            break
+        chosen_agv = candidates[0]["actorId"]
+        # Conventional path for this layout. Generalize in Phase 3.
+        path = ["arm-1", chosen_agv, "arm-2"]
+
+        path_negotiation.open_round(task_id)
+        get_bus().publish(PATH_PROPOSED, make_envelope(
+            PATH_PROPOSED, "interpreter",
+            {"path": path, "attempt": attempt + 1},
+            task_id=task_id,
+        ))
+        for actor_id in path:
+            url = actor_urls.get(actor_id)
+            if url:
+                try:
+                    _req.post(f"{url}/propose_path",
+                              json={"taskId": task_id, "path": path},
+                              timeout=1.0)
+                except Exception:
+                    pass
+
+        responses = path_negotiation.collect(task_id, window_s=1.5)
+        last_path, last_responses = path, responses
+        rejecters = [aid for aid, r in responses.items() if not r["accepted"]]
+
+        if not rejecters and len(responses) == len(path):
+            return jsonify({
+                "taskId": task_id, "status": "agreed",
+                "path": path, "responses": responses, "attempts": attempt + 1,
+            })
+
+        # Exclude any AGV that rejected; arms staying flat means we abort.
+        for aid in rejecters:
+            if aid.startswith("agv-"):
+                excluded.add(aid)
+
+    return jsonify({
+        "taskId": task_id, "status": "rejected",
+        "path": last_path, "responses": last_responses, "attempts": 3,
+    }), 409
+
+
 @dispatch_bp.route("/demo/dispatch", methods=["POST"])
 def dispatch():
     """Dispatch packages through the AGV workflow.

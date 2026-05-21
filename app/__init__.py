@@ -78,6 +78,9 @@ def create_app(config_class=None):
 
     from app.services import task_availability
     task_availability.attach(bus)
+
+    from app.services import path_negotiation
+    path_negotiation.attach(bus)
     app.extensions["message_bus"] = bus
     app.extensions["central_brain"] = CentralBrain(bus)
 

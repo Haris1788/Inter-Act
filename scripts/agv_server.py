@@ -146,6 +146,41 @@ def evaluate_task():
     return jsonify({"status": "accepted"}), 202
 
 
+@app.route("/propose_path", methods=["POST"])
+def propose_path():
+    """Backend proposes a path; AGV publishes PATH_ACCEPTED or PATH_REJECTED."""
+    from events import PATH_ACCEPTED, PATH_REJECTED, make_envelope
+    import bus_client
+
+    data = request.get_json(silent=True) or {}
+    task_id = data.get("taskId")
+    path = data.get("path", [])              # e.g. ["arm-1","agv-2","arm-2"]
+    if not task_id:
+        return jsonify({"error": "missing taskId"}), 400
+
+    def _decide_and_reply():
+        with _task_lock:
+            busy = (_task_status == "running")
+        in_path = AGV_ID in path
+
+        if in_path and not busy:
+            bus_client.publish(make_envelope(
+                PATH_ACCEPTED, AGV_ID,
+                {"path": path, "reason": "free and in path"},
+                task_id=task_id,
+            ))
+        else:
+            bus_client.publish(make_envelope(
+                PATH_REJECTED, AGV_ID,
+                {"path": path,
+                 "reason": "busy" if busy else "not in proposed path"},
+                task_id=task_id,
+            ))
+
+    threading.Thread(target=_decide_and_reply, daemon=True).start()
+    return jsonify({"status": "deciding"}), 202
+
+
 def _handle_shutdown(signum, frame) -> None:
     """On SIGTERM/SIGINT: notify backend immediately, then exit.
 
