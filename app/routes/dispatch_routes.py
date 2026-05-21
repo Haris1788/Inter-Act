@@ -407,6 +407,30 @@ def bus_task_dispatch():
     }), 409
 
 
+@dispatch_bp.route("/bus/actor/<actor_id>/free", methods=["POST"])
+def bus_actor_free(actor_id: str):
+    """Admin: force-release an actor (testing Step 5 before Step 9 lands)."""
+    from flask import jsonify
+    from app.agents.events import ACTOR_FREE, make_envelope
+    from app.agents.message_bus import get_bus
+    # Tell the actor to clear its local busy flag too.
+    import requests as _req
+    actor_urls = {
+        "agv-1": "http://agv-1:8100", "agv-2": "http://agv-2:8100",
+        "agv-3": "http://agv-3:8100",
+        "arm-1": "http://arm-1:8000", "arm-2": "http://arm-2:8000",
+    }
+    url = actor_urls.get(actor_id)
+    if url:
+        try:
+            _req.post(f"{url}/release", timeout=1.0)
+        except Exception:
+            pass
+    get_bus().publish(ACTOR_FREE, make_envelope(
+        ACTOR_FREE, actor_id, {"reason": "admin release"}))
+    return jsonify({"status": "released", "actorId": actor_id})
+
+
 @dispatch_bp.route("/demo/dispatch", methods=["POST"])
 def dispatch():
     """Dispatch packages through the AGV workflow.

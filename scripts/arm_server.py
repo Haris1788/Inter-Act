@@ -25,6 +25,11 @@ from utils import send_command, send_health, DEFAULT_HOST
 
 ARM_ID = int(os.environ.get("ARM_ID", "1"))
 
+# ── Task state (process-local, one task at a time) ────────────────────────────
+_arm_task_lock = threading.Lock()
+_arm_status: str = "idle"   # idle | running
+_arm_current_task: dict | None = None
+
 app = Flask(__name__)
 
 
@@ -101,16 +106,19 @@ def evaluate_task():
 
     def _evaluate_and_reply():
         actor_id = f"arm-{ARM_ID}"
+        with _arm_task_lock:
+            busy = (_arm_status == "running")
         required_roles = task.get("requiredRoles") or []
-        # role was set in Step 2 via /grid. For Step 3 we keep it simple:
-        # arm participates if no roles are demanded, or its role is in the list.
         my_role = os.environ.get("ARM_ROLE", "generic")
-        available = (not required_roles) or (my_role in required_roles)
-
+        role_ok = (not required_roles) or (my_role in required_roles)
+        available = (not busy) and role_ok
         bus_client.publish(make_envelope(
             TASK_AVAILABILITY, actor_id,
-            {"available": available, "score": 1.0 if available else 0.0,
-             "reason": "ready" if available else f"role {my_role} not required"},
+            {"available": available,
+             "score": 1.0 if available else 0.0,
+             "reason": "busy" if busy
+                       else "ready" if role_ok
+                       else f"role {my_role} not required"},
             task_id=task_id,
         ))
 
@@ -130,24 +138,45 @@ def propose_path():
         return jsonify({"error": "missing taskId"}), 400
 
     def _decide_and_reply():
+        from events import ACTOR_BUSY
+        global _arm_status, _arm_current_task
         actor_id = f"arm-{ARM_ID}"
+        with _arm_task_lock:
+            busy = (_arm_status == "running")
         in_path = actor_id in path
-        # MVP: arms accept anything they're named in. Add busy check in Step 5.
-        if in_path:
+
+        if in_path and not busy:
+            with _arm_task_lock:
+                _arm_status = "running"
+                _arm_current_task = {"taskId": task_id, "path": path}
             bus_client.publish(make_envelope(
                 PATH_ACCEPTED, actor_id,
                 {"path": path, "reason": "named in path"},
                 task_id=task_id,
             ))
+            bus_client.publish(make_envelope(
+                ACTOR_BUSY, actor_id,
+                {"path": path}, task_id=task_id,
+            ))
         else:
             bus_client.publish(make_envelope(
                 PATH_REJECTED, actor_id,
-                {"path": path, "reason": "not in proposed path"},
+                {"path": path,
+                 "reason": "busy" if busy else "not in proposed path"},
                 task_id=task_id,
             ))
 
     threading.Thread(target=_decide_and_reply, daemon=True).start()
     return jsonify({"status": "deciding"}), 202
+
+
+@app.route("/release", methods=["POST"])
+def release():
+    global _arm_status, _arm_current_task
+    with _arm_task_lock:
+        _arm_status = "idle"
+        _arm_current_task = None
+    return jsonify({"status": "idle"})
 
 
 def _handle_shutdown(signum, frame):

@@ -10,7 +10,6 @@ health:
   check_interval: 2.0
   timeout: 5.0
   max_missed: 3
-
 arms:
 - id: 1
   label: Input Arm
@@ -19,59 +18,8 @@ arms:
   critical: true
 - id: 2
   label: Output Arm
-  color: '#27ae60'
-  depends_on: []
+  color: '#2ecc71'
+  depends_on:
+  - 1
   critical: true
-
-warehouse:
-  grid:
-    cols: 14
-    rows: 10
-    cell_px: 120
-  origin:
-    x: 30
-    y: 30
-  stations:
-    input_arm:
-      cell: [1, 1]
-      dock: [2, 1]
-      label: IN
-      served_by: arm-1
-    output_arm:
-      cell: [12, 1]
-      dock: [11, 1]
-      label: OUT
-      served_by: arm-2
-  lane:
-    - [2, 1]
-    - [3, 1]
-    - [4, 1]
-    - [5, 1]
-    - [6, 1]
-    - [7, 1]
-    - [8, 1]
-    - [9, 1]
-    - [10, 1]
-    - [11, 1]
-  agvs:
-  - id: agv-1
-    label: AGV 1
-    color: '#16a085'
-    bay: [10, 3]
-  - id: agv-2
-    label: AGV 2
-    color: '#8e44ad'
-    bay: [10, 5]
-  - id: agv-3
-    label: AGV 3
-    color: '#2980b9'
-    bay: [10, 7]
-
-ai:
-  # qwen_brain (legacy per-arm 0.5b) stays on the local container.
-  ollama_base_url: http://ollama:11434
-  # llm_service (interpreter/planner + tactical) -> TU Clausthal GPU tunnel,
-  # reached from inside the backend container via the docker host gateway.
-  llm_base_url: http://host.docker.internal:11500
-  model_planner: qwq:32b-q4_K_M
-  model_tactical: qwen2.5:14b-instruct-q4_K_M
+assets: []

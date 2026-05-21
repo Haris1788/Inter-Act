@@ -118,27 +118,19 @@ def evaluate_task():
         return jsonify({"error": "missing taskId"}), 400
 
     def _evaluate_and_reply():
-        # Local evaluation: am I free? Can I reach what the task needs?
         with _task_lock:
             busy = (_task_status == "running")
         required_stations = task.get("requiredStations") or []
-        # In this layout every AGV can reach both stations; this still keeps
-        # the check honest if capabilities ever diverge per AGV.
         can_reach = all(s in ["input_arm", "output_arm"]
                         for s in required_stations)
-
         available = (not busy) and can_reach
-        reason = (
-            "busy" if busy else
-            "cannot reach required station" if not can_reach else
-            "ready"
-        )
-        # Simple score: free + reachable = 1.0; tweak in Step 4 if needed.
-        score = 1.0 if available else 0.0
-
+        reason = ("busy" if busy
+                  else "cannot reach required station" if not can_reach
+                  else "ready")
         bus_client.publish(make_envelope(
             TASK_AVAILABILITY, AGV_ID,
-            {"available": available, "score": score, "reason": reason},
+            {"available": available, "score": 1.0 if available else 0.0,
+             "reason": reason},
             task_id=task_id,
         ))
 
@@ -159,15 +151,26 @@ def propose_path():
         return jsonify({"error": "missing taskId"}), 400
 
     def _decide_and_reply():
+        from events import ACTOR_BUSY  # locally imported so we only pay if needed
+        global _task_status
         with _task_lock:
             busy = (_task_status == "running")
         in_path = AGV_ID in path
 
         if in_path and not busy:
+            # Mark BUSY *before* publishing accept so subsequent TASK_CREATEDs
+            # arriving in the same tick see the busy flag.
+            with _task_lock:
+                _task_status = "running"
+                _current_task = {"taskId": task_id, "path": path}
             bus_client.publish(make_envelope(
                 PATH_ACCEPTED, AGV_ID,
                 {"path": path, "reason": "free and in path"},
                 task_id=task_id,
+            ))
+            bus_client.publish(make_envelope(
+                ACTOR_BUSY, AGV_ID,
+                {"path": path}, task_id=task_id,
             ))
         else:
             bus_client.publish(make_envelope(
@@ -179,6 +182,16 @@ def propose_path():
 
     threading.Thread(target=_decide_and_reply, daemon=True).start()
     return jsonify({"status": "deciding"}), 202
+
+
+@app.route("/release", methods=["POST"])
+def release():
+    """Admin: clear busy flag. Step 9 will replace this with TASK_COMPLETED."""
+    global _task_status, _current_task
+    with _task_lock:
+        _task_status = "idle"
+        _current_task = None
+    return jsonify({"status": "idle"})
 
 
 def _handle_shutdown(signum, frame) -> None:
