@@ -115,9 +115,39 @@ def _announce_self() -> None:
 
     actor_id = f"arm-{ARM_ID}"
     online_env = make_envelope(ACTOR_ONLINE, actor_id, {"kind": "arm"})
+
+    import requests
+    grid = None
+    for _ in range(5):
+        try:
+            r = requests.get(f"{DEFAULT_HOST}/grid", timeout=2.0)
+            if r.ok:
+                grid = r.json()
+                break
+        except Exception:
+            pass
+        time.sleep(2.0)
+
+    wh = (grid or {}).get("warehouse", {})
+    stations = wh.get("stations", {})
+    # Find which station this arm serves: pipeline.yaml has `served_by: arm-1`.
+    my_station_key, my_station = None, {}
+    for skey, sval in stations.items():
+        if sval.get("served_by") == actor_id:
+            my_station_key, my_station = skey, sval
+            break
+
+    # arm-1 → input_arm → role 'input'; arm-2 → output_arm → 'output'.
+    role = (my_station_key or "").replace("_arm", "") or "generic"
+
     cap_env = make_envelope(CAPABILITY_DECLARED, actor_id, {
         "kind": "arm",
-        "role": os.environ.get("ARM_ROLE", "generic"),
+        "role": role,                          # input | output | generic
+        "station": my_station_key,             # "input_arm" or "output_arm"
+        "station_cell": my_station.get("cell"),
+        "dock_cell": my_station.get("dock"),
+        "label": next((a.get("label") for a in (grid or {}).get("arms", [])
+                       if a.get("id") == ARM_ID), f"arm-{ARM_ID}"),
         "reach_radius_deg": 180,
         "status": "FREE",
     })

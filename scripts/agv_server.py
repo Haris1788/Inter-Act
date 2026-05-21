@@ -133,9 +133,33 @@ def _announce_self() -> None:
     )
 
     online_env = make_envelope(ACTOR_ONLINE, AGV_ID, {"kind": "agv"})
+
+    # Pull real config from backend (with one short retry).
+    import requests
+    grid = None
+    for _ in range(5):
+        try:
+            r = requests.get(f"{DEFAULT_HOST}/grid", timeout=2.0)
+            if r.ok:
+                grid = r.json()
+                break
+        except Exception:
+            pass
+        time.sleep(2.0)
+
+    wh = (grid or {}).get("warehouse", {})
+    my_cfg = next((a for a in wh.get("agvs", []) if a.get("id") == AGV_ID), {})
+    stations = wh.get("stations", {})
+    # In this layout, lane connects every AGV bay to both input_arm and
+    # output_arm. If the layout grows, derive reachability from the lane graph.
+    reachable_stations = list(stations.keys())
+
     cap_env = make_envelope(CAPABILITY_DECLARED, AGV_ID, {
         "kind": "agv",
-        "canReach": ["input_arm", "output_arm"],
+        "bay": my_cfg.get("bay"),
+        "color": my_cfg.get("color"),
+        "label": my_cfg.get("label", AGV_ID),
+        "canReach": reachable_stations,
         "speed": float(os.environ.get("SPEED_FACTOR", "1.0")),
         "capacity": 1,
         "status": "FREE",
