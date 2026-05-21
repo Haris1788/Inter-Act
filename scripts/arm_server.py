@@ -179,6 +179,31 @@ def release():
     return jsonify({"status": "idle"})
 
 
+@app.route("/fault", methods=["POST"])
+def fault():
+    """Admin / test: simulate a fault. Publishes ACTOR_FAILED on the bus.
+    Used by Phase 2 Step 7-8 smoke tests."""
+    from events import ACTOR_FAILED, make_envelope
+    import bus_client
+    global _arm_status, _arm_current_task
+
+    data = request.get_json(silent=True) or {}
+    reason = data.get("reason", "admin fault simulation")
+    actor_id = f"arm-{ARM_ID}"
+
+    task_id = None
+    with _arm_task_lock:
+        if _arm_current_task:
+            task_id = _arm_current_task.get("taskId")
+        _arm_status = "faulted"
+    bus_client.publish(make_envelope(
+        ACTOR_FAILED, actor_id,
+        {"reason": reason},
+        task_id=task_id,
+    ))
+    return jsonify({"status": "faulted", "actorId": actor_id, "taskId": task_id})
+
+
 def _handle_shutdown(signum, frame):
     """Immediately notify backend that this arm is shutting down, then exit.
 

@@ -318,41 +318,39 @@ def bus_task_create():
     })
 
 
-@dispatch_bp.route("/bus/task/dispatch", methods=["POST"])
-def bus_task_dispatch():
-    """Full Phase-2 negotiation pipeline.
+# Container URLs used by every negotiation/replan round. Single source of truth.
+_BUS_ACTOR_URLS = {
+    "agv-1": "http://agv-1:8100", "agv-2": "http://agv-2:8100",
+    "agv-3": "http://agv-3:8100",
+    "arm-1": "http://arm-1:8000", "arm-2": "http://arm-2:8000",
+}
 
-    1. Publish TASK_CREATED.
-    2. Fan out /evaluate_task; collect TASK_AVAILABILITY.
-    3. Pick a path deterministically from highest-scored available actors.
-    4. Publish PATH_PROPOSED; fan out /propose_path to named actors.
-    5. Collect PATH_ACCEPTED / PATH_REJECTED.
-    6. If any reject -> exclude rejector, re-pick, retry (max 3).
+
+def _run_dispatch_round(task_id: str, task: dict,
+                        excluded: set[str] | None = None) -> dict:
+    """Core dispatch round used by both the HTTP route and replan_handler.
+
+    Returns the same JSON-shaped dict the HTTP route hands back.
+    Does not raise — bad inputs surface as {"status": "no_resources"} or
+    {"status": "rejected"}.
     """
-    from flask import request, jsonify
     from app.agents.events import TASK_CREATED, PATH_PROPOSED, make_envelope
     from app.agents.message_bus import get_bus
-    from app.services import actor_registry, task_availability, path_negotiation
+    from app.services import (
+        actor_registry, task_availability, path_negotiation, task_tracker,
+    )
     import requests as _req
-    import uuid
 
-    body = request.get_json(silent=True) or {}
-    task_id = body.get("taskId") or f"task-{uuid.uuid4().hex[:8]}"
-    task = body.get("task") or {}
-
-    actor_urls = {
-        "agv-1": "http://agv-1:8100", "agv-2": "http://agv-2:8100",
-        "agv-3": "http://agv-3:8100",
-        "arm-1": "http://arm-1:8000", "arm-2": "http://arm-2:8000",
-    }
+    excluded = set(excluded or set())
+    task_tracker.register_task(task_id, task)
 
     # ── 1+2: TASK_CREATED + availability round ──────────────────────────────
     task_availability.open_round(task_id)
     get_bus().publish(TASK_CREATED, make_envelope(
         TASK_CREATED, "interpreter", task, task_id=task_id))
     for actor in actor_registry.list_actors():
-        url = actor_urls.get(actor["actorId"])
-        if url:
+        url = _BUS_ACTOR_URLS.get(actor["actorId"])
+        if url and actor["actorId"] not in excluded:
             try:
                 _req.post(f"{url}/evaluate_task",
                           json={"taskId": task_id, "task": task}, timeout=1.0)
@@ -361,36 +359,40 @@ def bus_task_dispatch():
 
     avail = task_availability.collect(task_id, window_s=1.5)
     free_agvs = sorted(
-        [a for a in avail if a["actorId"].startswith("agv-") and a["available"]],
+        [a for a in avail
+         if a["actorId"].startswith("agv-")
+         and a["available"]
+         and a["actorId"] not in excluded],
         key=lambda a: -a["score"],
     )
     free_arms = [a["actorId"] for a in avail
-                 if a["actorId"].startswith("arm-") and a["available"]]
+                 if a["actorId"].startswith("arm-")
+                 and a["available"]
+                 and a["actorId"] not in excluded]
 
     if not free_agvs or len(free_arms) < 2:
-        return jsonify({"taskId": task_id, "status": "no_resources",
-                        "availabilities": avail}), 409
+        return {"taskId": task_id, "status": "no_resources",
+                "availabilities": avail, "excluded": list(excluded)}
 
     # ── 3-6: propose + accept/reject with retry ──────────────────────────────
-    excluded: set[str] = set()
+    round_excluded: set[str] = set(excluded)
     last_path: list[str] = []
     last_responses: dict[str, dict] = {}
     for attempt in range(3):
-        candidates = [a for a in free_agvs if a["actorId"] not in excluded]
+        candidates = [a for a in free_agvs if a["actorId"] not in round_excluded]
         if not candidates:
             break
         chosen_agv = candidates[0]["actorId"]
-        # Conventional path for this layout. Generalize in Phase 3.
         path = ["arm-1", chosen_agv, "arm-2"]
 
         path_negotiation.open_round(task_id)
         get_bus().publish(PATH_PROPOSED, make_envelope(
             PATH_PROPOSED, "interpreter",
-            {"path": path, "attempt": attempt + 1},
+            {"path": path, "attempt": attempt + 1, "task": task},
             task_id=task_id,
         ))
         for actor_id in path:
-            url = actor_urls.get(actor_id)
+            url = _BUS_ACTOR_URLS.get(actor_id)
             if url:
                 try:
                     _req.post(f"{url}/propose_path",
@@ -405,74 +407,84 @@ def bus_task_dispatch():
 
         if not rejecters and len(responses) == len(path):
             # ── Step 6: peer-to-peer execution trigger ───────────────────────
-            # Bus served its purpose (negotiation). From here, execution rides
-            # the actors' existing HTTP endpoints — no more bus traffic.
-            chosen_agv = next((p for p in path if p.startswith("agv-")), None)
-            if chosen_agv:
-                package_id = f"pkg-{task_id[-8:]}"
-                color = (task.get("color")
-                         or _color_for(task.get("label", ""), 0)
-                         if "_color_for" in globals()
-                         else "#3498db")
+            package_id = f"pkg-{task_id[-8:]}"
+            color = (task.get("color")
+                     or _color_for(task.get("label", ""), 0)
+                     if "_color_for" in globals()
+                     else "#3498db")
 
-                # 1. Hand the assignment to the AGV's own /assign — its
-                #    agv_brain.run_task loop takes over from here.
-                try:
-                    _req.post(
-                        f"{actor_urls[chosen_agv]}/assign",
-                        json={
-                            "package_id": package_id,
-                            "agv_id": chosen_agv,
-                            "sequence": 1,
-                            "route": ["bay", "input", "output", "bay"],
-                            "label": task.get("label", ""),
-                        },
-                        timeout=1.0,
-                    )
-                except Exception:
-                    pass
+            # 1. /assign to the chosen AGV. Brain takes over from here.
+            try:
+                _req.post(
+                    f"{_BUS_ACTOR_URLS[chosen_agv]}/assign",
+                    json={
+                        "package_id": package_id,
+                        "agv_id": chosen_agv,
+                        "sequence": 1,
+                        "route": ["bay", "input", "output", "bay"],
+                        "label": task.get("label", ""),
+                        # Stamp task_id so the AGV publishes ACTOR_FAILED /
+                        # TASK_COMPLETED on the right correlation key.
+                        "taskId": task_id,
+                    },
+                    timeout=1.0,
+                )
+            except Exception:
+                pass
 
-                # 2. Kick off the arm pick/place choreography that the AGV
-                #    will synchronise against (existing _auto_arm_signals
-                #    talks directly to arm containers via /set_angle).
-                if "_auto_arm_signals" in globals():
-                    import threading as _t
-                    _t.Thread(
-                        target=_auto_arm_signals,
-                        args=(chosen_agv, package_id, color),
-                        daemon=True,
-                    ).start()
+            # 2. Arm choreography in a daemon thread.
+            if "_auto_arm_signals" in globals():
+                import threading as _t
+                _t.Thread(
+                    target=_auto_arm_signals,
+                    args=(chosen_agv, package_id, color),
+                    daemon=True,
+                ).start()
 
-            return jsonify({
+            return {
                 "taskId": task_id, "status": "agreed",
-                "path": path, "responses": responses, "attempts": attempt + 1,
-            })
+                "path": path, "responses": responses,
+                "attempts": attempt + 1,
+                "excluded": list(excluded),
+            }
 
-        # Exclude any AGV that rejected; arms staying flat means we abort.
         for aid in rejecters:
             if aid.startswith("agv-"):
-                excluded.add(aid)
+                round_excluded.add(aid)
 
-    return jsonify({
+    return {
         "taskId": task_id, "status": "rejected",
-        "path": last_path, "responses": last_responses, "attempts": 3,
-    }), 409
+        "path": last_path, "responses": last_responses,
+        "attempts": 3, "excluded": list(excluded),
+    }
+
+
+@dispatch_bp.route("/bus/task/dispatch", methods=["POST"])
+def bus_task_dispatch():
+    """Full Phase-2 negotiation pipeline (Step 3 → 4 → 6).
+
+    Body: {"task": {"requiredStations":[...], "label":"red", ...}}
+    """
+    from flask import request, jsonify
+    import uuid
+
+    body = request.get_json(silent=True) or {}
+    task_id = body.get("taskId") or f"task-{uuid.uuid4().hex[:8]}"
+    task = body.get("task") or {}
+
+    result = _run_dispatch_round(task_id, task)
+    http_code = 200 if result.get("status") == "agreed" else 409
+    return jsonify(result), http_code
 
 
 @dispatch_bp.route("/bus/actor/<actor_id>/free", methods=["POST"])
 def bus_actor_free(actor_id: str):
-    """Admin: force-release an actor (testing Step 5 before Step 9 lands)."""
+    """Admin: force-release an actor. Used to reset state between smoke tests."""
     from flask import jsonify
     from app.agents.events import ACTOR_FREE, make_envelope
     from app.agents.message_bus import get_bus
-    # Tell the actor to clear its local busy flag too.
     import requests as _req
-    actor_urls = {
-        "agv-1": "http://agv-1:8100", "agv-2": "http://agv-2:8100",
-        "agv-3": "http://agv-3:8100",
-        "arm-1": "http://arm-1:8000", "arm-2": "http://arm-2:8000",
-    }
-    url = actor_urls.get(actor_id)
+    url = _BUS_ACTOR_URLS.get(actor_id)
     if url:
         try:
             _req.post(f"{url}/release", timeout=1.0)
@@ -481,6 +493,69 @@ def bus_actor_free(actor_id: str):
     get_bus().publish(ACTOR_FREE, make_envelope(
         ACTOR_FREE, actor_id, {"reason": "admin release"}))
     return jsonify({"status": "released", "actorId": actor_id})
+
+
+@dispatch_bp.route("/bus/actor/<actor_id>/fault", methods=["POST"])
+def bus_actor_fault(actor_id: str):
+    """Phase 2 Step 7-8 test helper: ask an actor container to simulate a
+    fault. The actor will publish ACTOR_FAILED on the bus, which feeds the
+    task_tracker → replan_handler chain (Step 8)."""
+    from flask import request, jsonify
+    import requests as _req
+    url = _BUS_ACTOR_URLS.get(actor_id)
+    if not url:
+        return jsonify({"status": "unknown_actor", "actorId": actor_id}), 404
+    body = request.get_json(silent=True) or {}
+    try:
+        r = _req.post(f"{url}/fault", json=body, timeout=2.0)
+        return jsonify(r.json() if r.ok else {"status": "actor_error",
+                                              "code": r.status_code}), r.status_code
+    except Exception as exc:
+        return jsonify({"status": "unreachable", "error": str(exc)}), 502
+
+
+@dispatch_bp.route("/bus/task/<task_id>", methods=["GET"])
+def bus_task_status(task_id: str):
+    """Inspect a task's tracker state — path, status, attempts, excluded."""
+    from flask import jsonify
+    from app.services import task_tracker
+    entry = task_tracker.get(task_id)
+    if not entry:
+        return jsonify({"status": "unknown_task", "taskId": task_id}), 404
+    return jsonify(entry)
+
+
+@dispatch_bp.route("/bus/tasks", methods=["GET"])
+def bus_tasks_list():
+    """List currently-active tasks (running or replanning)."""
+    from flask import jsonify
+    from app.services import task_tracker
+    return jsonify({"tasks": task_tracker.list_active()})
+
+
+@dispatch_bp.route("/bus/task/<task_id>/complete", methods=["POST"])
+def bus_task_complete(task_id: str):
+    """Phase 2 Step 9 test helper: publish TASK_COMPLETED on behalf of the
+    path's terminal AGV. Useful when the AGV brain can't run a full route
+    (e.g. /grid wiped by Build & Deploy) — lets the smoke test exercise the
+    completion + ACTOR_FREE fan-out path without a real route execution."""
+    from flask import jsonify
+    from app.agents.events import TASK_COMPLETED, make_envelope
+    from app.agents.message_bus import get_bus
+    from app.services import task_tracker
+
+    entry = task_tracker.get(task_id)
+    if not entry:
+        return jsonify({"status": "unknown_task", "taskId": task_id}), 404
+    terminal = next((a for a in entry["path"] if a.startswith("agv-")),
+                    entry["path"][-1] if entry["path"] else "interpreter")
+    get_bus().publish(TASK_COMPLETED, make_envelope(
+        TASK_COMPLETED, terminal,
+        {"package_id": f"pkg-{task_id[-8:]}", "reason": "admin complete"},
+        task_id=task_id,
+    ))
+    return jsonify({"status": "completed", "taskId": task_id,
+                    "by": terminal, "path": entry["path"]})
 
 
 @dispatch_bp.route("/demo/dispatch", methods=["POST"])

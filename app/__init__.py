@@ -81,6 +81,14 @@ def create_app(config_class=None):
 
     from app.services import path_negotiation
     path_negotiation.attach(bus)
+
+    # Phase 2 Step 7-9: failure tracking + replan + completion
+    from app.services import task_tracker
+    task_tracker.attach(bus)
+
+    from app.services import replan_handler
+    replan_handler.attach(bus)
+
     app.extensions["message_bus"] = bus
     app.extensions["central_brain"] = CentralBrain(bus)
 

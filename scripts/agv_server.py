@@ -85,16 +85,62 @@ def assign():
         _task_status = "running"
 
     def _run() -> None:
-        global _task_status
+        """Run the AGV brain task. Publish TASK_COMPLETED on success,
+        ACTOR_FAILED on fault (Phase 2 Steps 7 + 9)."""
+        global _task_status, _current_task
+        from events import (
+            ACTOR_FAILED, ACTOR_FREE, TASK_COMPLETED, make_envelope,
+        )
+        import bus_client
+
+        # The dispatch endpoint stamps task_id into the assignment now; we
+        # also fall back to the in-progress _current_task we stored above
+        # (set by propose_path when the path was first accepted).
+        task_id = (assignment.get("taskId") or assignment.get("task_id")
+                   or (_current_task.get("taskId") if _current_task else None))
+
         try:
             ok = _brain.run_task(assignment)
-            with _task_lock:
-                _task_status = "done" if ok else "faulted"
+            if ok:
+                # Step 9: task completed cleanly.
+                with _task_lock:
+                    _task_status = "done"
+                bus_client.publish(make_envelope(
+                    TASK_COMPLETED, AGV_ID,
+                    {"package_id": assignment.get("package_id")},
+                    task_id=task_id,
+                ))
+                # Self-release. Task tracker will also fan out ACTOR_FREE
+                # to the arm participants on its TASK_COMPLETED handler.
+                with _task_lock:
+                    _task_status = "idle"
+                    _current_task = None
+                bus_client.publish(make_envelope(
+                    ACTOR_FREE, AGV_ID,
+                    {"reason": "task completed"},
+                    task_id=task_id,
+                ))
+            else:
+                # Step 7: brain reported a failure.
+                with _task_lock:
+                    _task_status = "faulted"
+                bus_client.publish(make_envelope(
+                    ACTOR_FAILED, AGV_ID,
+                    {"reason": "brain returned False",
+                     "package_id": assignment.get("package_id")},
+                    task_id=task_id,
+                ))
         except Exception as exc:
             print(f"[{AGV_ID}] task exception: {exc}", file=sys.stderr)
             with _task_lock:
                 _task_status = "faulted"
             send_agv_health(DEFAULT_HOST, AGV_ID, "faulted", str(exc))
+            bus_client.publish(make_envelope(
+                ACTOR_FAILED, AGV_ID,
+                {"reason": f"exception: {exc}",
+                 "package_id": assignment.get("package_id")},
+                task_id=task_id,
+            ))
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({
@@ -192,6 +238,30 @@ def release():
         _task_status = "idle"
         _current_task = None
     return jsonify({"status": "idle"})
+
+
+@app.route("/fault", methods=["POST"])
+def fault():
+    """Admin / test: simulate a fault. Publishes ACTOR_FAILED on the bus and
+    flips local task_status to faulted. Used by Phase 2 Step 7-8 smoke tests."""
+    from events import ACTOR_FAILED, make_envelope
+    import bus_client
+    global _task_status, _current_task
+
+    data = request.get_json(silent=True) or {}
+    reason = data.get("reason", "admin fault simulation")
+
+    task_id = None
+    with _task_lock:
+        if _current_task:
+            task_id = _current_task.get("taskId") or _current_task.get("task_id")
+        _task_status = "faulted"
+    bus_client.publish(make_envelope(
+        ACTOR_FAILED, AGV_ID,
+        {"reason": reason},
+        task_id=task_id,
+    ))
+    return jsonify({"status": "faulted", "actorId": AGV_ID, "taskId": task_id})
 
 
 def _handle_shutdown(signum, frame) -> None:
