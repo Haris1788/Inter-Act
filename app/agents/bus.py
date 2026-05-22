@@ -19,7 +19,11 @@ from app.agents.negotiation import Message, MessageType
 
 
 class NegotiationBus:
-    """Minimal typed pub/sub. Thread-safe. No authority, no decisions."""
+    """Minimal typed pub/sub. Thread-safe. No authority, no decisions.
+
+    Subscriptions are permanent for the lifetime of the bus instance — there
+    is no unsubscribe.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -65,18 +69,24 @@ class NegotiationBus:
 
             socketio.emit("bus_message", message.to_dict())
         except Exception:
-            pass
+            pass  # no Flask app / SocketIO not serving — mirror is best-effort
 
 
 # ── module-level singleton ────────────────────────────────────────────────
 _bus: NegotiationBus | None = None
+_bus_lock = threading.Lock()
 
 
 def get_bus() -> NegotiationBus:
-    """Return the process-wide negotiation bus, creating it on first use."""
+    """Return the process-wide negotiation bus, creating it on first use.
+
+    Thread-safe: Stage 2 wires multiple actor threads to this singleton.
+    """
     global _bus
     if _bus is None:
-        _bus = NegotiationBus()
+        with _bus_lock:
+            if _bus is None:
+                _bus = NegotiationBus()
     return _bus
 
 

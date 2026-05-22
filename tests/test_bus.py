@@ -64,9 +64,12 @@ def test_subscriber_exception_does_not_break_publish():
 
 
 def test_publish_without_flask_app_does_not_raise():
-    # The SocketIO mirror is best-effort; with no running app it must no-op.
+    # The SocketIO mirror is best-effort; with no running app it must no-op,
+    # and the message must still be recorded in history.
     bus = NegotiationBus()
-    bus.publish(_msg(MessageType.BID))  # must not raise
+    m = _msg(MessageType.BID)
+    bus.publish(m)  # must not raise
+    assert bus.history() == [m]
 
 
 def test_get_bus_is_singleton():
