@@ -19,6 +19,8 @@ def test_capability_profile_to_dict():
     assert d["position"] == [10.0, 3.0]
     assert d["speed"] == 2.0
     assert d["capacity"] == 1
+    d["reachable_zones"].append("extra")
+    assert p.reachable_zones == ["input_arm", "output_arm"]
 
 
 def test_capability_profile_defaults():

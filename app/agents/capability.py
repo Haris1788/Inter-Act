@@ -7,6 +7,7 @@ capability registry: discovery emerges from `capability_broadcast` messages.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, Literal
 
 
 @dataclass
@@ -15,13 +16,13 @@ class CapabilityProfile:
     fast, how much it carries."""
 
     actor_id: str
-    kind: str  # "arm" | "agv"
+    kind: Literal["arm", "agv"]
     reachable_zones: list[str] = field(default_factory=list)
     position: list[float] = field(default_factory=lambda: [0.0, 0.0])
     speed: float = 1.0
     capacity: int = 1
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """JSON-safe dict — the payload of a `capability_broadcast` message."""
         return {
             "actor_id": self.actor_id,
