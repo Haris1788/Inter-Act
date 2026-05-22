@@ -28,6 +28,8 @@ from app.agents.capability import CapabilityProfile
 from app.agents.negotiation import (
     Message,
     MessageType,
+    public_winner,
+    surviving_bids,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,10 +144,15 @@ class ActorAgent:
                 )
 
     def _next_wakeup(self) -> float:
-        """Seconds until the loop should wake even with no message. Task 6
-        overrides the effective wakeup via pending deadlines; the base just
-        ticks slowly."""
-        return _IDLE_TICK_S
+        """Wake the loop at the next pending deadline, else tick slowly."""
+        if self._task is None:
+            return _IDLE_TICK_S
+        now = time.time()
+        targets = []
+        if self._evaluated_round < self._round:
+            targets.append(self._task.get("bid_deadline_ts", now))
+        soonest = min((t - now for t in targets), default=_IDLE_TICK_S)
+        return max(0.0, min(soonest, _IDLE_TICK_S))
 
     # ── handlers ───────────────────────────────────────────────────────────
 
@@ -222,4 +229,36 @@ class ActorAgent:
         return None
 
     def _check_deadlines(self) -> None:
-        """Act on elapsed negotiation deadlines. Base: no-op (Task 6 fills)."""
+        if self._task is None:
+            return
+        now = time.time()
+        if (
+            self._evaluated_round < self._round
+            and now >= self._task.get("bid_deadline_ts", now)
+        ):
+            self._evaluate()
+
+    def _evaluate(self) -> None:
+        """Leaderless evaluation: for every slot, apply the public rule to the
+        public bid set. Win -> accept; lost (but bid) -> withdraw."""
+        self._evaluated_round = self._round
+        history = self.bus.history()
+        constraint = (self._task or {}).get("constraint", "")
+        won_any = False
+        for slot in (self._task or {}).get("slots", []):
+            slot_id = slot["slot_id"]
+            bids = surviving_bids(history, self._task_id, self._round, slot_id)
+            i_bid = any(b.sender == self.actor_id for b in bids)
+            if not i_bid:
+                continue
+            winner = public_winner(bids, constraint)
+            if winner == self.actor_id:
+                self._publish(MessageType.ACCEPT, slot_id=slot_id)
+                won_any = True
+            else:
+                self._publish(
+                    MessageType.WITHDRAW,
+                    slot_id=slot_id,
+                    payload={"reason": "lost evaluation"},
+                )
+        self.state = AgentState.WON if won_any else AgentState.IDLE

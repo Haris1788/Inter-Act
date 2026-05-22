@@ -148,3 +148,35 @@ def test_agent_that_cannot_fill_any_slot_does_not_bid():
         assert agent.state == AgentState.IDLE
     finally:
         agent.stop()
+
+
+def test_agent_accepts_slot_it_wins_at_bid_deadline():
+    bus = NegotiationBus()
+    a1 = _ScoringAgent(_profile("arm-1", "arm"), bus, score=3.0)
+    a2 = _ScoringAgent(_profile("arm-2", "arm"), bus, score=9.0)
+    a1.start()
+    a2.start()
+    try:
+        bus.publish(_announce(constraint="shortest time"))
+        time.sleep(2.2)  # past the 1.5s bid deadline
+        a1_accepts = _published(bus, MessageType.ACCEPT, "arm-1")
+        a2_withdraws = _published(bus, MessageType.WITHDRAW, "arm-2")
+        assert {m.slot_id for m in a1_accepts} == {"pickup", "place"}
+        assert {m.slot_id for m in a2_withdraws} == {"pickup", "place"}
+        assert a1.state == AgentState.WON
+    finally:
+        a1.stop()
+        a2.stop()
+
+
+def test_agent_evaluates_only_once_per_round():
+    bus = NegotiationBus()
+    a1 = _ScoringAgent(_profile("arm-1", "arm"), bus, score=3.0)
+    a1.start()
+    try:
+        bus.publish(_announce())
+        time.sleep(2.5)
+        accepts = _published(bus, MessageType.ACCEPT, "arm-1")
+        assert len(accepts) == 2
+    finally:
+        a1.stop()
