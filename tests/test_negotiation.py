@@ -47,7 +47,4 @@ def test_eleven_message_types_exist():
 
 
 def test_round_status_values():
-    assert RoundStatus.OPEN.value == "open"
-    assert RoundStatus.CONVERGED.value == "converged"
-    assert RoundStatus.FAILED.value == "failed"
-    assert RoundStatus.SUPERSEDED.value == "superseded"
+    assert {s.value for s in RoundStatus} == {"open", "converged", "failed", "superseded"}

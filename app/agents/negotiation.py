@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 
 class MessageType(str, Enum):
@@ -50,9 +50,9 @@ class Message:
     slot_id: Optional[str] = None
     bid_version: int = 0
     ts: float = field(default_factory=time.time)
-    payload: dict = field(default_factory=dict)
+    payload: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """JSON-safe dict — used for the SocketIO mirror to the browser."""
         d = asdict(self)
         d["type"] = self.type.value
