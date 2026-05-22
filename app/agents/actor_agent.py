@@ -244,6 +244,8 @@ class ActorAgent:
             and now >= self._task.get("bid_deadline_ts", float("inf"))
         ):
             self._evaluate()
+        # _evaluate (above) publishes ACCEPTs to the bus before _check_consensus
+        # reads history — relies on synchronous in-process bus delivery.
         self._check_consensus()
 
     def _evaluate(self) -> None:
@@ -282,6 +284,7 @@ class ActorAgent:
         we hold at least one accepted slot, and no higher round has appeared.
         """
         if self._task is None or self.state in (
+            AgentState.BIDDING,
             AgentState.DONE,
             AgentState.FAULTED,
         ):
@@ -311,3 +314,8 @@ class ActorAgent:
     def _execute_leg(self, slot_id: str) -> None:
         """Run this agent's physical leg. Stage 2: a recorded/simulated step.
         Stage 3 wires real AGV-container HTTP and arm animation here."""
+        logger.debug(
+            "agent %s executing leg %s (Stage 2 recorded stub)",
+            self.actor_id,
+            slot_id,
+        )
