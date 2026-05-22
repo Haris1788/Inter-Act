@@ -28,7 +28,9 @@ from app.agents.capability import CapabilityProfile
 from app.agents.negotiation import (
     Message,
     MessageType,
+    accepted_actors,
     public_winner,
+    slots_complete,
     surviving_bids,
 )
 
@@ -74,6 +76,9 @@ class ActorAgent:
         self._round: int = -1
         self._task: Optional[dict] = None  # the task_announce payload
         self._evaluated_round: int = -1    # highest round this agent evaluated
+        self._my_slots: list[str] = []       # slots this agent has accepted
+        self._executed_legs: list[str] = []  # slots this agent has executed
+        self._consensus_announced = False
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -239,6 +244,7 @@ class ActorAgent:
             and now >= self._task.get("bid_deadline_ts", float("inf"))
         ):
             self._evaluate()
+        self._check_consensus()
 
     def _evaluate(self) -> None:
         """Leaderless evaluation: for every slot, apply the public rule to the
@@ -256,6 +262,7 @@ class ActorAgent:
             winner = public_winner(bids, constraint)
             if winner == self.actor_id:
                 self._publish(MessageType.ACCEPT, slot_id=slot_id)
+                self._my_slots.append(slot_id)
                 won_any = True
             else:
                 self._publish(
@@ -264,3 +271,43 @@ class ActorAgent:
                     payload={"reason": "lost evaluation"},
                 )
         self.state = AgentState.WON if won_any else AgentState.IDLE
+
+    def executed_legs(self) -> list[str]:
+        return list(self._executed_legs)
+
+    def _check_consensus(self) -> None:
+        """Observe (never decide) the consensus condition, then run our leg.
+
+        Execution barrier: we execute only when we locally observe consensus,
+        we hold at least one accepted slot, and no higher round has appeared.
+        """
+        if self._task is None or self.state in (
+            AgentState.DONE,
+            AgentState.FAULTED,
+        ):
+            return
+        history = self.bus.history()
+        required = {s["slot_id"] for s in self._task.get("slots", [])}
+        accepts = accepted_actors(history, self._task_id, self._round)
+        if not slots_complete(required, accepts):
+            return
+
+        # Observational consensus marker — idempotent, non-authoritative.
+        if not self._consensus_announced:
+            self._consensus_announced = True
+            self._publish(
+                MessageType.CONSENSUS_REACHED, payload={"round": self._round}
+            )
+
+        if not self._my_slots:
+            return  # consensus reached, but this agent holds nothing to run
+        self.state = AgentState.EXECUTING
+        for slot_id in self._my_slots:
+            if slot_id not in self._executed_legs:
+                self._execute_leg(slot_id)
+                self._executed_legs.append(slot_id)
+        self.state = AgentState.DONE
+
+    def _execute_leg(self, slot_id: str) -> None:
+        """Run this agent's physical leg. Stage 2: a recorded/simulated step.
+        Stage 3 wires real AGV-container HTTP and arm animation here."""

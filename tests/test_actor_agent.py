@@ -181,3 +181,37 @@ def test_agent_evaluates_only_once_per_round():
         assert len(accepts) == 2
     finally:
         a1.stop()
+
+
+def test_winning_agent_executes_its_leg_after_consensus():
+    bus = NegotiationBus()
+
+    class _OmniAgent(_ScoringAgent):
+        def _bid_score(self, slot):
+            return self._score  # bids on all 3 slots
+
+    agent = _OmniAgent(_profile("arm-1", "arm"), bus, score=2.0)
+    agent.start()
+    try:
+        bus.publish(_announce())
+        time.sleep(3.2)  # past bid + consensus windows
+        assert agent.state == AgentState.DONE
+        assert sorted(agent.executed_legs()) == ["pickup", "place", "transport"]
+        consensus = [m for m in bus.history()
+                     if m.type == MessageType.CONSENSUS_REACHED]
+        assert len(consensus) >= 1
+    finally:
+        agent.stop()
+
+
+def test_agent_does_not_execute_without_full_consensus():
+    bus = NegotiationBus()
+    agent = _ScoringAgent(_profile("arm-1", "arm"), bus, score=2.0)
+    agent.start()
+    try:
+        bus.publish(_announce())
+        time.sleep(3.4)
+        assert agent.executed_legs() == []
+        assert agent.state != AgentState.DONE
+    finally:
+        agent.stop()
