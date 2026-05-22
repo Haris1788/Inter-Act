@@ -11,11 +11,8 @@ const EVENT_CAP = 300; // bounded - long-session memory safety
 export const DEFAULT_RUNTIME = {
   status: "idle" as const,
   phase: "",
-  bid: null,
-  winning: false,
   uptime: "",
   metrics: { cpu: 0, memMb: 0, battery: 100, busLatencyMs: 0 },
-  taskQueue: [],
 };
 
 export const createRuntimeSlice: StateCreator<
@@ -26,10 +23,8 @@ export const createRuntimeSlice: StateCreator<
 > = (set) => ({
   actorRuntime: {},
   busMessages: [],
-  busRate: 0,
   logLines: [],
   validation: [],
-  contracts: [],
   dataSource: "mock",
   linkStatus: "connecting",
   events: [],

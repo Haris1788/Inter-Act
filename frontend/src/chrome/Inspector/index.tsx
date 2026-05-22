@@ -7,7 +7,6 @@ import { SectionCapabilities } from "./SectionCapabilities";
 import { SectionMotion } from "./SectionMotion";
 import { SectionDocking } from "./SectionDocking";
 import { SectionBrain } from "./SectionBrain";
-import { SectionTaskQueue } from "./SectionTaskQueue";
 import { SectionRuntime } from "./SectionRuntime";
 import { SectionHistory } from "./SectionHistory";
 import { ActionsRow } from "./ActionsRow";
@@ -77,7 +76,6 @@ export function Inspector() {
             {/* ── Runtime & Docking band - operational ── */}
             <BandDivider label="Runtime & Docking" />
             <SectionDocking live={live} />
-            <SectionTaskQueue taskQueue={runtime.taskQueue} live={live} />
             <SectionRuntime metrics={runtime.metrics} live={live} />
           </>
         )}

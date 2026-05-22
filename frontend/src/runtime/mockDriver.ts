@@ -6,11 +6,8 @@ import {
   mockPool,
   mockGoal,
   mockActorRuntime,
-  mockBus,
-  mockBusRate,
   mockLogs,
   mockValidation,
-  mockContracts,
   mockTrajectories,
   mockReachability,
   mockDockGlows,
@@ -30,13 +27,13 @@ export function createMockDriver(): RuntimeDriver {
       const s = store.getState();
       s.setConnection("mock", "connected");
       s.hydrateTopology({ actors: mockActors, zones: mockZones, pool: mockPool, goal: mockGoal });
+      // Mock bus starts empty — honest emptiness is correct.
+      // The bus panel shows "No bus traffic" until a real negotiation runs.
       s.hydrateRuntime({
         actorRuntime: mockActorRuntime,
-        busMessages: mockBus,
-        busRate: mockBusRate,
+        busMessages: [],
         logLines: mockLogs,
         validation: mockValidation,
-        contracts: mockContracts,
       });
       s.hydrateSpatial({
         trajectories: mockTrajectories,

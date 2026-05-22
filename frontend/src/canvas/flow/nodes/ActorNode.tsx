@@ -131,7 +131,6 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
   const markDirty = useStore((s) => s.markDirty);
 
   const status = runtime?.status ?? "idle";
-  const isWinning = runtime?.winning ?? false;
   const isSelected = selectedId === actor.id;
   const isMultiSelected = !isSelected && selectedIds.includes(actor.id);
   const isAgv = actor.kind === "agv";
@@ -139,7 +138,6 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
   const coherenceState = coherence.byId[actor.id];
 
   const phase = runtime?.phase ?? "";
-  const bid = runtime?.bid;
 
   // Inline label editing state
   const [editing, setEditing] = useState(false);
@@ -178,28 +176,10 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
         // multi-select ring (lighter than primary)
         isMultiSelected &&
           "border-cta shadow-[0_0_0_1px_rgba(24,24,27,0.35),0_2px_8px_rgba(24,24,27,0.05)]",
-        // winning ring (agv)
-        isWinning &&
-          !isSelected &&
-          !isMultiSelected &&
-          "border-cta shadow-[0_0_0_1px_#18181B,0_1px_0_rgba(24,24,27,0.03),0_3px_10px_rgba(24,24,27,0.05)]",
-        // normal border when neither
-        !isSelected && !isMultiSelected && !isWinning && "border-line",
+        // normal border when not selected
+        !isSelected && !isMultiSelected && "border-line",
       )}
     >
-      {/* winning dashed ring overlay */}
-      {isWinning && (
-        <div
-          className="pointer-events-none absolute"
-          style={{
-            inset: -10,
-            border: "1.5px dashed #18181B",
-            borderRadius: 18,
-            opacity: 0.35,
-          }}
-        />
-      )}
-
       {/* HEAD */}
       <div
         className={cn(
@@ -219,20 +199,6 @@ export const ActorNode = memo(function ActorNode({ data }: NodeProps) {
         <span className="ml-auto font-mono text-11 text-ink-3">{actor.id}</span>
         {/* coherence dot - subtle corner indicator */}
         <CoherenceDot state={coherenceState} />
-        {/* bid pill - only on agv */}
-        {isAgv && bid !== null && bid !== undefined && (
-          <span
-            className={cn(
-              "ml-1 rounded-[4px] border px-[5px] py-[1px]",
-              "font-mono text-10",
-              isWinning
-                ? "border-cta bg-cta text-white"
-                : "border-line-soft bg-bg-sunken text-ink-2",
-            )}
-          >
-            bid {bid.toFixed(2)}
-          </span>
-        )}
       </div>
 
       {/* BODY */}

@@ -54,7 +54,6 @@ export const useEvents = () => useStore((s) => s.events);
 export const useDataSource = () => useStore((s) => s.dataSource);
 export const useLinkStatus = () => useStore((s) => s.linkStatus);
 export const useBusMessages = () => useStore((s) => s.busMessages);
-export const useBusRate = () => useStore((s) => s.busRate);
 export const useLogLines = () => useStore((s) => s.logLines);
 export const useValidation = () => useStore((s) => s.validation);
 

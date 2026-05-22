@@ -3,13 +3,13 @@ import type { useStore } from "@/store";
 import type { RuntimeDriver, ActorOpResult } from "./driver";
 import { normalizeConfig, type RawConfig } from "./configNormalizer";
 import { loadLocal } from "@/lib/persistence";
+import type { BusKind } from "@/store/types";
 import {
   armActorId,
   assetActorId,
   armHealthToStatus,
   assetStatusToStatus,
   toLogLine,
-  classifyBus,
   resolveOwnerPosition,
 } from "@/lib/contract";
 
@@ -60,8 +60,6 @@ export function createSocketDriver(): RuntimeDriver {
   let socket: Socket | null = null;
   let raf = 0;
   let last = 0;
-  let busWindow: number[] = [];
-  let lastBusSec = 0;
   // event_seq guard per object (mirror backend stale-drop). Capped - old
   // object ids are evicted FIFO so a long run can't grow these unbounded.
   const OBJ_CAP = 500;
@@ -192,7 +190,6 @@ export function createSocketDriver(): RuntimeDriver {
         // object events being wrongly dropped as stale. Bootstrap reseeds them.
         objSeq.clear();
         objOwner.clear();
-        busWindow = [];
         lastStatus.clear();
         void bootstrap();
       });
@@ -422,29 +419,7 @@ export function createSocketDriver(): RuntimeDriver {
           message?: string;
           level?: string | null;
         }) => {
-          const s = st();
-          s.pushLogLine(toLogLine(p));
-          const now = performance.now();
-          busWindow = busWindow.filter((t) => now - t < 1000);
-          busWindow.push(now);
-          const bus = classifyBus(p.source ?? "system", p.message ?? "");
-          if (bus) {
-            s.pushBusMessage({
-              id: `b-${now.toFixed(0)}-${Math.random().toString(36).slice(2, 6)}`,
-              ts: p.timestamp ?? "",
-              kind: bus.kind,
-              from: bus.from,
-              text: bus.text,
-            });
-          }
-          // Throttle busRate to ~1 Hz so a high-frequency log stream doesn't
-          // re-render bus-rate subscribers on every message.
-          const sec = Math.floor(now / 1000);
-          if (sec !== lastBusSec) {
-            lastBusSec = sec;
-            if (busWindow.length !== s.busRate)
-              s.hydrateRuntime({ busRate: busWindow.length });
-          }
+          st().pushLogLine(toLogLine(p));
         },
       );
 
@@ -463,13 +438,6 @@ export function createSocketDriver(): RuntimeDriver {
               ? armActorId(p.arm_id)
               : assetActorId(String(p.actor_id));
           st().setActorRuntime(id, { phase: p.script });
-          st().pushBusMessage({
-            id: `sc-${p.timestamp ?? ""}-${Math.random().toString(36).slice(2, 6)}`,
-            ts: p.timestamp ?? "",
-            kind: "bid",
-            from: id,
-            text: `→ ${p.script}`,
-          });
           st().pushEvent({
             kind: "lifecycle",
             actorId: id,
@@ -477,6 +445,82 @@ export function createSocketDriver(): RuntimeDriver {
             tone: "info",
             ts: p.timestamp,
           });
+        },
+      );
+
+      // ── Real NegotiationBus events ──────────────────────────────────────────
+      // The backend mirrors every Message from the NegotiationBus as a
+      // `bus_message` SocketIO event. The `type` field IS the BusKind - no
+      // regex inference, no fabrication.
+      socket.on(
+        "bus_message",
+        (p: {
+          type: string;
+          task_id?: string;
+          negotiation_round?: number;
+          sender?: string;
+          slot_id?: string;
+          bid_version?: number;
+          ts?: string;
+          payload?: unknown;
+        }) => {
+          // Validate that the type is a known BusKind; drop silently if not.
+          const KNOWN_KINDS = new Set<string>([
+            "task_announce",
+            "capability_broadcast",
+            "availability_update",
+            "bid",
+            "counter_offer",
+            "accept",
+            "reject",
+            "busy",
+            "fault",
+            "withdraw",
+            "consensus_reached",
+            "task_failed",
+          ]);
+          if (!KNOWN_KINDS.has(p.type)) return;
+
+          const kind = p.type as BusKind;
+          const ts =
+            p.ts
+              ? new Date(p.ts).toISOString().slice(11, 19)
+              : new Date().toISOString().slice(11, 19);
+          const from = p.sender ?? "system";
+
+          // Build a human-readable text summary from payload fields.
+          let text = "";
+          if (p.task_id) text += p.task_id;
+          if (p.slot_id) text += (text ? " · " : "") + `slot ${p.slot_id}`;
+          if (typeof p.bid_version === "number")
+            text += (text ? " · " : "") + `v${p.bid_version}`;
+          if (p.payload && typeof p.payload === "object") {
+            const pay = p.payload as Record<string, unknown>;
+            if (typeof pay.score === "number")
+              text += (text ? " · " : "") + `score ${pay.score.toFixed(2)}`;
+            if (typeof pay.reason === "string")
+              text += (text ? " · " : "") + pay.reason;
+          }
+
+          st().pushBusMessage({
+            id: `bm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            ts,
+            kind,
+            from,
+            round: p.negotiation_round,
+            task_id: p.task_id,
+            text,
+          });
+
+          // Surface fault/task_failed as operational events too.
+          if (kind === "fault" || kind === "task_failed") {
+            st().pushEvent({
+              kind: "lifecycle",
+              text: `${kind} · ${text || from}`,
+              tone: "err",
+              ts,
+            });
+          }
         },
       );
 

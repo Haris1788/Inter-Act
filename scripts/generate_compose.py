@@ -70,7 +70,6 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
     arms = cfg.get("arms") or []
     assets = _non_arm_assets(cfg)
     asset_ports = _asset_host_ports(assets)
-    agvs = (cfg.get("warehouse") or {}).get("agvs") or []
     ai_cfg = cfg.get("ai") or {}
     ollama_base_url = ai_cfg.get("ollama_base_url", "http://ollama:11434")
     # The heavy two-model AI layer (llm_service) points at the TU Clausthal
@@ -168,23 +167,8 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
     }
 
     # Arms are managed dynamically by topology reconciliation (container_manager).
-    # AGVs are static infrastructure — always running, one container per AGV.
+    # AGVs run in-backend — no compose service emitted.
     _ = (arms, asset_ports)  # arms parsed for validation/summary only
-
-    for i, agv in enumerate(agvs, start=1):
-        agv_id = agv["id"]
-        services[agv_id] = {
-            "build": {"context": ".", "dockerfile": "docker/Dockerfile.agv"},
-            "container_name": f"{COMPOSE_PREFIX}-{agv_id}",
-            "ports": [f"{8100 + i}:8100"],
-            "environment": [
-                f"AGV_ID={agv_id}",
-                "SERVER_HOST=http://backend:5000",
-                f"OLLAMA_BASE_URL={ollama_base_url}",
-                "PYTHONUNBUFFERED=1",
-            ],
-            "depends_on": {"backend": {"condition": "service_healthy"}},
-        }
 
     compose = {"services": services, "volumes": {"ollama_data": {}}}
 
@@ -192,10 +176,9 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
         yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
 
     arm_names = ", ".join(f"arm-{a['id']}" for a in arms) if arms else "-"
-    agv_names = ", ".join(a["id"] for a in agvs) if agvs else "-"
     print(f"Generated {output_path}")
     print(f"  Core    : ollama, backend, frontend, demo-runner")
-    print(f"  AGVs    : {len(agvs)} ({agv_names})  — static compose services")
+    print(f"  AGVs    : in-backend (decentralized runtime — no compose services)")
     print(f"  Arms    : {len(arms)} ({arm_names})  — reconciled at deploy")
     print(f"  Ollama  : {ollama_base_url}")
     print("\nRun: docker compose up --build")

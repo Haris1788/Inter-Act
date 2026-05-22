@@ -191,14 +191,6 @@ export function InspHead({ actor, runtime, live }: InspHeadProps) {
           {live ? badge.label : "Container healthy"}
         </span>
 
-        {/* Bid/winning badge - mock only */}
-        {!live && runtime.winning && (
-          <span className="inline-flex items-center gap-[5px] h-[20px] px-[7px] rounded-[4px] text-11 font-medium bg-cta text-[#FAFAF7] border border-cta">
-            <span className="w-[5px] h-[5px] rounded-full bg-[#FAFAF7] flex-shrink-0" />
-            Winning · {runtime.bid?.toFixed(2) ?? "-"}
-          </span>
-        )}
-
         {/* Coherence chip - topology alignment signal */}
         {isRuntimeOnly ? (
           <span

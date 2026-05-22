@@ -51,6 +51,56 @@ def _set_signal(agv_id: str, **kw) -> None:
             }
         _signals[agv_id].update(kw)
 
+
+# ── Public in-process handshake API (used by ArmAgent / AGVAgent) ─────────────
+# These functions reuse the same _signals dict and _signals_lock so there is
+# exactly ONE registry — no parallel state.
+
+def signal_load(agv_id: str, object_id: str) -> None:
+    """Arm signals that the package has been placed on the AGV (load ready)."""
+    _set_signal(agv_id, load_ready=True, object_id=object_id)
+    agv_state.set_carried(agv_id, object_id)
+    rec = agv_state.get(agv_id)
+    if rec:
+        _safe_emit_agv(rec)
+
+
+def poll_load(agv_id: str) -> bool:
+    """Return True when the load signal is set (package on AGV)."""
+    return _get_signal(agv_id)["load_ready"]
+
+
+def clear_load(agv_id: str) -> None:
+    """AGV acknowledges the load signal — clears it."""
+    _set_signal(agv_id, load_ready=False, object_id=None)
+
+
+def signal_unload(agv_id: str) -> None:
+    """Place arm signals that it is ready to receive the package."""
+    _set_signal(agv_id, unload_ready=True)
+
+
+def poll_unload(agv_id: str) -> bool:
+    """Return True when the unload signal is set (arm ready to receive)."""
+    return _get_signal(agv_id)["unload_ready"]
+
+
+def clear_unload(agv_id: str) -> None:
+    """AGV acknowledges the unload signal — clears it and removes carried object."""
+    _set_signal(agv_id, unload_ready=False)
+    agv_state.set_carried(agv_id, None)
+    rec = agv_state.get(agv_id)
+    if rec:
+        _safe_emit_agv(rec)
+
+
+def _safe_emit_agv(rec: dict) -> None:
+    """Best-effort agv_update emit — never raises (safe outside Flask context)."""
+    try:
+        socketio.emit("agv_update", _agv_payload(rec))
+    except Exception:
+        pass
+
 agv_bp = Blueprint("agv", __name__)
 
 
@@ -87,49 +137,6 @@ def get_grid():
     return jsonify({
         "warehouse": pipeline_config.get_warehouse_scene(),
         "runtime": grid_state.snapshot(),
-    })
-
-
-@agv_bp.route("/coord/snapshot", methods=["GET"])
-def coord_snapshot():
-    """Full live coordination state for an agent's tactical AI.
-
-    This is the 'shared status' channel: every AGV/arm brain reads this before
-    deciding its next script, so each agent's qwen14b reasons about what the
-    OTHERS are doing (who holds the lane, who is docked where, arm health,
-    the master plan's assignments) — i.e. AGV<->AGV and AGV<->arm coordinate
-    through this single snapshot rather than peer-to-peer.
-    """
-    agvs = {
-        aid: {
-            "cell": rec.get("cell"),
-            "status": rec.get("status"),
-            "carried_object": rec.get("carried_object"),
-            "bay": rec.get("bay"),
-        }
-        for aid, rec in agv_state.get_all().items()
-    }
-    station_holders = {
-        name: grid_state.station_lock(name).holder()
-        for name in ("input_arm", "output_arm")
-    }
-    try:
-        arms = arm_state.get_all_health()
-    except Exception:
-        arms = {}
-    try:
-        from app.agents.central_brain import get_brain
-        plan = get_brain().get_current_plan() or {}
-        assignments = plan.get("assignments", [])
-    except Exception:
-        assignments = []
-
-    return jsonify({
-        "agvs": agvs,
-        "lane_holder": grid_state.lane().holder(),
-        "station_holders": station_holders,
-        "arms": arms,
-        "assignments": assignments,
     })
 
 

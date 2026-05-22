@@ -81,6 +81,7 @@ class ActorAgent:
         self._my_slots: list[str] = []       # slots this agent has accepted
         self._executed_legs: list[str] = []  # slots this agent has executed
         self._consensus_announced = False
+        self._failure_announced = False
         self._reopened_rounds: set[int] = set()  # rounds this agent reopened
         self._fault_requested = False
         self._fault_reason = ""
@@ -171,6 +172,10 @@ class ActorAgent:
             deadline = self._task.get("bid_deadline_ts")
             if deadline is not None:
                 targets.append(deadline)
+        if not self._consensus_announced and not self._failure_announced:
+            consensus_deadline = self._task.get("consensus_deadline_ts")
+            if consensus_deadline is not None:
+                targets.append(consensus_deadline)
         soonest = min((t - now for t in targets), default=_IDLE_TICK_S)
         return max(0.0, min(soonest, _IDLE_TICK_S))
 
@@ -208,6 +213,7 @@ class ActorAgent:
         self.state = AgentState.IDLE
 
         self._consensus_announced = False
+        self._failure_announced = False
         self._my_slots = []
         # _executed_legs is NOT reset — a leg already physically done stays done.
 
@@ -270,6 +276,7 @@ class ActorAgent:
         # _evaluate (above) publishes ACCEPTs to the bus before _check_consensus
         # reads history — relies on synchronous in-process bus delivery.
         self._check_consensus()
+        self._check_failure()
 
     def _evaluate(self) -> None:
         """Leaderless evaluation: for every slot, apply the public rule to the
@@ -349,20 +356,107 @@ class ActorAgent:
         if not self._my_slots:
             return  # consensus reached, but this agent holds nothing to run
         self.state = AgentState.EXECUTING
+        all_complete = True
         for slot_id in self._my_slots:
             if slot_id not in self._executed_legs:
-                self._execute_leg(slot_id)
-                self._executed_legs.append(slot_id)
-        self.state = AgentState.DONE
+                completed = self._execute_leg(slot_id)
+                if completed:
+                    self._executed_legs.append(slot_id)
+                else:
+                    # Leg halted before completion (superseded round / fault).
+                    # Do NOT record it — if this slot is re-won on a reopened
+                    # round the agent must re-execute it.
+                    all_complete = False
+        if all_complete:
+            self.state = AgentState.DONE
+        # else: leave state as-is; a superseding _on_task_announce or _do_fault
+        # will set the next state.
 
-    def _execute_leg(self, slot_id: str) -> None:
+    def _check_failure(self) -> None:
+        """Observe (never decide) the failure condition: consensus deadline
+        expired with no viable bids for some slot. Idempotent and decentralised
+        — mirrors how _check_consensus works, purely from bus-visible data."""
+        if self._task is None or self._consensus_announced or self._failure_announced:
+            return
+        if self.state == AgentState.FAULTED:
+            return
+        if time.time() < self._task.get("consensus_deadline_ts", float("inf")):
+            return
+        # Double-check: if consensus is actually complete now, do not fail.
+        history = self.bus.history()
+        required = {s["slot_id"] for s in self._task.get("slots", [])}
+        accepts = accepted_actors(history, self._task_id, self._round)
+        if slots_complete(required, accepts):
+            return
+        # A slot reopen for the next round already handles a lost-holder case.
+        if (self._round + 1) in self._reopened_rounds:
+            return
+        # Determine reason: any required slot with zero surviving bids → unfillable.
+        reason = "consensus deadline expired"
+        for slot_id in required:
+            if not surviving_bids(history, self._task_id, self._round, slot_id):
+                reason = "no viable bids"
+                break
+        self._failure_announced = True
+        self._publish(
+            MessageType.TASK_FAILED,
+            payload={"round": self._round, "reason": reason},
+        )
+
+    def _execution_valid(self, slot_id: str) -> bool:
+        """Execution barrier — re-derive validity from a fresh bus snapshot.
+
+        Returns True only when ALL of:
+        1. Consensus is still complete (all required slots still accepted).
+        2. This agent still holds `slot_id` (no superseding withdraw/fault).
+        3. No higher round has been announced for this task_id.
+        4. No fault was requested on this agent (`_fault_requested`).
+
+        Called before each leg and between every motion chunk so a superseding
+        round or an agent fault halts execution promptly.
+        """
+        if self._fault_requested:
+            return False
+        if self._task is None or self._task_id is None:
+            return False
+
+        history = self.bus.history()
+        required = {s["slot_id"] for s in self._task.get("slots", [])}
+        accepts = accepted_actors(history, self._task_id, self._round)
+
+        # 1. Consensus still complete.
+        if not slots_complete(required, accepts):
+            return False
+
+        # 2. We still hold our slot.
+        if accepts.get(slot_id) != self.actor_id:
+            return False
+
+        # 3. No higher round announced for this task.
+        for m in history:
+            if (
+                m.type == MessageType.TASK_ANNOUNCE
+                and m.task_id == self._task_id
+                and m.negotiation_round > self._round
+            ):
+                return False
+
+        return True
+
+    def _execute_leg(self, slot_id: str) -> bool:
         """Run this agent's physical leg. Stage 2: a recorded/simulated step.
-        Stage 3 wires real AGV-container HTTP and arm animation here."""
+        Stage 3 wires real AGV-container HTTP and arm animation here.
+
+        Returns True when the leg completed fully, False when it halted early
+        (superseded round, fault, or any mid-execution abort). Callers in
+        _check_consensus only record the leg as done when True is returned.
+        """
         logger.debug(
             "agent %s executing leg %s (Stage 2 recorded stub)",
             self.actor_id,
             slot_id,
         )
+        return True
 
     def _maybe_reopen(self, trigger: Message) -> None:
         """If a slot that WAS accepted has lost its holder (a fault/withdraw

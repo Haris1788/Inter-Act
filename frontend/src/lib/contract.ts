@@ -6,7 +6,6 @@
 import type {
   ActorId,
   ActorStatus,
-  BusKind,
   LogLine,
   Vec2,
 } from "@/store/types";
@@ -81,32 +80,6 @@ export function toLogLine(p: {
     level,
     segments: segs,
   };
-}
-
-// ---- coordination/bus classification ------------------------------------
-// The backend has no bid/contract events. The decentralised "message bus" is
-// derived from log_message + script_chosen: only lines that read as actor
-// coordination surface as bus pills (direct-docking model - no handover).
-const BUS_RULES: { re: RegExp; kind: BusKind }[] = [
-  { re: /\bdock|docking|approach|undock/i, kind: "dock" },
-  { re: /\bpick|grab|announce|seeking|request/i, kind: "announce" },
-  {
-    re: /\bplace|deliver|complete|done|hand(ed)?\s?off|transfer/i,
-    kind: "accept",
-  },
-  { re: /\bbid|select|assign|chose|chosen/i, kind: "bid" },
-];
-
-export function classifyBus(
-  source: string,
-  message: string,
-): { kind: BusKind; from: string; text: string } | null {
-  for (const r of BUS_RULES) {
-    if (r.re.test(message)) {
-      return { kind: r.kind, from: source || "system", text: message };
-    }
-  }
-  return null;
 }
 
 // ---- owner → stage position ---------------------------------------------

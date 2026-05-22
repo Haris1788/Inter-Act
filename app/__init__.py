@@ -37,13 +37,13 @@ def create_app(config_class=None):
     from app.routes.arm_routes import arm_bp
     from app.routes.agv_routes import agv_bp
     from app.routes.ai_routes import ai_bp
-    from app.routes.dispatch_routes import dispatch_bp
+    from app.routes.negotiate_routes import negotiate_bp
 
     app.register_blueprint(page_bp)
     app.register_blueprint(arm_bp)
     app.register_blueprint(agv_bp)
     app.register_blueprint(ai_bp)
-    app.register_blueprint(dispatch_bp)
+    app.register_blueprint(negotiate_bp)
 
     # Import SocketIO event handlers so they register with the socketio instance
     from app.sockets import events  # noqa: F401
@@ -67,17 +67,17 @@ def create_app(config_class=None):
     except Exception as exc:
         print(f"[startup] AGV pre-register skipped: {exc}")
 
-    # Init AI planning pipeline: MessageBus + CentralBrain singletons.
+    # Start decentralized actor agents (Phase 3). Each configured arm/AGV gets
+    # its own ArmAgent / AGVAgent thread subscribed to the NegotiationBus.
+    # Shutdown is registered via atexit so Flask teardown cleans up gracefully.
     try:
-        from app.agents.message_bus import SocketIOBus
-        from app.agents.central_brain import CentralBrain
+        import atexit
+        from app.agents import agent_registry
 
-        bus = SocketIOBus(socketio)
-        brain = CentralBrain(bus)
-        app.extensions["central_brain"] = brain
-        app.extensions["message_bus"] = bus
+        agent_registry.start_agents()
+        atexit.register(agent_registry.stop_agents)
     except Exception as exc:
-        print(f"[startup] central_brain init skipped: {exc}")
+        print(f"[startup] agent_registry start skipped: {exc}")
 
     # Start health monitor for arm + asset containers (runs in background thread)
     from app.services.health_monitor import start as start_health_monitor

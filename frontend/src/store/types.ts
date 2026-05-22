@@ -138,8 +138,6 @@ export interface EditorSlice {
 export interface ActorRuntime {
   status: ActorStatus;
   phase: string;
-  bid: number | null;
-  winning: boolean;
   uptime: string;
   metrics: {
     cpu: number;
@@ -147,23 +145,33 @@ export interface ActorRuntime {
     battery: number;
     busLatencyMs: number;
   };
-  taskQueue: {
-    id: string;
-    ix: string;
-    label: string;
-    sub: string;
-    etaS: number;
-    active: boolean;
-  }[];
 }
 
-export type BusKind = "announce" | "bid" | "accept" | "dock";
+// Real NegotiationBus message types — sourced directly from the backend
+// Message.type field. No regex inference.
+export type BusKind =
+  | "task_announce"
+  | "capability_broadcast"
+  | "availability_update"
+  | "bid"
+  | "counter_offer"
+  | "accept"
+  | "reject"
+  | "busy"
+  | "fault"
+  | "withdraw"
+  | "consensus_reached"
+  | "task_failed";
+
 export interface BusMessage {
   id: string;
   ts: string;
   kind: BusKind;
   from: string;
   to?: string;
+  /** negotiation round number (> 0 on reopen) */
+  round?: number;
+  task_id?: string;
   text: string;
 }
 
@@ -203,10 +211,8 @@ export interface OperationalEvent {
 export interface RuntimeSlice {
   actorRuntime: Record<ActorId, ActorRuntime>;
   busMessages: BusMessage[];
-  busRate: number;
   logLines: LogLine[];
   validation: ValidationRow[];
-  contracts: { id: string; from: ActorId; to: ActorId }[];
   /** Phase 2 - live link state, shown in the topbar; never persisted. */
   dataSource: DataSource;
   linkStatus: LinkStatus;
@@ -225,8 +231,6 @@ export interface RuntimeSlice {
         | "busMessages"
         | "logLines"
         | "validation"
-        | "contracts"
-        | "busRate"
       >
     >,
   ) => void;

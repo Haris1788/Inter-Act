@@ -13,8 +13,9 @@ from typing import Any, Literal, Optional
 
 
 class MessageType(str, Enum):
-    """The 11 negotiation message types. `counter_offer` is reserved for a
-    later phase and is never emitted in Phase 1."""
+    """The 12 negotiation message types. `counter_offer` is reserved for a
+    later phase and is never emitted in Phase 1. `task_failed` is an
+    observational marker — never an authority message."""
 
     TASK_ANNOUNCE = "task_announce"
     CAPABILITY_BROADCAST = "capability_broadcast"
@@ -27,6 +28,7 @@ class MessageType(str, Enum):
     FAULT = "fault"
     WITHDRAW = "withdraw"
     CONSENSUS_REACHED = "consensus_reached"
+    TASK_FAILED = "task_failed"
 
 
 class RoundStatus(str, Enum):

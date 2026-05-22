@@ -45,11 +45,11 @@ def test_message_defaults():
     assert m.ts > 0
 
 
-def test_eleven_message_types_exist():
+def test_twelve_message_types_exist():
     expected = {
         "task_announce", "capability_broadcast", "availability_update",
         "bid", "counter_offer", "accept", "reject", "busy",
-        "fault", "withdraw", "consensus_reached",
+        "fault", "withdraw", "consensus_reached", "task_failed",
     }
     assert {t.value for t in MessageType} == expected
 

@@ -2,23 +2,42 @@ import { useMemo } from "react";
 import { cn } from "@/lib/cn";
 import type { BusKind, BusMessage } from "@/store/types";
 
+// Human-readable label for each real NegotiationBus message type.
 const KIND_LABELS: Record<BusKind, string> = {
-  announce: "announce",
+  task_announce: "announce",
+  capability_broadcast: "capability",
+  availability_update: "available",
   bid: "bid",
+  counter_offer: "counter",
   accept: "accept",
-  dock: "dock",
+  reject: "reject",
+  busy: "busy",
+  fault: "fault",
+  withdraw: "withdraw",
+  consensus_reached: "consensus",
+  task_failed: "failed",
 };
 
 function kindChipClass(kind: BusKind): string {
   switch (kind) {
-    case "announce":
+    case "task_announce":
       return "bg-info-bg text-info";
+    case "capability_broadcast":
+    case "availability_update":
+      return "bg-bg-sunken text-ink-3";
     case "bid":
+    case "counter_offer":
       return "bg-warn-bg text-warn";
     case "accept":
+    case "consensus_reached":
       return "bg-ok-bg text-ok";
-    case "dock":
-      return "bg-ok-bg text-ok";
+    case "reject":
+    case "busy":
+    case "withdraw":
+      return "bg-bg-sunken text-ink-3";
+    case "fault":
+    case "task_failed":
+      return "bg-err-bg text-err";
   }
 }
 
@@ -33,7 +52,9 @@ export function BusPane({ messages }: BusPaneProps) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto py-1.5 font-mono text-11.5">
       {reversed.length === 0 ? (
-        <p className="px-4 py-3 text-ink-5 text-11.5">No bus traffic</p>
+        <p className="px-4 py-3 text-ink-5 text-11.5">
+          No bus traffic — negotiation events appear here
+        </p>
       ) : (
         reversed.map((msg) => (
           <div
@@ -42,7 +63,7 @@ export function BusPane({ messages }: BusPaneProps) {
               "grid items-baseline gap-x-2 px-3.5 py-[2px] leading-[1.5]",
               "hover:bg-bg-hover",
             )}
-            style={{ gridTemplateColumns: "72px 80px auto 1fr" }}
+            style={{ gridTemplateColumns: "72px 90px auto 1fr" }}
           >
             {/* Timestamp */}
             <span className="text-ink-5 shrink-0">{msg.ts}</span>
@@ -58,14 +79,11 @@ export function BusPane({ messages }: BusPaneProps) {
               {KIND_LABELS[msg.kind]}
             </span>
 
-            {/* From → To */}
+            {/* From · round */}
             <span className="shrink-0 text-ink-4">
               {msg.from}
-              {msg.to ? (
-                <>
-                  <span className="mx-1 text-ink-5">→</span>
-                  {msg.to}
-                </>
+              {msg.round != null && msg.round > 0 ? (
+                <span className="ml-1 text-ink-5">r{msg.round}</span>
               ) : null}
             </span>
 
