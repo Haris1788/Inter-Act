@@ -225,7 +225,7 @@ def test_faulted_agent_publishes_fault_and_withdraws():
         bus.publish(_announce())
         time.sleep(2.2)  # arm-1 has won pickup + place
         agent.fault("test injected fault")
-        time.sleep(0.3)
+        time.sleep(0.8)
         faults = _published(bus, MessageType.FAULT, "arm-1")
         withdraws = _published(bus, MessageType.WITHDRAW, "arm-1")
         assert len(faults) == 1
@@ -256,6 +256,10 @@ def test_reopen_announce_is_published_when_a_held_slot_is_withdrawn():
             if m.type == MessageType.TASK_ANNOUNCE and m.negotiation_round == 1
         ]
         assert len(reopens) >= 1
+        assert all(
+            r.ts == reopens[0].ts and r.payload == reopens[0].payload
+            for r in reopens
+        )
     finally:
         arm.stop()
         observer.stop()

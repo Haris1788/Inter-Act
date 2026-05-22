@@ -67,7 +67,7 @@ class ActorAgent:
         # safe. It is never used for cross-thread control flow.
         self.state: AgentState = AgentState.IDLE
 
-        self._inbox: queue.Queue[Message] = queue.Queue()
+        self._inbox: queue.Queue = queue.Queue()  # Messages + None wakeup sentinels
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._messages_seen = 0
@@ -82,6 +82,8 @@ class ActorAgent:
         self._executed_legs: list[str] = []  # slots this agent has executed
         self._consensus_announced = False
         self._reopened_rounds: set[int] = set()  # rounds this agent reopened
+        self._fault_requested = False
+        self._fault_reason = ""
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -150,6 +152,14 @@ class ActorAgent:
                 logger.exception(
                     "agent %s _check_deadlines failed", self.actor_id
                 )
+            if self._fault_requested:
+                self._fault_requested = False
+                try:
+                    self._do_fault(self._fault_reason)
+                except Exception:
+                    logger.exception(
+                        "agent %s _do_fault failed", self.actor_id
+                    )
 
     def _next_wakeup(self) -> float:
         """Wake the loop at the next pending deadline, else tick slowly."""
@@ -287,8 +297,16 @@ class ActorAgent:
         return list(self._executed_legs)
 
     def fault(self, reason: str) -> None:
-        """Self-report a fault: withdraw every held slot, publish a fault.
-        Safe to call from outside the agent thread (only publishes)."""
+        """Request that this agent fault. Thread-safe — callable from any
+        thread. It only sets a flag and wakes the event loop; the agent's own
+        thread performs the withdrawals, FAULT publication, and state change."""
+        self._fault_reason = reason
+        self._fault_requested = True
+        self._inbox.put(None)  # wake the event loop promptly
+
+    def _do_fault(self, reason: str) -> None:
+        """Perform the fault — runs on the agent thread only. Withdraws every
+        held slot, publishes a FAULT, transitions to FAULTED."""
         for slot_id in list(self._my_slots):
             self._publish(
                 MessageType.WITHDRAW,
@@ -343,13 +361,12 @@ class ActorAgent:
         )
 
     def _maybe_reopen(self, trigger: Message) -> None:
-        """If a slot has lost its accepted holder, any agent may publish the
-        round+1 reopen. The reopen's announce_ts is derived from the trigger
-        message's ts so concurrent reopens are byte-identical (idempotent).
-
-        Only a WITHDRAW that revokes a *previously accepted* slot (i.e. the
-        sender had won it) can invalidate consensus and warrant a reopen.
-        Losing-evaluation WITHDRAWs (never accepted) are ignored."""
+        """If a slot that WAS accepted has lost its holder (a fault/withdraw
+        after the bid deadline), any agent may publish the round+1 reopen.
+        The reopen's announce_ts is the trigger message's ts, so concurrent
+        reopens from different agents are byte-identical (idempotent). The
+        publishing agent adopts the new round locally — the bus does not echo
+        an agent its own messages."""
         if self._task is None or self.state == AgentState.FAULTED:
             return
         if (
@@ -360,22 +377,28 @@ class ActorAgent:
         next_round = self._round + 1
         if next_round in self._reopened_rounds:
             return
-        # Before the bid deadline, evaluation will simply exclude a lost bid —
-        # no reopen needed. Only reopen once the deadline has passed.
-        if time.time() < self._task.get("bid_deadline_ts", 0):
+        # Before the bid deadline, evaluation already excludes a lost bid, so
+        # no reopen is needed. A missing deadline means never reopen.
+        if time.time() < self._task.get("bid_deadline_ts", float("inf")):
             return
         history = self.bus.history()
-        # For a WITHDRAW with a slot_id, only act if the sender previously
-        # accepted that slot — losing-evaluation withdraws do not void consensus.
-        if trigger.type == MessageType.WITHDRAW and trigger.slot_id is not None:
-            pre_trigger = [m for m in history if m is not trigger]
-            pre_accepts = accepted_actors(pre_trigger, self._task_id, self._round)
-            if pre_accepts.get(trigger.slot_id) != trigger.sender:
-                return
-        required = {s["slot_id"] for s in self._task.get("slots", [])}
-        accepts = accepted_actors(history, self._task_id, self._round)
-        if slots_complete(required, accepts):
-            return
+        # Reopen only when a slot that was ACCEPTED has since lost its holder
+        # (the holder withdrew/faulted). A slot that simply never received a
+        # bid is an unfillable task, not a fault — reopening would not help.
+        ever_accepted = {
+            m.slot_id
+            for m in history
+            if m.type == MessageType.ACCEPT
+            and m.task_id == self._task_id
+            and m.negotiation_round == self._round
+            and m.slot_id is not None
+        }
+        currently_accepted = set(
+            accepted_actors(history, self._task_id, self._round)
+        )
+        if not (ever_accepted - currently_accepted):
+            return  # no previously-held slot was lost — nothing to reopen
+
         self._reopened_rounds.add(next_round)
         base_ts = trigger.ts
         payload = dict(self._task)
@@ -384,13 +407,14 @@ class ActorAgent:
         payload["consensus_deadline_ts"] = (
             base_ts + BID_WINDOW_S + CONSENSUS_WINDOW_S
         )
-        self.bus.publish(
-            Message(
-                type=MessageType.TASK_ANNOUNCE,
-                task_id=self._task_id or "",
-                negotiation_round=next_round,
-                sender=self.actor_id,
-                ts=base_ts,
-                payload=payload,
-            )
+        reopen = Message(
+            type=MessageType.TASK_ANNOUNCE,
+            task_id=self._task_id or "",
+            negotiation_round=next_round,
+            sender=self.actor_id,
+            ts=base_ts,
+            payload=payload,
         )
+        self.bus.publish(reopen)
+        # The bus does not echo own messages back, so adopt the round locally.
+        self._on_task_announce(reopen)
