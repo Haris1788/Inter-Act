@@ -72,6 +72,36 @@ class Slot:
     to_zone: Optional[str] = None    # agv slot: dropoff zone
 
 
+# Bid / consensus window sizes (seconds). Generous vs. sub-millisecond
+# deterministic bids, so every bid lands well before any deadline.
+BID_WINDOW_S = 1.5
+CONSENSUS_WINDOW_S = 1.5
+
+_SCORED_CONSTRAINTS = ("shortest time", "shortest distance")
+
+
+def public_winner(bids: list[Message], constraint: str) -> Optional[str]:
+    """Deterministic winner of ONE slot from the public bid set.
+
+    Every actor calls this with the same surviving-bid set and the same
+    constraint, so every actor computes the identical winner. This is the
+    leaderless-consensus rule — no component "decides", the rule does.
+
+    `bids` must already be filtered to the surviving bids for one slot
+    (latest bid_version per sender, withdrawn bids removed). Returns the
+    winning sender id, or None when there are no bids.
+    """
+    if not bids:
+        return None
+    norm = (constraint or "").strip().lower()
+    if norm in _SCORED_CONSTRAINTS:
+        # Lower score wins; ties broken deterministically by lowest sender id.
+        best = min(bids, key=lambda m: (m.payload["score"], m.sender))
+        return best.sender
+    # Unconstrained: lowest sender id among valid bidders.
+    return min(b.sender for b in bids)
+
+
 def derive_slots(source_zone: str, dest_zone: str) -> list[Slot]:
     """Decompose a transport task into its three structural slots.
 

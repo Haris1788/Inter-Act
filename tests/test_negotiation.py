@@ -61,3 +61,51 @@ def test_derive_slots_three_legs():
     assert transport.from_zone == "input_arm"
     assert transport.to_zone == "output_arm"
     assert transport.zone is None
+
+
+def _bid(sender, score, slot="transport", rnd=0, ver=0):
+    from app.agents.negotiation import Message, MessageType
+
+    return Message(
+        type=MessageType.BID,
+        task_id="t1",
+        negotiation_round=rnd,
+        sender=sender,
+        slot_id=slot,
+        bid_version=ver,
+        payload={"score": score},
+    )
+
+
+def test_public_winner_shortest_time_picks_lowest_score():
+    from app.agents.negotiation import public_winner
+
+    bids = [_bid("agv-1", 14.0), _bid("agv-2", 8.0), _bid("agv-3", 20.0)]
+    assert public_winner(bids, "shortest time") == "agv-2"
+
+
+def test_public_winner_shortest_distance_picks_lowest_score():
+    from app.agents.negotiation import public_winner
+
+    bids = [_bid("agv-1", 30.0), _bid("agv-3", 12.0)]
+    assert public_winner(bids, "shortest distance") == "agv-3"
+
+
+def test_public_winner_tie_break_is_lowest_sender_id():
+    from app.agents.negotiation import public_winner
+
+    bids = [_bid("agv-3", 5.0), _bid("agv-1", 5.0), _bid("agv-2", 5.0)]
+    assert public_winner(bids, "shortest time") == "agv-1"
+
+
+def test_public_winner_unconstrained_is_lowest_sender_id():
+    from app.agents.negotiation import public_winner
+
+    bids = [_bid("agv-2", 99.0), _bid("agv-1", 1.0)]
+    assert public_winner(bids, "") == "agv-1"
+
+
+def test_public_winner_empty_set_is_none():
+    from app.agents.negotiation import public_winner
+
+    assert public_winner([], "shortest time") is None
