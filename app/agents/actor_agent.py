@@ -25,7 +25,10 @@ from typing import Optional
 
 from app.agents.bus import NegotiationBus
 from app.agents.capability import CapabilityProfile
-from app.agents.negotiation import Message
+from app.agents.negotiation import (
+    Message,
+    MessageType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,12 @@ class ActorAgent:
         self._running = False
         self._messages_seen = 0
         self._lifecycle_lock = threading.Lock()
+
+        # Active-task tracking. Phase 1: one task at a time.
+        self._task_id: Optional[str] = None
+        self._round: int = -1
+        self._task: Optional[dict] = None  # the task_announce payload
+        self._evaluated_round: int = -1    # highest round this agent evaluated
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -135,10 +144,77 @@ class ActorAgent:
         ticks slowly."""
         return _IDLE_TICK_S
 
-    # ── handlers (filled in by later tasks) ────────────────────────────────
+    # ── handlers ───────────────────────────────────────────────────────────
 
     def _handle(self, message: Message) -> None:
-        """Dispatch one inbound message. Base: no-op (Task 4+ fills this)."""
+        # Monotonic-round invariant: ignore anything older than the round we
+        # are already on for this task.
+        if (
+            message.task_id == self._task_id
+            and message.negotiation_round < self._round
+        ):
+            return
+        if message.type == MessageType.TASK_ANNOUNCE:
+            self._on_task_announce(message)
+
+    def _on_task_announce(self, message: Message) -> None:
+        # Adopt the (possibly new) task/round. A higher round supersedes.
+        if (
+            message.task_id == self._task_id
+            and message.negotiation_round <= self._round
+        ):
+            return
+        self._task_id = message.task_id
+        self._round = message.negotiation_round
+        self._task = dict(message.payload)
+        self.state = AgentState.IDLE
+
+        self._broadcast_capability()
+        self._place_bids()
+
+    def _broadcast_capability(self) -> None:
+        self._publish(
+            MessageType.CAPABILITY_BROADCAST,
+            payload=self.profile.to_dict(),
+        )
+
+    def _place_bids(self) -> None:
+        slots = (self._task or {}).get("slots", [])
+        bid_placed = False
+        for slot in slots:
+            score = self._bid_score(slot)
+            if score is None:
+                continue
+            self._publish(
+                MessageType.BID,
+                slot_id=slot["slot_id"],
+                payload={"score": score, "basis": self.profile.kind},
+            )
+            bid_placed = True
+        if bid_placed:
+            self.state = AgentState.BIDDING
+
+    def _publish(
+        self,
+        msg_type: MessageType,
+        slot_id: Optional[str] = None,
+        payload: Optional[dict] = None,
+    ) -> None:
+        self.bus.publish(
+            Message(
+                type=msg_type,
+                task_id=self._task_id or "",
+                negotiation_round=self._round,
+                sender=self.actor_id,
+                slot_id=slot_id,
+                payload=payload or {},
+            )
+        )
+
+    def _bid_score(self, slot: dict):
+        """Return this agent's deterministic bid score for `slot`, or None if
+        the agent cannot fill it. Base agent never bids."""
+        return None
 
     def _check_deadlines(self) -> None:
         """Act on elapsed negotiation deadlines. Base: no-op (Task 6 fills)."""

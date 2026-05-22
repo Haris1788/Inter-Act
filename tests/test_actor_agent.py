@@ -66,3 +66,85 @@ def test_agent_ignores_its_own_messages():
         assert agent.messages_seen() == 0
     finally:
         agent.stop()
+
+
+def _announce(round_=0, constraint="", task_id="t1"):
+    now = time.time()
+    return Message(
+        type=MessageType.TASK_ANNOUNCE,
+        task_id=task_id,
+        negotiation_round=round_,
+        sender="interpreter",
+        payload={
+            "source_zone": "input_arm",
+            "dest_zone": "output_arm",
+            "constraint": constraint,
+            "slots": [
+                {"slot_id": "pickup", "kind": "arm", "zone": "input_arm"},
+                {"slot_id": "transport", "kind": "agv",
+                 "from_zone": "input_arm", "to_zone": "output_arm"},
+                {"slot_id": "place", "kind": "arm", "zone": "output_arm"},
+            ],
+            "announce_ts": now,
+            "bid_deadline_ts": now + 1.5,
+            "consensus_deadline_ts": now + 3.0,
+        },
+    )
+
+
+class _ScoringAgent(ActorAgent):
+    """Test agent that bids a fixed score on every slot whose kind matches."""
+
+    def __init__(self, profile, bus, score=5.0):
+        super().__init__(profile, bus)
+        self._score = score
+
+    def _bid_score(self, slot: dict):
+        if slot["kind"] == self.profile.kind:
+            return self._score
+        return None
+
+
+def _published(bus, mtype, sender):
+    return [m for m in bus.history() if m.type == mtype and m.sender == sender]
+
+
+def test_task_announce_makes_agent_broadcast_capability():
+    bus = NegotiationBus()
+    agent = _ScoringAgent(_profile("arm-1", "arm"), bus)
+    agent.start()
+    try:
+        bus.publish(_announce())
+        time.sleep(0.3)
+        caps = _published(bus, MessageType.CAPABILITY_BROADCAST, "arm-1")
+        assert len(caps) == 1
+        assert caps[0].payload["actor_id"] == "arm-1"
+    finally:
+        agent.stop()
+
+
+def test_task_announce_makes_capable_agent_bid_and_enter_bidding():
+    bus = NegotiationBus()
+    agent = _ScoringAgent(_profile("arm-1", "arm"), bus)
+    agent.start()
+    try:
+        bus.publish(_announce())
+        time.sleep(0.3)
+        bids = _published(bus, MessageType.BID, "arm-1")
+        assert {b.slot_id for b in bids} == {"pickup", "place"}
+        assert agent.state == AgentState.BIDDING
+    finally:
+        agent.stop()
+
+
+def test_agent_that_cannot_fill_any_slot_does_not_bid():
+    bus = NegotiationBus()
+    agent = ActorAgent(_profile("arm-1", "arm"), bus)
+    agent.start()
+    try:
+        bus.publish(_announce())
+        time.sleep(0.3)
+        assert _published(bus, MessageType.BID, "arm-1") == []
+        assert agent.state == AgentState.IDLE
+    finally:
+        agent.stop()
