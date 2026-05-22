@@ -105,6 +105,69 @@ def public_winner(bids: list[Message], constraint: Optional[str]) -> Optional[st
     return min(b.sender for b in bids)
 
 
+def _latest_versions(bids: list[Message]) -> list[Message]:
+    """Keep only the highest-bid_version Message per sender."""
+    best: dict[str, Message] = {}
+    for m in bids:
+        cur = best.get(m.sender)
+        if cur is None or m.bid_version >= cur.bid_version:
+            best[m.sender] = m
+    return list(best.values())
+
+
+def surviving_bids(
+    history: list[Message],
+    task_id: str,
+    negotiation_round: int,
+    slot_id: str,
+) -> list[Message]:
+    """The bids for one slot that still stand.
+
+    Pure function over the public bus history: keeps the latest bid_version
+    per sender and drops any sender that has since published a `withdraw`
+    for this slot. Every actor calling this with the same history computes
+    the identical set — the basis of leaderless evaluation.
+    """
+    withdrawn = {
+        m.sender
+        for m in history
+        if m.type == MessageType.WITHDRAW
+        and m.task_id == task_id
+        and m.negotiation_round == negotiation_round
+        and m.slot_id == slot_id
+    }
+    bids = [
+        m
+        for m in history
+        if m.type == MessageType.BID
+        and m.task_id == task_id
+        and m.negotiation_round == negotiation_round
+        and m.slot_id == slot_id
+        and m.sender not in withdrawn
+    ]
+    return _latest_versions(bids)
+
+
+def accepted_actors(
+    history: list[Message], task_id: str, negotiation_round: int
+) -> dict[str, str]:
+    """Map slot_id -> accepting actor id for one task/round.
+
+    An `accept` superseded by a later `withdraw` from the same actor for the
+    same slot is removed. History must be in publish order.
+    """
+    accepts: dict[str, str] = {}
+    for m in history:
+        if m.task_id != task_id or m.negotiation_round != negotiation_round:
+            continue
+        if m.type == MessageType.ACCEPT and m.slot_id is not None:
+            accepts[m.slot_id] = m.sender
+        elif m.type == MessageType.WITHDRAW and m.slot_id is not None:
+            if accepts.get(m.slot_id) == m.sender:
+                del accepts[m.slot_id]
+    return accepts
+
+
 def slots_complete(required_slot_ids: set[str], accepts: dict[str, str]) -> bool:
     """Validation only: True when every required slot has exactly one accepted
     actor and no extra slot is present.
