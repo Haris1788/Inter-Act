@@ -56,6 +56,9 @@ class ActorAgent:
         self.profile = profile
         self.actor_id = profile.actor_id
         self.bus = bus
+        # `state` is read cross-thread by tests/registry for diagnostics only;
+        # CPython reference assignment is atomic, so observational reads are
+        # safe. It is never used for cross-thread control flow.
         self.state: AgentState = AgentState.IDLE
 
         self._inbox: queue.Queue[Message] = queue.Queue()
@@ -154,6 +157,8 @@ class ActorAgent:
             and message.negotiation_round < self._round
         ):
             return
+        # _on_task_announce applies a stricter (<=) guard so a duplicate
+        # announce for the round we are already on is ignored.
         if message.type == MessageType.TASK_ANNOUNCE:
             self._on_task_announce(message)
 
@@ -211,7 +216,7 @@ class ActorAgent:
             )
         )
 
-    def _bid_score(self, slot: dict):
+    def _bid_score(self, slot: dict) -> Optional[float]:
         """Return this agent's deterministic bid score for `slot`, or None if
         the agent cannot fill it. Base agent never bids."""
         return None
