@@ -7,6 +7,7 @@ from app.agents.negotiation import (
     Slot,
     derive_slots,
     public_winner,
+    slots_complete,
 )
 
 
@@ -104,3 +105,21 @@ def test_public_winner_unconstrained_is_lowest_sender_id():
 
 def test_public_winner_empty_set_is_none():
     assert public_winner([], "shortest time") is None
+
+
+def test_slots_complete_true_when_every_slot_filled():
+    required = {"pickup", "transport", "place"}
+    accepts = {"pickup": "arm-1", "transport": "agv-2", "place": "arm-2"}
+    assert slots_complete(required, accepts) is True
+
+
+def test_slots_complete_false_when_a_slot_missing():
+    required = {"pickup", "transport", "place"}
+    accepts = {"pickup": "arm-1", "transport": "agv-2"}
+    assert slots_complete(required, accepts) is False
+
+
+def test_slots_complete_false_when_extra_slot_present():
+    required = {"pickup", "transport"}
+    accepts = {"pickup": "arm-1", "transport": "agv-2", "ghost": "agv-9"}
+    assert slots_complete(required, accepts) is False

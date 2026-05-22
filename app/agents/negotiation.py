@@ -102,6 +102,16 @@ def public_winner(bids: list[Message], constraint: Optional[str]) -> Optional[st
     return min(b.sender for b in bids)
 
 
+def slots_complete(required_slot_ids: set[str], accepts: dict[str, str]) -> bool:
+    """Validation only: True when every required slot has exactly one accepted
+    actor and no extra slot is present.
+
+    `accepts` maps slot_id -> accepting actor id, already filtered to valid,
+    non-withdrawn accepts. This function NEVER picks an actor — it only checks.
+    """
+    return required_slot_ids == set(accepts.keys()) and all(accepts.values())
+
+
 def derive_slots(source_zone: str, dest_zone: str) -> list[Slot]:
     """Decompose a transport task into its three structural slots.
 
