@@ -215,3 +215,47 @@ def test_agent_does_not_execute_without_full_consensus():
         assert agent.state != AgentState.DONE
     finally:
         agent.stop()
+
+
+def test_faulted_agent_publishes_fault_and_withdraws():
+    bus = NegotiationBus()
+    agent = _ScoringAgent(_profile("arm-1", "arm"), bus, score=2.0)
+    agent.start()
+    try:
+        bus.publish(_announce())
+        time.sleep(2.2)  # arm-1 has won pickup + place
+        agent.fault("test injected fault")
+        time.sleep(0.3)
+        faults = _published(bus, MessageType.FAULT, "arm-1")
+        withdraws = _published(bus, MessageType.WITHDRAW, "arm-1")
+        assert len(faults) == 1
+        assert {w.slot_id for w in withdraws} == {"pickup", "place"}
+        assert agent.state == AgentState.FAULTED
+    finally:
+        agent.stop()
+
+
+def test_reopen_announce_is_published_when_a_held_slot_is_withdrawn():
+    bus = NegotiationBus()
+
+    class _OmniAgent(_ScoringAgent):
+        def _bid_score(self, slot):
+            return self._score
+
+    arm = _ScoringAgent(_profile("arm-1", "arm"), bus, score=2.0)
+    observer = _OmniAgent(_profile("agv-1", "agv"), bus, score=5.0)
+    arm.start()
+    observer.start()
+    try:
+        bus.publish(_announce(constraint="shortest time"))
+        time.sleep(2.2)
+        arm.fault("boom")
+        time.sleep(1.0)
+        reopens = [
+            m for m in bus.history()
+            if m.type == MessageType.TASK_ANNOUNCE and m.negotiation_round == 1
+        ]
+        assert len(reopens) >= 1
+    finally:
+        arm.stop()
+        observer.stop()

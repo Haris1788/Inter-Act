@@ -26,6 +26,8 @@ from typing import Optional
 from app.agents.bus import NegotiationBus
 from app.agents.capability import CapabilityProfile
 from app.agents.negotiation import (
+    BID_WINDOW_S,
+    CONSENSUS_WINDOW_S,
     Message,
     MessageType,
     accepted_actors,
@@ -79,6 +81,7 @@ class ActorAgent:
         self._my_slots: list[str] = []       # slots this agent has accepted
         self._executed_legs: list[str] = []  # slots this agent has executed
         self._consensus_announced = False
+        self._reopened_rounds: set[int] = set()  # rounds this agent reopened
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -175,6 +178,8 @@ class ActorAgent:
         # announce for the round we are already on is ignored.
         if message.type == MessageType.TASK_ANNOUNCE:
             self._on_task_announce(message)
+        elif message.type in (MessageType.WITHDRAW, MessageType.FAULT):
+            self._maybe_reopen(message)
 
     def _on_task_announce(self, message: Message) -> None:
         # Adopt the (possibly new) task/round. A higher round supersedes.
@@ -187,6 +192,10 @@ class ActorAgent:
         self._round = message.negotiation_round
         self._task = dict(message.payload)
         self.state = AgentState.IDLE
+
+        self._consensus_announced = False
+        self._my_slots = []
+        # _executed_legs is NOT reset — a leg already physically done stays done.
 
         self._broadcast_capability()
         self._place_bids()
@@ -277,6 +286,19 @@ class ActorAgent:
     def executed_legs(self) -> list[str]:
         return list(self._executed_legs)
 
+    def fault(self, reason: str) -> None:
+        """Self-report a fault: withdraw every held slot, publish a fault.
+        Safe to call from outside the agent thread (only publishes)."""
+        for slot_id in list(self._my_slots):
+            self._publish(
+                MessageType.WITHDRAW,
+                slot_id=slot_id,
+                payload={"reason": f"fault: {reason}"},
+            )
+        self._my_slots.clear()
+        self._publish(MessageType.FAULT, payload={"reason": reason})
+        self.state = AgentState.FAULTED
+
     def _check_consensus(self) -> None:
         """Observe (never decide) the consensus condition, then run our leg.
 
@@ -318,4 +340,57 @@ class ActorAgent:
             "agent %s executing leg %s (Stage 2 recorded stub)",
             self.actor_id,
             slot_id,
+        )
+
+    def _maybe_reopen(self, trigger: Message) -> None:
+        """If a slot has lost its accepted holder, any agent may publish the
+        round+1 reopen. The reopen's announce_ts is derived from the trigger
+        message's ts so concurrent reopens are byte-identical (idempotent).
+
+        Only a WITHDRAW that revokes a *previously accepted* slot (i.e. the
+        sender had won it) can invalidate consensus and warrant a reopen.
+        Losing-evaluation WITHDRAWs (never accepted) are ignored."""
+        if self._task is None or self.state == AgentState.FAULTED:
+            return
+        if (
+            trigger.task_id != self._task_id
+            or trigger.negotiation_round != self._round
+        ):
+            return
+        next_round = self._round + 1
+        if next_round in self._reopened_rounds:
+            return
+        # Before the bid deadline, evaluation will simply exclude a lost bid —
+        # no reopen needed. Only reopen once the deadline has passed.
+        if time.time() < self._task.get("bid_deadline_ts", 0):
+            return
+        history = self.bus.history()
+        # For a WITHDRAW with a slot_id, only act if the sender previously
+        # accepted that slot — losing-evaluation withdraws do not void consensus.
+        if trigger.type == MessageType.WITHDRAW and trigger.slot_id is not None:
+            pre_trigger = [m for m in history if m is not trigger]
+            pre_accepts = accepted_actors(pre_trigger, self._task_id, self._round)
+            if pre_accepts.get(trigger.slot_id) != trigger.sender:
+                return
+        required = {s["slot_id"] for s in self._task.get("slots", [])}
+        accepts = accepted_actors(history, self._task_id, self._round)
+        if slots_complete(required, accepts):
+            return
+        self._reopened_rounds.add(next_round)
+        base_ts = trigger.ts
+        payload = dict(self._task)
+        payload["announce_ts"] = base_ts
+        payload["bid_deadline_ts"] = base_ts + BID_WINDOW_S
+        payload["consensus_deadline_ts"] = (
+            base_ts + BID_WINDOW_S + CONSENSUS_WINDOW_S
+        )
+        self.bus.publish(
+            Message(
+                type=MessageType.TASK_ANNOUNCE,
+                task_id=self._task_id or "",
+                negotiation_round=next_round,
+                sender=self.actor_id,
+                ts=base_ts,
+                payload=payload,
+            )
         )
