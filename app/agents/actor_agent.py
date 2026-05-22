@@ -16,6 +16,7 @@ no agent-local locking.
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -25,6 +26,8 @@ from typing import Optional
 from app.agents.bus import NegotiationBus
 from app.agents.capability import CapabilityProfile
 from app.agents.negotiation import Message
+
+logger = logging.getLogger(__name__)
 
 
 class AgentState(str, Enum):
@@ -56,26 +59,36 @@ class ActorAgent:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._messages_seen = 0
+        self._lifecycle_lock = threading.Lock()
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Subscribe to the bus and start the event-loop thread."""
-        if self._running:
-            return
-        self._running = True
-        self.bus.subscribe_all(self._enqueue)
-        self._thread = threading.Thread(
-            target=self._run, name=f"agent-{self.actor_id}", daemon=True
-        )
-        self._thread.start()
+        """Subscribe to the bus and start the event-loop thread. Idempotent
+        and race-free under concurrent callers."""
+        with self._lifecycle_lock:
+            if self._running or self._thread is not None:
+                return
+            self._running = True
+            self.bus.subscribe_all(self._enqueue)
+            self._thread = threading.Thread(
+                target=self._run, name=f"agent-{self.actor_id}", daemon=True
+            )
+            self._thread.start()
 
     def stop(self) -> None:
-        """Stop the event loop and join the thread."""
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=3.0)
+        """Stop the event loop and join the thread. Logs a warning if the
+        thread does not exit within the join timeout."""
+        with self._lifecycle_lock:
+            self._running = False
+            thread = self._thread
             self._thread = None
+        if thread is not None:
+            thread.join(timeout=3.0)
+            if thread.is_alive():
+                logger.warning(
+                    "agent %s thread did not stop within 3s", self.actor_id
+                )
 
     def is_running(self) -> bool:
         return self._running and self._thread is not None and self._thread.is_alive()
@@ -103,15 +116,18 @@ class ActorAgent:
             except queue.Empty:
                 message = None
             if message is not None:
+                # Single writer (this thread); GIL makes the int read on other threads safe.
                 self._messages_seen += 1
                 try:
                     self._handle(message)
                 except Exception:
-                    pass
+                    logger.exception("agent %s _handle failed", self.actor_id)
             try:
                 self._check_deadlines()
             except Exception:
-                pass
+                logger.exception(
+                    "agent %s _check_deadlines failed", self.actor_id
+                )
 
     def _next_wakeup(self) -> float:
         """Seconds until the loop should wake even with no message. Task 6
