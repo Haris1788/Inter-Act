@@ -52,7 +52,7 @@ def test_load_profiles_from_config(monkeypatch):
             ],
         },
     }
-    monkeypatch.setattr(pipeline_config, "_config", fake)
+    monkeypatch.setattr(pipeline_config, "get_config", lambda: fake)
 
     profiles = capability.load_profiles()
     by_id = {p.actor_id: p for p in profiles}
