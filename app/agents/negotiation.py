@@ -80,7 +80,7 @@ CONSENSUS_WINDOW_S = 1.5
 _SCORED_CONSTRAINTS = ("shortest time", "shortest distance")
 
 
-def public_winner(bids: list[Message], constraint: str) -> Optional[str]:
+def public_winner(bids: list[Message], constraint: Optional[str]) -> Optional[str]:
     """Deterministic winner of ONE slot from the public bid set.
 
     Every actor calls this with the same surviving-bid set and the same

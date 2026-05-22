@@ -1,6 +1,13 @@
 """Unit tests for the negotiation protocol primitives."""
 
-from app.agents.negotiation import Message, MessageType, RoundStatus, Slot, derive_slots
+from app.agents.negotiation import (
+    Message,
+    MessageType,
+    RoundStatus,
+    Slot,
+    derive_slots,
+    public_winner,
+)
 
 
 def test_message_to_dict_roundtrips():
@@ -64,8 +71,6 @@ def test_derive_slots_three_legs():
 
 
 def _bid(sender, score, slot="transport", rnd=0, ver=0):
-    from app.agents.negotiation import Message, MessageType
-
     return Message(
         type=MessageType.BID,
         task_id="t1",
@@ -78,34 +83,24 @@ def _bid(sender, score, slot="transport", rnd=0, ver=0):
 
 
 def test_public_winner_shortest_time_picks_lowest_score():
-    from app.agents.negotiation import public_winner
-
     bids = [_bid("agv-1", 14.0), _bid("agv-2", 8.0), _bid("agv-3", 20.0)]
     assert public_winner(bids, "shortest time") == "agv-2"
 
 
 def test_public_winner_shortest_distance_picks_lowest_score():
-    from app.agents.negotiation import public_winner
-
     bids = [_bid("agv-1", 30.0), _bid("agv-3", 12.0)]
     assert public_winner(bids, "shortest distance") == "agv-3"
 
 
 def test_public_winner_tie_break_is_lowest_sender_id():
-    from app.agents.negotiation import public_winner
-
     bids = [_bid("agv-3", 5.0), _bid("agv-1", 5.0), _bid("agv-2", 5.0)]
     assert public_winner(bids, "shortest time") == "agv-1"
 
 
 def test_public_winner_unconstrained_is_lowest_sender_id():
-    from app.agents.negotiation import public_winner
-
     bids = [_bid("agv-2", 99.0), _bid("agv-1", 1.0)]
     assert public_winner(bids, "") == "agv-1"
 
 
 def test_public_winner_empty_set_is_none():
-    from app.agents.negotiation import public_winner
-
     assert public_winner([], "shortest time") is None
