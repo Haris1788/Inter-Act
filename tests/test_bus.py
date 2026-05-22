@@ -80,9 +80,6 @@ def test_subscribe_all_receives_every_type():
     bus = NegotiationBus()
     got = []
     bus.subscribe_all(got.append)
-    bus.publish(_msg(MessageType.BID))
-    bus.publish(_msg(MessageType.ACCEPT))
-    bus.publish(_msg(MessageType.TASK_ANNOUNCE, sender="interpreter"))
-    assert [m.type for m in got] == [
-        MessageType.BID, MessageType.ACCEPT, MessageType.TASK_ANNOUNCE,
-    ]
+    for mt in MessageType:
+        bus.publish(_msg(mt))
+    assert [m.type for m in got] == list(MessageType)

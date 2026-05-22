@@ -41,7 +41,10 @@ class NegotiationBus:
 
     def subscribe_all(self, callback: Callable[[Message], None]) -> None:
         """Register `callback` for every message type. Convenience for actor
-        agents, which need the whole negotiation stream."""
+        agents, which need the whole negotiation stream.
+
+        Call once per agent instance — calling it again with the same
+        callback causes duplicate deliveries."""
         for msg_type in MessageType:
             self.subscribe(msg_type, callback)
 

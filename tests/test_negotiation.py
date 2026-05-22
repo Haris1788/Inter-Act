@@ -128,3 +128,16 @@ def test_slots_complete_false_when_extra_slot_present():
 def test_slots_complete_true_for_empty_required_set():
     # Vacuously true: no required slots means nothing is unfilled.
     assert slots_complete(set(), {}) is True
+
+
+def test_public_winner_missing_score_treated_as_worst():
+    """A bid with no 'score' key must not raise; it loses to any scored bid."""
+    scored = Message(
+        type=MessageType.BID, task_id="t", negotiation_round=0,
+        sender="agv-2", payload={"score": 5.0},
+    )
+    unscored = Message(
+        type=MessageType.BID, task_id="t", negotiation_round=0,
+        sender="agv-1", payload={},
+    )
+    assert public_winner([scored, unscored], "shortest time") == "agv-2"
