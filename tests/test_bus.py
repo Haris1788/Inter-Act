@@ -74,3 +74,15 @@ def test_publish_without_flask_app_does_not_raise():
 
 def test_get_bus_is_singleton():
     assert get_bus() is get_bus()
+
+
+def test_subscribe_all_receives_every_type():
+    bus = NegotiationBus()
+    got = []
+    bus.subscribe_all(got.append)
+    bus.publish(_msg(MessageType.BID))
+    bus.publish(_msg(MessageType.ACCEPT))
+    bus.publish(_msg(MessageType.TASK_ANNOUNCE, sender="interpreter"))
+    assert [m.type for m in got] == [
+        MessageType.BID, MessageType.ACCEPT, MessageType.TASK_ANNOUNCE,
+    ]

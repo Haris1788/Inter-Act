@@ -1,1 +1,1 @@
-"""Agent layer - multi-agent coordination (Phase 3+)."""
+"""Agent layer — decentralized negotiation runtime (Phase 1)."""

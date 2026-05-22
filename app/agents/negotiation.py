@@ -96,7 +96,10 @@ def public_winner(bids: list[Message], constraint: Optional[str]) -> Optional[st
     norm = (constraint or "").strip().lower()
     if norm in _SCORED_CONSTRAINTS:
         # Lower score wins; ties broken deterministically by lowest sender id.
-        best = min(bids, key=lambda m: (m.payload["score"], m.sender))
+        best = min(
+            bids,
+            key=lambda m: (m.payload.get("score", float("inf")), m.sender),
+        )
         return best.sender
     # Unconstrained: lowest sender id among valid bidders.
     return min(b.sender for b in bids)

@@ -39,6 +39,12 @@ class NegotiationBus:
         with self._lock:
             self._subs[msg_type].append(callback)
 
+    def subscribe_all(self, callback: Callable[[Message], None]) -> None:
+        """Register `callback` for every message type. Convenience for actor
+        agents, which need the whole negotiation stream."""
+        for msg_type in MessageType:
+            self.subscribe(msg_type, callback)
+
     def publish(self, message: Message) -> None:
         """Record, mirror to the UI, then dispatch to in-process subscribers.
 
