@@ -192,6 +192,10 @@ class ActorAgent:
             self._maybe_reopen(message)
 
     def _on_task_announce(self, message: Message) -> None:
+        # A faulted agent stays out of the negotiation — it does not rejoin
+        # on a reopen (Phase 1 has no agent-level recover).
+        if self.state == AgentState.FAULTED:
+            return
         # Adopt the (possibly new) task/round. A higher round supersedes.
         if (
             message.task_id == self._task_id
