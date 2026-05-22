@@ -50,3 +50,15 @@ def test_closer_agv_scores_lower(monkeypatch):
     slot = {"slot_id": "transport", "kind": "agv",
             "from_zone": "input_arm", "to_zone": "output_arm"}
     assert near._bid_score(slot) < far._bid_score(slot)
+
+
+def test_agv_returns_none_for_unknown_zone(monkeypatch):
+    from app.models import pipeline_config
+
+    monkeypatch.setattr(pipeline_config, "get_stations", lambda: _STATIONS)
+    agent = _agv()
+    score = agent._bid_score(
+        {"slot_id": "transport", "kind": "agv",
+         "from_zone": "nonexistent_zone", "to_zone": "output_arm"}
+    )
+    assert score is None

@@ -24,6 +24,8 @@ class AGVAgent(ActorAgent):
         dock = self._dock_cell(from_zone)
         if dock is None:
             return None
+        if len(self.profile.position) < 2:
+            return None
         col, row = self.profile.position[0], self.profile.position[1]
         return abs(col - dock[0]) + abs(row - dock[1])
 
