@@ -48,3 +48,18 @@ def test_eleven_message_types_exist():
 
 def test_round_status_values():
     assert {s.value for s in RoundStatus} == {"open", "converged", "failed", "superseded"}
+
+
+def test_derive_slots_three_legs():
+    from app.agents.negotiation import derive_slots
+
+    slots = derive_slots("input_arm", "output_arm")
+    assert [s.slot_id for s in slots] == ["pickup", "transport", "place"]
+    assert [s.kind for s in slots] == ["arm", "agv", "arm"]
+
+    pickup, transport, place = slots
+    assert pickup.zone == "input_arm"
+    assert place.zone == "output_arm"
+    assert transport.from_zone == "input_arm"
+    assert transport.to_zone == "output_arm"
+    assert transport.zone is None

@@ -57,3 +57,34 @@ class Message:
         d = asdict(self)
         d["type"] = self.type.value
         return d
+
+
+@dataclass
+class Slot:
+    """One leg of a transport task. Slot *structure* is a physical-topology
+    fact (an arm serves each station; AGVs move between) — it names no actor.
+    Who fills a slot is decided by negotiation, never by this module."""
+
+    slot_id: str
+    kind: str  # "arm" | "agv"
+    zone: Optional[str] = None       # arm slots: the station zone
+    from_zone: Optional[str] = None  # agv slot: pickup zone
+    to_zone: Optional[str] = None    # agv slot: dropoff zone
+
+
+def derive_slots(source_zone: str, dest_zone: str) -> list[Slot]:
+    """Decompose a transport task into its three structural slots.
+
+    "move X -> Y" always needs: an arm at X, an AGV X->Y, an arm at Y.
+    This is structural validation, not assignment.
+    """
+    return [
+        Slot(slot_id="pickup", kind="arm", zone=source_zone),
+        Slot(
+            slot_id="transport",
+            kind="agv",
+            from_zone=source_zone,
+            to_zone=dest_zone,
+        ),
+        Slot(slot_id="place", kind="arm", zone=dest_zone),
+    ]
