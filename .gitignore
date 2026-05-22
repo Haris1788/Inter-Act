@@ -13,20 +13,18 @@ build/
 *.swo
 .claude/
 planning/
-docs/architecture.pdf
-docs/execution_time_estimate.txt
-docs/INTER_act_master_prompt.md
-docs/project_concept.md
-docs/project_concept.pdf
-docs/sprint_1_plan.md
-docs/sprint_1_plan.pdf
-docs/sprint_plan_A_full.pdf
-docs/sprint_plan_B_immediate.pdf
-docs/strategic_plan.md
-docs/strategic_plan.pdf
-docs/system_documentation.pdf
-project_concept.pdf
-sprint_plan_A_full.pdf
-sprint_plan_B_immediate.pdf
-test video.mp4
-first review party.mp4
+Doc-check/
+.cursor/rules/humanized-docs.mdc
+graphify-out/
+presentation/
+CLAUDE.md
+.graphify_python
+HANDOFF.md
+.playwright-mcp/page-2026-05-10T18-54-12-719Z.yml
+node_modules/
+frontend/dist/
+frontend/.verify/
+frontend/dev-server.log
+.playwright-mcp/
+verify-*.png
+frontend/preview.log

@@ -1,85 +1,77 @@
-# INTER.act Pipeline Configuration
-# Edit this file to add/remove arms, change modes, or set failure policies.
-# Then run: python scripts/generate_compose.py && docker compose up --build
-
 pipeline:
-  mode: dependency # sequential | parallel | dependency (DAG-based)
-  products: 3
-  speed: normal # fast | normal | slow
-
+  mode: dependency
+  products: 6
+  speed: normal
 failure_policy:
-  default: isolate # stop | skip | retry | isolate
+  default: isolate
   retry_max: 3
   retry_delay: 2.0
-
 health:
   check_interval: 2.0
   timeout: 5.0
   max_missed: 3
 
-# Canvas size is auto-computed from arm count. Remove these to use defaults.
-# canvas:
-#   width: 1920
-#   height: 720
-
 arms:
-  - id: 1
-    label: "Arm 1"
-    color: "#e74c3c"
-    depends_on: []
-    critical: true
+- id: 1
+  label: Input Arm
+  color: '#e74c3c'
+  depends_on: []
+  critical: true
+- id: 2
+  label: Output Arm
+  color: '#27ae60'
+  depends_on: []
+  critical: true
 
-  - id: 2
-    label: "Arm 2"
-    color: "#2ecc71"
-    depends_on: [1]
-    critical: true
+warehouse:
+  grid:
+    cols: 14
+    rows: 10
+    cell_px: 120
+  origin:
+    x: 30
+    y: 30
+  stations:
+    input_arm:
+      cell: [1, 1]
+      dock: [2, 1]
+      label: IN
+      served_by: arm-1
+    output_arm:
+      cell: [12, 1]
+      dock: [11, 1]
+      label: OUT
+      served_by: arm-2
+  lane:
+    - [2, 1]
+    - [3, 1]
+    - [4, 1]
+    - [5, 1]
+    - [6, 1]
+    - [7, 1]
+    - [8, 1]
+    - [9, 1]
+    - [10, 1]
+    - [11, 1]
+  agvs:
+  - id: agv-1
+    label: AGV 1
+    color: '#16a085'
+    bay: [10, 3]
+  - id: agv-2
+    label: AGV 2
+    color: '#8e44ad'
+    bay: [10, 5]
+  - id: agv-3
+    label: AGV 3
+    color: '#2980b9'
+    bay: [10, 7]
 
-  - id: 3
-    label: "Arm 3"
-    color: "#3498db"
-    depends_on: [2]
-    critical: true
-
-  # - id: 4
-  #   label: "Arm 4"
-  #   color: "#9b59b6"
-  #   depends_on: [3]
-  #   critical: true
-
-  # - id: 5
-  #   label: "Arm 5"
-  #   color: "#9b99b6"
-  #   depends_on: [4]
-  #   critical: true
-
-  # - id: 6
-  #   label: "Arm 6"
-  #   color: "#f39c12"
-  #   depends_on: [5]
-  #   critical: true
-  #   failure_policy: retry
-
-  # - id: 7
-  #   label: "Arm 7"
-  #   color: "#1abc9c"
-  #   depends_on: [6]
-  #   critical: true
-
-  # - id: 8
-  #   label: "Arm 8"
-  #   color: "#34495e"
-  #   depends_on: [7]
-  #   critical: true
-
-  # - id: 9
-  #   label: "Arm 9"
-  #   color: "#d35400"
-  #   depends_on: [8]
-  #   critical: true
-
-  # - id: 10
-  #   label: "Arm 10"
-  #   color: "#16a085"
-  #   depends_on: [9]
-  #   critical: false
+ai:
+  # qwen_brain (legacy per-arm 0.5b) stays on the local container.
+  ollama_base_url: http://ollama:11434
+  # llm_service (interpreter/planner + tactical) -> TU Clausthal GPU tunnel,
+  # reached from inside the backend container via the docker host gateway.
+  llm_base_url: http://host.docker.internal:11500
+  model_planner: qwq:32b-q4_K_M
+  model_tactical: qwen2.5:14b-instruct-q4_K_M

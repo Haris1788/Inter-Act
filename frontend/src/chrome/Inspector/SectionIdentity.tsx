@@ -1,0 +1,48 @@
+import type { TopologyActor } from "@/store/types";
+import { useStore } from "@/store";
+import { Field } from "./Field";
+
+const EM = "-";
+
+interface SectionIdentityProps {
+  actor: TopologyActor;
+  live: boolean;
+}
+
+export function SectionIdentity({ actor }: SectionIdentityProps) {
+  const updateActor = useStore((s) => s.updateActor);
+  const markDirty = useStore((s) => s.markDirty);
+  return (
+    <div className="px-[14px] pt-[14px] pb-1">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-10.5 font-semibold tracking-[0.08em] uppercase text-ink-3">
+          Identity
+        </span>
+      </div>
+      <Field label="Actor ID">
+        <span className="font-mono text-11.5 text-ink-2">{actor.id}</span>
+      </Field>
+      <Field label="Type">
+        <span className="text-12 text-ink">{actor.type}</span>
+      </Field>
+      <Field label="Container">
+        <span className="font-mono text-11.5 text-ink-4">{EM}</span>
+      </Field>
+      <Field label="Label">
+        <div className="flex items-center h-[28px] px-2 bg-bg-surface border border-line rounded-sm focus-within:border-cta">
+          {/* Controlled, bound to the single authoritative selected actor
+              (store). No defaultValue / local useState → it can never drift
+              or go stale when another actor is selected. */}
+          <input
+            className="border-0 bg-transparent outline-none w-full text-12 text-ink font-mono"
+            value={actor.label}
+            onChange={(e) => {
+              updateActor(actor.id, { label: e.target.value });
+              markDirty();
+            }}
+          />
+        </div>
+      </Field>
+    </div>
+  );
+}
