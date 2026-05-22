@@ -18,15 +18,17 @@ from app.agents.capability import load_profiles
 
 _lock = threading.Lock()
 _agents: list[ActorAgent] = []
+_started = False
 
 
 def start_agents() -> list[ActorAgent]:
     """Build, start, and return one agent per configured actor. Idempotent:
-    if agents are already running, returns the existing set."""
-    global _agents
+    once started, returns the existing set until stop_agents() is called."""
+    global _agents, _started
     with _lock:
-        if _agents:
+        if _started:
             return list(_agents)
+        _started = True
         bus = get_bus()
         built: list[ActorAgent] = []
         for profile in load_profiles():
@@ -41,12 +43,16 @@ def start_agents() -> list[ActorAgent]:
 
 
 def stop_agents() -> None:
-    """Stop every running agent and clear the registry."""
-    global _agents
+    """Stop every running agent and clear the registry. The agent threads are
+    joined OUTSIDE the registry lock so a slow join cannot stall other callers
+    (e.g. Flask shutdown)."""
+    global _agents, _started
     with _lock:
-        for agent in _agents:
-            agent.stop()
+        to_stop = _agents
         _agents = []
+        _started = False
+    for agent in to_stop:
+        agent.stop()
 
 
 def get_agents() -> list[ActorAgent]:
