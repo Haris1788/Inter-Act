@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 
 class MessageType(str, Enum):
@@ -66,7 +66,7 @@ class Slot:
     Who fills a slot is decided by negotiation, never by this module."""
 
     slot_id: str
-    kind: str  # "arm" | "agv"
+    kind: Literal["arm", "agv"]
     zone: Optional[str] = None       # arm slots: the station zone
     from_zone: Optional[str] = None  # agv slot: pickup zone
     to_zone: Optional[str] = None    # agv slot: dropoff zone

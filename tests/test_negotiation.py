@@ -1,6 +1,6 @@
 """Unit tests for the negotiation protocol primitives."""
 
-from app.agents.negotiation import Message, MessageType, RoundStatus
+from app.agents.negotiation import Message, MessageType, RoundStatus, Slot, derive_slots
 
 
 def test_message_to_dict_roundtrips():
@@ -51,8 +51,6 @@ def test_round_status_values():
 
 
 def test_derive_slots_three_legs():
-    from app.agents.negotiation import derive_slots
-
     slots = derive_slots("input_arm", "output_arm")
     assert [s.slot_id for s in slots] == ["pickup", "transport", "place"]
     assert [s.kind for s in slots] == ["arm", "agv", "arm"]
