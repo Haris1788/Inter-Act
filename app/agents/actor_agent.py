@@ -150,7 +150,9 @@ class ActorAgent:
         now = time.time()
         targets = []
         if self._evaluated_round < self._round:
-            targets.append(self._task.get("bid_deadline_ts", now))
+            deadline = self._task.get("bid_deadline_ts")
+            if deadline is not None:
+                targets.append(deadline)
         soonest = min((t - now for t in targets), default=_IDLE_TICK_S)
         return max(0.0, min(soonest, _IDLE_TICK_S))
 
@@ -234,7 +236,7 @@ class ActorAgent:
         now = time.time()
         if (
             self._evaluated_round < self._round
-            and now >= self._task.get("bid_deadline_ts", now)
+            and now >= self._task.get("bid_deadline_ts", float("inf"))
         ):
             self._evaluate()
 

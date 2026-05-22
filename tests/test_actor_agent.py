@@ -164,6 +164,7 @@ def test_agent_accepts_slot_it_wins_at_bid_deadline():
         assert {m.slot_id for m in a1_accepts} == {"pickup", "place"}
         assert {m.slot_id for m in a2_withdraws} == {"pickup", "place"}
         assert a1.state == AgentState.WON
+        assert a2.state == AgentState.IDLE
     finally:
         a1.stop()
         a2.stop()
