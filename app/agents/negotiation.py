@@ -109,6 +109,8 @@ def slots_complete(required_slot_ids: set[str], accepts: dict[str, str]) -> bool
     `accepts` maps slot_id -> accepting actor id, already filtered to valid,
     non-withdrawn accepts. This function NEVER picks an actor — it only checks.
     """
+    # all(...) guards against empty/blank actor ids — precondition: the caller
+    # has already filtered withdrawn/invalid accepts before passing `accepts`.
     return required_slot_ids == set(accepts.keys()) and all(accepts.values())
 
 

@@ -123,3 +123,8 @@ def test_slots_complete_false_when_extra_slot_present():
     required = {"pickup", "transport"}
     accepts = {"pickup": "arm-1", "transport": "agv-2", "ghost": "agv-9"}
     assert slots_complete(required, accepts) is False
+
+
+def test_slots_complete_true_for_empty_required_set():
+    # Vacuously true: no required slots means nothing is unfilled.
+    assert slots_complete(set(), {}) is True
