@@ -597,7 +597,9 @@ export function createSocketDriver(): RuntimeDriver {
           let text = "";
           if (p.task_id) text += p.task_id;
           if (p.slot_id) text += (text ? " · " : "") + `slot ${p.slot_id}`;
-          if (typeof p.bid_version === "number")
+          // v0 is the default first-bid revision — show only when re-bid
+          // (v >= 1) so the bus pane stops being flooded with "· v0" noise.
+          if (typeof p.bid_version === "number" && p.bid_version > 0)
             text += (text ? " · " : "") + `v${p.bid_version}`;
           if (p.payload && typeof p.payload === "object") {
             const pay = p.payload as Record<string, unknown>;
