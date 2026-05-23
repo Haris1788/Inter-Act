@@ -34,6 +34,7 @@ import { DynamicGridLayer } from "./DynamicGridLayer";
 import { ReservedCellsLayer } from "./ReservedCellsLayer";
 import { PathPreviewLayer } from "./PathPreviewLayer";
 import { NegotiationHaloLayer } from "./NegotiationHaloLayer";
+import { ZoneMarkerLayer } from "./ZoneMarkerLayer";
 
 type Transform = ViewportTransform;
 
@@ -210,6 +211,8 @@ export function KonvaOverlay() {
         <PathPreviewLayer tx={tx} />
         {/* Phase 5.1 Stage 5 Track A — negotiation halos (behind actor bodies) */}
         <NegotiationHaloLayer tx={tx} />
+        {/* Zone physical-world markers (source/sink circles) */}
+        <ZoneMarkerLayer tx={tx} />
         {/* Phase 5 arm articulation (pivot / stick / gripper) */}
         <ArmRenderer tx={tx} />
         {/* Phase 5 AGV trail polylines — drawn behind vehicle bodies */}

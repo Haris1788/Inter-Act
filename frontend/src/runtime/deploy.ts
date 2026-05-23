@@ -77,15 +77,18 @@ export function buildDeployPayload(s: DeployState): DeployPayload {
   return {
     payloadVersion: DEPLOY_PAYLOAD_VERSION,
     generatedAt: new Date().toISOString(),
-    actors: Object.values(s.actors).map((a) => ({
-      id: a.id,
-      kind: a.kind,
-      type: a.type,
-      label: a.label,
-      capabilities: a.capabilities,
-      brain: a.brain,
-      position: a.position,
-    })),
+    // Zones are frontend-only markers; exclude from the backend deploy payload.
+    actors: Object.values(s.actors)
+      .filter((a) => a.kind === "arm" || a.kind === "agv")
+      .map((a) => ({
+        id: a.id,
+        kind: a.kind as "arm" | "agv",
+        type: a.type,
+        label: a.label,
+        capabilities: a.capabilities,
+        brain: a.brain,
+        position: a.position,
+      })),
     zones: Object.values(s.zones).map((z) => ({
       id: z.id,
       role: z.role,
@@ -100,19 +103,22 @@ export function buildDeployPayload(s: DeployState): DeployPayload {
         height: CANVAS_HEIGHT_DEFAULT,
         cell_px: CELL_PX,
       },
-      actors: Object.values(s.actors).map((a) => {
-        const actor: DeployTopologyActor = {
-          id: a.id,
-          kind: a.kind,
-          x: a.position.x,
-          y: a.position.y,
-          reach_px: a.reach_px,
-          capacity: a.capacity,
-          speed: a.speed,
-        };
-        if (a.label) actor.label = a.label;
-        return actor;
-      }),
+      // Zones excluded (frontend-only; no backend topology semantics yet).
+      actors: Object.values(s.actors)
+        .filter((a) => a.kind === "arm" || a.kind === "agv")
+        .map((a) => {
+          const actor: DeployTopologyActor = {
+            id: a.id,
+            kind: a.kind as "arm" | "agv",
+            x: a.position.x,
+            y: a.position.y,
+            reach_px: a.reach_px,
+            capacity: a.capacity,
+            speed: a.speed,
+          };
+          if (a.label) actor.label = a.label;
+          return actor;
+        }),
     },
   };
 }

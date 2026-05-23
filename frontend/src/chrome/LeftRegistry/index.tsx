@@ -190,10 +190,11 @@ const PALETTE: PaletteSection[] = [
   },
   {
     label: "Zones",
+    grid: true,
     items: [
-      { kind: "row", name: "Source feed",   meta: "I",  icon: ZoneSource },
-      { kind: "row", name: "Sink / outflow", meta: "O", icon: ZoneSink },
-      { kind: "row", name: "Charging dock", meta: "⚡", icon: ZoneCharging },
+      { kind: "chip", name: "Source feed",    sub: "input · inbound",  paletteKey: "zone-source", icon: ZoneSource },
+      { kind: "chip", name: "Sink / outflow", sub: "output · outbound", paletteKey: "zone-sink",   icon: ZoneSink },
+      { kind: "row",  name: "Charging dock",  meta: "⚡",                                           icon: ZoneCharging },
     ],
   },
 ];

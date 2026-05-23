@@ -22,8 +22,11 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
   const agvs = list.filter((a) => a.kind === "agv");
   const zoneList = Object.values(zones);
 
+  // Functional actors only (not zone markers).
+  const functionalList = list.filter((a) => a.kind !== "zone");
+
   // ── errors ──────────────────────────────────────────────────────────────
-  if (list.length === 0) {
+  if (functionalList.length === 0) {
     rows.push({
       id: "v-empty",
       level: "warn",
@@ -43,7 +46,8 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
     seen.add(a.id);
   }
 
-  for (const a of list) {
+  // Zones are structural markers, not functional actors — skip capability check.
+  for (const a of list.filter((x) => x.kind !== "zone")) {
     if (!a.capabilities || a.capabilities.length === 0)
       rows.push({
         id: `v-cap-${a.id}`,
@@ -62,13 +66,13 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
   }
 
   // ── warnings / hints ────────────────────────────────────────────────────
-  if (list.length > 0 && !zoneList.some((z) => z.role === "source"))
+  if (functionalList.length > 0 && !zoneList.some((z) => z.role === "source"))
     rows.push({
       id: "v-src",
       level: "warn",
       text: "No source zone - nothing feeds the orchestration",
     });
-  if (list.length > 0 && !zoneList.some((z) => z.role === "sink"))
+  if (functionalList.length > 0 && !zoneList.some((z) => z.role === "sink"))
     rows.push({
       id: "v-sink",
       level: "warn",
@@ -82,7 +86,7 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
     });
 
   // ── ok / info ───────────────────────────────────────────────────────────
-  if (list.length > 0 && rows.every((r) => r.level === "info"))
+  if (functionalList.length > 0 && rows.every((r) => r.level === "info"))
     rows.unshift({
       id: "v-ok",
       level: "ok",
@@ -96,7 +100,7 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
 
   const errors = rows.filter((r) => r.level === "error").length;
   const warnings = rows.filter((r) => r.level === "warn").length;
-  const deployable = list.length > 0 && errors === 0;
+  const deployable = functionalList.length > 0 && errors === 0;
 
   return { rows, errors, warnings, deployable };
 }

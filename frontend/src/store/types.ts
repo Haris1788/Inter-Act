@@ -3,7 +3,7 @@
 
 export type ActorId = string;
 export type Vec2 = { x: number; y: number };
-export type ActorKind = "arm" | "agv";
+export type ActorKind = "arm" | "agv" | "zone";
 // "down" added in Phase 2 for dead/failed/stopped backend states
 // (degraded-state visualization).
 export type ActorStatus = "ok" | "busy" | "warn" | "idle" | "down";
@@ -43,8 +43,9 @@ export interface TopologyActor {
   /** Speed multiplier (0.5 = slow … 3.0 = fast, step 0.5). Default 1.0. */
   speed: number;
   // ── Phase 5.1 Stage 3: per-kind AGV silhouette ─────────────────────────
-  /** AGV vehicle subtype. Ignored for arms. Default "shuttle" (back-compat). */
-  subtype?: "shuttle" | "forklift" | "tow";
+  /** AGV vehicle subtype. Ignored for arms. Default "shuttle" (back-compat).
+   *  Zone subtype: "source" | "sink". */
+  subtype?: "shuttle" | "forklift" | "tow" | "source" | "sink";
 }
 
 export interface TopologyZone {

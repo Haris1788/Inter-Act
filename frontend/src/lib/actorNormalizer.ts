@@ -10,6 +10,8 @@
 
 import type { TopologyActor, ActorKind } from "@/store/types";
 
+const ZONE_SIZE = { w: 100, h: 100 };
+
 const ARM_SIZE = { w: 210, h: 150 };
 const AGV_SIZE = { w: 184, h: 118 };
 
@@ -46,34 +48,34 @@ export interface ActorSeed {
   /** Speed multiplier (0.5–3.0). Default 1.0. */
   speed?: number;
   // ── Phase 5.1 Stage 3: per-kind AGV silhouette ─────────────────────────
-  /** AGV vehicle subtype. Ignored for arms. Default "shuttle". */
-  subtype?: "shuttle" | "forklift" | "tow";
+  /** AGV vehicle subtype. Ignored for arms. Default "shuttle".
+   *  Zone subtype: "source" | "sink". */
+  subtype?: "shuttle" | "forklift" | "tow" | "source" | "sink";
 }
 
 export function normalizeActor(seed: ActorSeed): TopologyActor {
   const isArm = seed.kind === "arm";
+  const isZone = seed.kind === "zone";
   const authored =
     seed.label && seed.label.trim() && seed.label.trim() !== seed.id;
   return {
     id: seed.id,
     kind: seed.kind,
-    type: seed.type ?? (isArm ? "Arm" : "AGV"),
+    type: seed.type ?? (isArm ? "Arm" : isZone ? "Zone" : "AGV"),
     label: authored ? seed.label!.trim() : canonicalLabel(seed.id),
     position: seed.position ?? { x: 0, y: 0 },
-    size: seed.size ?? (isArm ? { ...ARM_SIZE } : { ...AGV_SIZE }),
+    size: seed.size ?? (isArm ? { ...ARM_SIZE } : isZone ? { ...ZONE_SIZE } : { ...AGV_SIZE }),
     capabilities:
       seed.capabilities ??
-      (isArm ? ["pick", "place", "dock"] : ["transit", "dock", "carry"]),
+      (isArm ? ["pick", "place", "dock"] : isZone ? [] : ["transit", "dock", "carry"]),
     liveCapability: seed.liveCapability ?? null,
-    brain: seed.brain ?? (isArm ? "Scripted" : "Scheduler · FIFO"),
+    brain: seed.brain ?? (isArm ? "Scripted" : isZone ? "—" : "Scheduler · FIFO"),
     spec: seed.spec ?? "",
-    // Phase 5 spatial defaults — old workspaces lacking these fields receive
-    // defaults here; new actors get the same defaults at creation time.
-    reach_px: seed.reach_px ?? DEFAULT_REACH_PX,
-    capacity: seed.capacity ?? DEFAULT_CAPACITY,
-    speed: seed.speed ?? DEFAULT_SPEED,
-    // Phase 5.1 Stage 3: default "shuttle" for AGVs; arms carry the field but
-    // it is unused — consistent, additive, never breaks old localStorage entries.
-    subtype: seed.subtype ?? (isArm ? undefined : "shuttle"),
+    // Phase 5 spatial defaults — zones get 0 for reach/capacity/speed (semantic).
+    reach_px: seed.reach_px ?? (isZone ? 0 : DEFAULT_REACH_PX),
+    capacity: seed.capacity ?? (isZone ? 0 : DEFAULT_CAPACITY),
+    speed: seed.speed ?? (isZone ? 0 : DEFAULT_SPEED),
+    // Phase 5.1 Stage 3: default "shuttle" for AGVs; arms/zones carry undefined.
+    subtype: seed.subtype ?? (isArm || isZone ? undefined : "shuttle"),
   };
 }

@@ -19,10 +19,10 @@ export function LeftFoot() {
 
       <div>
         <div className="text-11.5 text-ink-3">
-          <strong className="font-semibold text-ink">Ollama</strong>
-          {" · qwen2.5:0.5b"}
+          <strong className="font-semibold text-ink">LLM</strong>
+          {" · qwq:32b + qwen2.5:14b"}
         </div>
-        <div className="font-mono text-10.5 text-ink-4">coordinator · 70% mem</div>
+        <div className="font-mono text-10.5 text-ink-4">TU Clausthal · tunnel</div>
       </div>
     </div>
   );

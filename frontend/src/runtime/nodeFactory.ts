@@ -5,13 +5,13 @@ import type { TopologyActor, Vec2 } from "@/store/types";
 import { normalizeActor } from "@/lib/actorNormalizer";
 
 export interface PaletteDescriptor {
-  kind: "arm" | "agv";
+  kind: "arm" | "agv" | "zone";
   type: string;
   capabilities: string[];
   brain: string;
   spec: string;
   /** AGV vehicle subtype — carried through to TopologyActor.subtype. */
-  subtype?: "shuttle" | "forklift" | "tow";
+  subtype?: "shuttle" | "forklift" | "tow" | "source" | "sink";
 }
 
 // dataTransfer key → descriptor. Keys are emitted by the sidebar drag source.
@@ -61,10 +61,27 @@ export const PALETTE: Record<string, PaletteDescriptor> = {
     spec: "balanced",
     subtype: "tow",
   },
+  "zone-source": {
+    kind: "zone",
+    type: "Source feed",
+    capabilities: [],
+    brain: "—",
+    spec: "input · inbound",
+    subtype: "source",
+  },
+  "zone-sink": {
+    kind: "zone",
+    type: "Sink / outflow",
+    capabilities: [],
+    brain: "—",
+    spec: "output · outbound",
+    subtype: "sink",
+  },
 };
 
 const ARM_SIZE = { w: 210, h: 150 };
 const AGV_SIZE = { w: 184, h: 118 };
+const ZONE_SIZE = { w: 100, h: 100 };
 
 function nextArmId(taken: Record<string, unknown>): string {
   let n = 1;
@@ -80,6 +97,11 @@ function nextVehId(taken: Record<string, unknown>): string {
   while (taken[`veh-${n}`]) n++;
   return `veh-${n}`;
 }
+function nextZoneId(subtype: "source" | "sink", taken: Record<string, unknown>): string {
+  let n = 1;
+  while (taken[`zone-${subtype}-${n}`]) n++;
+  return `zone-${subtype}-${n}`;
+}
 
 /**
  * Build a new actor for a palette key, centered on the drop point (stage
@@ -92,9 +114,16 @@ export function createActorFromPalette(
 ): TopologyActor | null {
   const d = PALETTE[paletteKey];
   if (!d) return null;
-  const size = d.kind === "arm" ? ARM_SIZE : AGV_SIZE;
-  const id = d.kind === "arm" ? nextArmId(existing) : nextVehId(existing);
-  // No explicit label: the canonical normalizer derives "Arm 7" / "Veh C"
+  const size = d.kind === "arm" ? ARM_SIZE : d.kind === "zone" ? ZONE_SIZE : AGV_SIZE;
+  let id: string;
+  if (d.kind === "arm") {
+    id = nextArmId(existing);
+  } else if (d.kind === "zone") {
+    id = nextZoneId(d.subtype as "source" | "sink", existing);
+  } else {
+    id = nextVehId(existing);
+  }
+  // No explicit label: the canonical normalizer derives "Arm 7" / "Zone Source 1"
   // from the id (same path presets/hydration use).
   return normalizeActor({
     id,

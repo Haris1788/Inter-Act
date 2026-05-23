@@ -30,12 +30,19 @@ export function saveLocal(doc: TopologyDoc): void {
   }
 }
 
+// Legacy single-letter veh IDs from pre-Phase 3 sessions: veh-a, veh-b, etc.
+// These appear when old pipeline.yaml `assets:` blocks were loaded.
+const LEGACY_ID_RE = /^veh-[a-z]$/;
+
 export function loadLocal(): TopologyDoc | null {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
     const r = parseTopology(raw);
-    return r.ok ? r.doc : null;
+    if (!r.ok) return null;
+    // Auto-purge stale legacy actor IDs (e.g. veh-a/b/c/d from old sessions).
+    const purged = r.doc.actors.filter((a) => !LEGACY_ID_RE.test(a.id));
+    return { ...r.doc, actors: purged };
   } catch {
     return null;
   }
