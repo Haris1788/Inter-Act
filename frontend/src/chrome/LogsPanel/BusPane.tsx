@@ -1,45 +1,7 @@
 import { useMemo } from "react";
 import { cn } from "@/lib/cn";
-import type { BusKind, BusMessage } from "@/store/types";
-
-// Human-readable label for each real NegotiationBus message type.
-const KIND_LABELS: Record<BusKind, string> = {
-  task_announce: "announce",
-  capability_broadcast: "capability",
-  availability_update: "available",
-  bid: "bid",
-  counter_offer: "counter",
-  accept: "accept",
-  reject: "reject",
-  busy: "busy",
-  fault: "fault",
-  withdraw: "withdraw",
-  consensus_reached: "consensus",
-  task_failed: "failed",
-};
-
-function kindChipClass(kind: BusKind): string {
-  switch (kind) {
-    case "task_announce":
-      return "bg-info-bg text-info";
-    case "capability_broadcast":
-    case "availability_update":
-      return "bg-bg-sunken text-ink-3";
-    case "bid":
-    case "counter_offer":
-      return "bg-warn-bg text-warn";
-    case "accept":
-    case "consensus_reached":
-      return "bg-ok-bg text-ok";
-    case "reject":
-    case "busy":
-    case "withdraw":
-      return "bg-bg-sunken text-ink-3";
-    case "fault":
-    case "task_failed":
-      return "bg-err-bg text-err";
-  }
-}
+import type { BusMessage } from "@/store/types";
+import { KIND_LABELS, kindChipClass } from "./busMessageChip";
 
 interface BusPaneProps {
   messages: BusMessage[];

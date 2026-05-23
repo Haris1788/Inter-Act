@@ -3,6 +3,15 @@
 An arm fills `arm`-kind slots (pickup / place) for a station zone it can
 reach. Stage 3: `_execute_leg` performs real arm animation (angle sweep)
 and the load/unload handshake with the AGV.
+
+Phase 4 Stage 3: `_execute_leg` resolves task_id + round from
+`self._current_participant` (set by ActorAgent._check_consensus_for just before
+the call). Handshake signals are scoped per-task via task_id.
+
+For backward compatibility: when `self._current_participant` is None (e.g. old
+monkeypatched test code calls _execute_leg with slot_id only), we fall back to
+reading task_id from the first participant in self._tasks (single-task path),
+or to empty string if none available.
 """
 
 from __future__ import annotations
@@ -38,15 +47,17 @@ class ArmAgent(ActorAgent):
     def _execute_leg(self, slot_id: str) -> bool:
         """Arm pickup or place sequence.
 
-        Reads the winning AGV id from `accepted_actors` on the live bus.
+        Reads task_id + round from self._current_participant (set by
+        ActorAgent._check_consensus_for before this call). Handshake signals are
+        scoped per-task so concurrent tasks cannot cross-pollinate load/unload state.
 
         pickup slot:
             1. sweep to PICK, sweep to REST
-            2. signal_load(agv, object_id) → unblocks the waiting AGV
+            2. signal_load(agv_id, object_id, task_id=task_id)
 
         place slot:
-            1. signal_unload(agv) → AGV is waiting for this
-            2. wait for AGV to take the unload (signal consumed, timeout-bounded)
+            1. signal_unload(agv_id, task_id=task_id)
+            2. wait for AGV to clear the signal
             3. sweep to PLACE, sweep to REST
 
         Barrier-checked between every sweep. On halt: stop, log it.
@@ -65,8 +76,18 @@ class ArmAgent(ActorAgent):
             )
             return True
 
+        # Resolve task_id and round from the current participant.
+        participant = self._current_participant
+        if participant is not None:
+            task_id = participant.task_id
+            neg_round = participant.round
+        else:
+            # Fallback: single-task path (backward compat).
+            task_id = next((p.task_id for p in self._tasks.values()), "")
+            neg_round = next((p.round for p in self._tasks.values()), -1)
+
         history = self.bus.history()
-        accepts = accepted_actors(history, self._task_id, self._round)
+        accepts = accepted_actors(history, task_id, neg_round)
         agv_id = accepts.get("transport")
         if agv_id is None:
             logger.warning(
@@ -75,13 +96,17 @@ class ArmAgent(ActorAgent):
             )
             return True
 
-        # Derive a simple object_id from the task_id (Phase 1: one task at a time).
-        object_id = f"pkg-{self._task_id}"
+        # Derive a simple object_id from the task_id.
+        object_id = f"pkg-{task_id}"
 
         halted = False
 
         def _valid() -> bool:
-            return self._execution_valid(slot_id)
+            p = self._current_participant
+            if p is not None:
+                return p.execution_valid(slot_id)
+            # Fallback: check only agent-level fault flag.
+            return not self._fault_requested
 
         def _halt_check() -> bool:
             return self._running and _valid()
@@ -93,14 +118,14 @@ class ArmAgent(ActorAgent):
             _emit_log(self.actor_id, f"Arm {self.actor_id} halting execution: {reason}")
 
         if slot_id == "pickup":
-            self._execute_pickup(arm_id, agv_id, object_id, _valid, _halt_check, _halt)
+            self._execute_pickup(arm_id, agv_id, object_id, task_id, _valid, _halt_check, _halt)
         else:
-            self._execute_place(arm_id, agv_id, _valid, _halt_check, _halt)
+            self._execute_place(arm_id, agv_id, task_id, _valid, _halt_check, _halt)
 
         return not halted
 
     def _execute_pickup(
-        self, arm_id: int, agv_id: str, object_id: str,
+        self, arm_id: int, agv_id: str, object_id: str, task_id: str,
         _valid, _halt_check, _halt,
     ) -> None:
         """Pickup sequence: sweep PICK → REST, then signal AGV to proceed."""
@@ -129,12 +154,12 @@ class ArmAgent(ActorAgent):
             _halt("validity false after REST sweep")
             return
 
-        # Signal AGV: package is on the AGV, it may proceed.
-        logger.info("ArmAgent %s: pickup — signalling load to %s", self.actor_id, agv_id)
-        signal_load(agv_id, object_id)
+        # Signal AGV with task_id scope: package is on the AGV, it may proceed.
+        logger.info("ArmAgent %s: pickup — signalling load to %s (task=%s)", self.actor_id, agv_id, task_id)
+        signal_load(agv_id, object_id, task_id=task_id)
 
     def _execute_place(
-        self, arm_id: int, agv_id: str,
+        self, arm_id: int, agv_id: str, task_id: str,
         _valid, _halt_check, _halt,
     ) -> None:
         """Place sequence: signal unload (AGV waiting), wait for AGV to clear,
@@ -144,14 +169,14 @@ class ArmAgent(ActorAgent):
         if not _valid():
             return
 
-        # Signal the AGV that we are ready to receive.
-        logger.info("ArmAgent %s: place — signalling unload to %s", self.actor_id, agv_id)
-        signal_unload(agv_id)
+        # Signal the AGV that we are ready to receive (task-scoped).
+        logger.info("ArmAgent %s: place — signalling unload to %s (task=%s)", self.actor_id, agv_id, task_id)
+        signal_unload(agv_id, task_id=task_id)
 
         # Wait until the AGV has consumed the unload signal (cleared by AGV step 9).
         logger.info("ArmAgent %s: place — waiting for AGV to clear unload signal", self.actor_id)
         deadline = time.time() + UNLOAD_CLEAR_TIMEOUT
-        while poll_unload(agv_id):
+        while poll_unload(agv_id, task_id=task_id):
             if not self._running:
                 _halt("agent stopped while waiting for AGV to clear unload")
                 return

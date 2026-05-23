@@ -93,6 +93,17 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
                 "start_period": "20s",
             },
         },
+        "redis": {
+            "image": "redis:7-alpine",
+            "command": [
+                "redis-server",
+                "--appendonly", "yes",
+                "--appendfsync", "everysec",
+            ],
+            "volumes": ["redis-data:/data"],
+            "ports": ["6379:6379"],
+            "restart": "unless-stopped",
+        },
         "backend": {
             "build": ".",
             "container_name": f"{COMPOSE_PREFIX}-backend",
@@ -110,6 +121,9 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
                 "PYTHONUNBUFFERED=1",
                 "CONTAINER_CONTROL=on",
                 f"COMPOSE_CONTAINER_PREFIX={COMPOSE_PREFIX}",
+                "REDIS_URL=redis://redis:6379/0",
+                "INTERACT_BUS=redis",
+                "INTERACT_STATE=redis",
             ],
             "volumes": [
                 "/var/run/docker.sock:/var/run/docker.sock",
@@ -133,7 +147,10 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
             # bound on the host (host.docker.internal:11500). Resolves
             # automatically on Docker Desktop; required on a Linux host.
             "extra_hosts": ["host.docker.internal:host-gateway"],
-            "depends_on": {"ollama": {"condition": "service_healthy"}},
+            "depends_on": {
+                "ollama": {"condition": "service_healthy"},
+                "redis": {"condition": "service_started"},
+            },
         },
         "frontend": {
             "build": {"context": ".", "dockerfile": "docker/Dockerfile.frontend"},
@@ -166,21 +183,35 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
         },
     }
 
-    # Arms are managed dynamically by topology reconciliation (container_manager).
-    # AGVs run in-backend — no compose service emitted.
+    # Arms + AGVs are managed dynamically by topology reconciliation
+    # (container_manager.reconcile_actors).  No per-actor compose services.
+    # The actor-image service is a build-only target (profiles: [build-only])
+    # so `docker compose build actor-image` pre-builds the shared image
+    # without starting a container.
     _ = (arms, asset_ports)  # arms parsed for validation/summary only
 
-    compose = {"services": services, "volumes": {"ollama_data": {}}}
+    # Build-only service so `docker compose build actor-image` works.
+    services["actor-image"] = {
+        "build": {"context": ".", "dockerfile": "Dockerfile.actor"},
+        "image": "interact-shared-actor:latest",
+        "profiles": ["build-only"],
+    }
+
+    compose = {
+        "services": services,
+        "volumes": {"ollama_data": {}, "redis-data": {}},
+    }
 
     with open(output_path, "w", encoding="utf-8") as f:
         yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
 
     arm_names = ", ".join(f"arm-{a['id']}" for a in arms) if arms else "-"
     print(f"Generated {output_path}")
-    print(f"  Core    : ollama, backend, frontend, demo-runner")
-    print(f"  AGVs    : in-backend (decentralized runtime — no compose services)")
+    print(f"  Core    : ollama, redis, backend, frontend, demo-runner")
+    print(f"  AGVs    : reconciler-owned containers (interact-shared-actor — no compose services)")
     print(f"  Arms    : {len(arms)} ({arm_names})  — reconciled at deploy")
     print(f"  Ollama  : {ollama_base_url}")
+    print(f"  Bus     : Redis Streams (redis:7-alpine, AOF, persistent volume)")
     print("\nRun: docker compose up --build")
 
 

@@ -58,12 +58,21 @@ def test_generate_compose_includes_assets_from_pipeline_yaml():
 
         # Unified model: compose defines ONLY core infrastructure. Arms /
         # AGVs are reconciler-owned actor containers, never compose services.
+        # Phase 4 Stage 1: redis is also a core service.
+        # Phase 4 Stage 2 Track C: actor-image is a build-only service
+        # (profiles: [build-only]) so `docker compose build actor-image`
+        # pre-builds interact-shared-actor without starting a container.
         assert set(services) == {
             "ollama",
+            "redis",
             "backend",
             "frontend",
             "demo-runner",
+            "actor-image",
         }
+        # actor-image must be build-only (never started as a running service).
+        assert services["actor-image"]["profiles"] == ["build-only"]
+        assert services["actor-image"]["image"] == "interact-shared-actor:latest"
         assert "arm-1" not in services
         assert "veh-a" not in services
 

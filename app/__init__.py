@@ -38,12 +38,14 @@ def create_app(config_class=None):
     from app.routes.agv_routes import agv_bp
     from app.routes.ai_routes import ai_bp
     from app.routes.negotiate_routes import negotiate_bp
+    from app.routes.replay_routes import replay_bp
 
     app.register_blueprint(page_bp)
     app.register_blueprint(arm_bp)
     app.register_blueprint(agv_bp)
     app.register_blueprint(ai_bp)
     app.register_blueprint(negotiate_bp)
+    app.register_blueprint(replay_bp)
 
     # Import SocketIO event handlers so they register with the socketio instance
     from app.sockets import events  # noqa: F401
@@ -67,17 +69,47 @@ def create_app(config_class=None):
     except Exception as exc:
         print(f"[startup] AGV pre-register skipped: {exc}")
 
-    # Start decentralized actor agents (Phase 3). Each configured arm/AGV gets
-    # its own ArmAgent / AGVAgent thread subscribed to the NegotiationBus.
-    # Shutdown is registered via atexit so Flask teardown cleans up gracefully.
+    # Phase 4 Stage 2: actors run in isolated containers, NOT in-backend
+    # threads. The reconciler owns their lifecycle via reconcile_actors().
+    # agent_registry.start_agents() is intentionally NOT called here; it
+    # remains available for tests that prefer in-process actors.
     try:
-        import atexit
-        from app.agents import agent_registry
+        import os
+        from app.agents.bus import get_bus
 
-        agent_registry.start_agents()
-        atexit.register(agent_registry.stop_agents)
+        # Log which bus backend is active so operators can confirm at startup.
+        bus_mode = os.environ.get("INTERACT_BUS", "inprocess").lower().strip()
+        print(f"[startup] NegotiationBus backend: {bus_mode}")
+
+        # Redis path only: start the SocketIO mirror consumer.
+        # InProcessBus._mirror() handles the in-process case; there is no
+        # separate mirror for it.
+        if bus_mode == "redis":
+            from app.services.bus_mirror import start_mirror
+            start_mirror(get_bus())
+
     except Exception as exc:
-        print(f"[startup] agent_registry start skipped: {exc}")
+        print(f"[startup] bus setup skipped: {exc}")
+
+    # Reconcile actor containers at startup so arms + AGVs spin up
+    # automatically when the backend boots.  Wrapped in try/except so a
+    # missing Docker socket (dev mode) is a non-fatal log line, not a crash.
+    try:
+        from app.services.container_manager import (
+            build_desired_from_config,
+            reconcile_actors,
+        )
+
+        desired = build_desired_from_config()
+        print(
+            f"[startup] reconcile_actors: {len(desired)} actor(s) desired "
+            f"({sum(1 for d in desired if d['kind'] == 'arm')} arms, "
+            f"{sum(1 for d in desired if d['kind'] == 'agv')} agvs)"
+        )
+        res = reconcile_actors(desired)
+        print(f"[startup] reconcile_actors: {res['detail']}")
+    except Exception as exc:
+        print(f"[startup] reconcile_actors skipped: {exc}")
 
     # Start health monitor for arm + asset containers (runs in background thread)
     from app.services.health_monitor import start as start_health_monitor

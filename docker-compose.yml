@@ -16,6 +16,19 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+  redis:
+    image: redis:7-alpine
+    command:
+    - redis-server
+    - --appendonly
+    - "yes"
+    - --appendfsync
+    - everysec
+    volumes:
+    - redis-data:/data
+    ports:
+    - "6379:6379"
+    restart: unless-stopped
   backend:
     build: .
     container_name: interact-backend
@@ -34,6 +47,9 @@ services:
     - PYTHONUNBUFFERED=1
     - CONTAINER_CONTROL=on
     - COMPOSE_CONTAINER_PREFIX=interact
+    - REDIS_URL=redis://redis:6379/0
+    - INTERACT_BUS=redis
+    - INTERACT_STATE=redis
     volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     - ./pipeline.yaml:/config/pipeline.yaml:rw
@@ -53,6 +69,8 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+      redis:
+        condition: service_started
   frontend:
     build:
       context: .
@@ -89,5 +107,17 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+  # interact-shared-actor: build target so `docker compose build actor-image`
+  # pre-builds the image that container_manager.reconcile_actors() uses for
+  # arm + agv containers.  NOT a running service — containers are
+  # reconciler-owned ephemeral entities, never compose services.
+  actor-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.actor
+    image: interact-shared-actor:latest
+    profiles:
+    - build-only
 volumes:
   ollama_data: {}
+  redis-data: {}

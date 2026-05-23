@@ -7,6 +7,13 @@ speed, the nearest-to-pickup AGV wins, which is goal.md's intended default.
 Stage 3: `_execute_leg` drives agv_state / grid_state directly (no HTTP
 self-calls, no AGV containers for movement). Route geometry is ported from
 scripts/agv_brain._straight_path and _fetch_route_ctx.
+
+Phase 4 Stage 3: `_execute_leg` takes (slot_id, task_id, round). The
+execution barrier `_valid()` is resolved via `self._tasks.get(task_id)` —
+a lookup on the agent's per-task participant dict.  When task_id is empty or
+the participant is not found (e.g. old-style monkeypatched test calls), the
+barrier falls through to checking only `_fault_requested`, preserving the
+original test contract.
 """
 
 from __future__ import annotations
@@ -65,6 +72,11 @@ class AGVAgent(ActorAgent):
         On any halt condition, releases all held locks and stops. On lock/signal
         timeout, calls self.fault() (unrecoverable in Phase 1).
 
+        Phase 4 Stage 3: task_id is resolved from self._current_participant
+        (set by ActorAgent._check_consensus_for just before this call), so
+        handshake signals are scoped per-task. When _current_participant is None
+        (backward-compat path), task_id defaults to "" (single-task legacy key).
+
         Returns True when the leg completed fully (step 12 reached), False on
         any early-return path (halt, fault, or validity failure).
         Non-transport slots and missing agv_state are no-op successes (True).
@@ -77,6 +89,10 @@ class AGVAgent(ActorAgent):
         from app.routes.agv_routes import poll_load, clear_load, poll_unload, clear_unload
 
         agv_id = self.actor_id
+
+        # Resolve task_id for per-task signal scoping.
+        _participant = self._current_participant
+        task_id = _participant.task_id if _participant is not None else ""
 
         # ── Guard: skip leg if AGV is not registered in agv_state ───────────
         # (happens in tests without _execution_env — fall through to stub behaviour)
@@ -115,7 +131,17 @@ class AGVAgent(ActorAgent):
                 grid_state.station_lock(held_station).release(agv_id)
 
         def _valid() -> bool:
-            return self._execution_valid(slot_id)
+            """Execution barrier: use self._current_participant for validity.
+
+            self._current_participant is set by ActorAgent._check_consensus_for
+            just before calling _execute_leg. When it is None (e.g. an old
+            monkeypatched test call), fall back to checking only _fault_requested.
+            """
+            p = self._current_participant
+            if p is not None:
+                return p.execution_valid(slot_id)
+            # Backward-compat fallback: only block on agent-level fault.
+            return not self._fault_requested
 
         def _move_cell(cell: list, status: str = "moving") -> bool:
             """Move AGV one cell; return False if halted or state missing."""
@@ -165,7 +191,7 @@ class AGVAgent(ActorAgent):
             _emit_agv(rec)
 
         deadline = time.time() + LOAD_SIGNAL_TIMEOUT
-        while not poll_load(agv_id):
+        while not poll_load(agv_id, task_id=task_id):
             if not self._running:
                 _halt("agent stopped while waiting for load signal")
                 return False
@@ -181,7 +207,7 @@ class AGVAgent(ActorAgent):
                 return False
             time.sleep(SIGNAL_POLL_INTERVAL)
 
-        clear_load(agv_id)
+        clear_load(agv_id, task_id=task_id)
         logger.info("AGVAgent %s: load signal received and cleared", agv_id)
 
         # ── Step 4: release input station ───────────────────────────────────
@@ -251,7 +277,7 @@ class AGVAgent(ActorAgent):
             _emit_agv(rec)
 
         deadline = time.time() + UNLOAD_SIGNAL_TIMEOUT
-        while not poll_unload(agv_id):
+        while not poll_unload(agv_id, task_id=task_id):
             if not self._running:
                 _halt("agent stopped while waiting for unload signal")
                 return False
@@ -269,7 +295,7 @@ class AGVAgent(ActorAgent):
                 return False
             time.sleep(SIGNAL_POLL_INTERVAL)
 
-        clear_unload(agv_id)
+        clear_unload(agv_id, task_id=task_id)
         logger.info("AGVAgent %s: unload signal received and cleared", agv_id)
 
         # ── Step 10: release output station + lane ───────────────────────────

@@ -478,6 +478,10 @@ export function createSocketDriver(): RuntimeDriver {
             "withdraw",
             "consensus_reached",
             "task_failed",
+            // Stage 4 leg execution events
+            "leg_started",
+            "leg_completed",
+            "leg_halted",
           ]);
           if (!KNOWN_KINDS.has(p.type)) return;
 
@@ -512,8 +516,8 @@ export function createSocketDriver(): RuntimeDriver {
             text,
           });
 
-          // Surface fault/task_failed as operational events too.
-          if (kind === "fault" || kind === "task_failed") {
+          // Surface fault/task_failed/leg_halted as operational events too.
+          if (kind === "fault" || kind === "task_failed" || kind === "leg_halted") {
             st().pushEvent({
               kind: "lifecycle",
               text: `${kind} · ${text || from}`,

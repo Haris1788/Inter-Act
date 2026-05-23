@@ -149,6 +149,7 @@ export interface ActorRuntime {
 
 // Real NegotiationBus message types — sourced directly from the backend
 // Message.type field. No regex inference.
+// Stage 4 added: leg_started, leg_completed, leg_halted.
 export type BusKind =
   | "task_announce"
   | "capability_broadcast"
@@ -161,7 +162,10 @@ export type BusKind =
   | "fault"
   | "withdraw"
   | "consensus_reached"
-  | "task_failed";
+  | "task_failed"
+  | "leg_started"
+  | "leg_completed"
+  | "leg_halted";
 
 export interface BusMessage {
   id: string;

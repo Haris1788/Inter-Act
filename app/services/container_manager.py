@@ -119,21 +119,26 @@ def is_enabled() -> bool:
 
 
 # ── shared actor images ───────────────────────────────────────────────────
-# All arms share one image, all assets share one (parametrised by env).
-# The backend image bakes the repo at /interact, so the build context is
-# present without compose or a host mount.
+# Single consolidated image for ALL actor kinds (arm + agv).
+# actor_runner.py selects the agent class via ACTOR_KIND env var.
+# Both kinds run from `Dockerfile.actor` — one image, one build target.
+#
+# Legacy images (interact-shared-arm, interact-shared-asset) are kept in
+# _SHARED_IMAGE_SET so the reclaim path still removes any lingering old
+# containers; they are no longer built by ensure_shared_image().
 _REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_SHARED_IMAGE = {
-    "arm": "interact-shared-arm:latest",
-    "asset": "interact-shared-asset:latest",
+
+_ACTOR_IMAGE = "interact-shared-actor:latest"
+_ACTOR_DOCKERFILE = "Dockerfile.actor"
+
+# Legacy image names — included in set so list_actor_containers() reclaims them.
+_LEGACY_IMAGES = {
+    "interact-shared-arm:latest",
+    "interact-shared-arm",
+    "interact-shared-asset:latest",
+    "interact-shared-asset",
 }
-_DOCKERFILE = {
-    "arm": "docker/Dockerfile.arm",
-    "asset": "docker/Dockerfile.asset",
-}
-_SHARED_IMAGE_SET = set(_SHARED_IMAGE.values()) | {
-    v.split(":")[0] for v in _SHARED_IMAGE.values()
-}
+_SHARED_IMAGE_SET = {_ACTOR_IMAGE, _ACTOR_IMAGE.split(":")[0]} | _LEGACY_IMAGES
 
 # Core infra is compose-owned and label-free; defensively denylisted too.
 _CORE_MODULES = {"backend", "frontend", "demo-runner", "ollama"}
@@ -159,13 +164,18 @@ def _image_exists(tag: str) -> bool:
         return False
 
 
-def ensure_shared_image(kind: str) -> Optional[str]:
-    """Build the shared arm/asset image once (idempotent)."""
-    tag = _SHARED_IMAGE[kind]
+def ensure_shared_image(kind: str = "actor") -> Optional[str]:
+    """Build the shared actor image once (idempotent).
+
+    All actor kinds (arm + agv) use the single ``interact-shared-actor``
+    image built from ``Dockerfile.actor``.  The ``kind`` parameter is kept
+    for call-site compatibility but is ignored — there is only one image.
+    """
+    tag = _ACTOR_IMAGE
     if _image_exists(tag):
         return None
-    dockerfile = os.path.join(_REPO_DIR, _DOCKERFILE[kind])
-    _emit_log("system", f"[SYSTEM] Building shared {kind} image {tag}")
+    dockerfile = os.path.join(_REPO_DIR, _ACTOR_DOCKERFILE)
+    _emit_log("system", f"[SYSTEM] Building shared actor image {tag}")
     try:
         r = subprocess.run(
             ["docker", "build", "-f", dockerfile, "-t", tag, _REPO_DIR],
@@ -214,61 +224,65 @@ def _infra_runtime() -> dict:
     return out
 
 
-def _kind_key(kind: str) -> str:
-    return "arm" if kind == "arm" else "asset"
-
-
 def create_actor(
     module_id: str, kind: str, label: str, publish_port: Optional[int]
 ) -> Optional[str]:
-    """Create ONE labelled actor container (arm or vehicle). Idempotent
+    """Create ONE labelled actor container (arm or agv). Idempotent
     (removes any same-name leftover first). None on success / honest
-    error string. Never fakes."""
+    error string. Never fakes.
+
+    Both kinds use the single ``interact-shared-actor`` image built from
+    ``Dockerfile.actor``; ``actor_runner.py`` selects the agent class via
+    the ``ACTOR_KIND`` environment variable.
+
+    Environment per kind
+    --------------------
+    arm  : ACTOR_ID, ACTOR_KIND=arm, REDIS_URL, INTERACT_BUS=redis,
+           INTERACT_STATE=redis, CONFIG_URL, PIPELINE_CONFIG, PYTHONUNBUFFERED
+    agv  : ACTOR_ID, ACTOR_KIND=agv, REDIS_URL, INTERACT_BUS=redis,
+           INTERACT_STATE=redis, CONFIG_URL, PIPELINE_CONFIG, PYTHONUNBUFFERED
+    """
     if not _docker_available():
         return "docker CLI/socket unavailable"
-    kk = _kind_key(kind)
-    build_err = ensure_shared_image(kk)
+
+    # All kinds use the single consolidated actor image.
+    build_err = ensure_shared_image()
     if build_err:
-        return f"{kk} image build failed: {build_err}"
+        return f"actor image build failed: {build_err}"
 
     infra = _infra_runtime()
     if not infra["network"]:
         return "infra network unknown (is interact-backend running?)"
 
     name = container_name_for(module_id)
-    if kind == "arm":
-        try:
-            arm_n = int(module_id.split("-")[-1])
-        except ValueError:
-            arm_n = 0
-        env = [
-            f"ARM_ID={arm_n}",
-            "SERVER_HOST=http://backend:5000",
-            "PIPELINE_CONFIG=/config/pipeline.yaml",
-            "PYTHONUNBUFFERED=1",
-        ]
-    else:
-        env = [
-            f"ASSET_ID={module_id}",
-            "ASSET_TYPE=vehicle",
-            f"ASSET_LABEL={label or module_id}",
-            "SERVER_HOST=http://backend:5000",
-            "PIPELINE_CONFIG=/config/pipeline.yaml",
-            "SPEED_FACTOR=1.0",
-            "PYTHONUNBUFFERED=1",
-        ]
+
+    # Normalise kind: legacy callers may pass "vehicle" — map to "agv".
+    normalised_kind = "agv" if kind in ("vehicle", "agv") else "arm"
+
+    # Env vars common to all actor kinds (actor_runner.py protocol).
+    redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+    env = [
+        f"ACTOR_ID={module_id}",
+        f"ACTOR_KIND={normalised_kind}",
+        f"REDIS_URL={redis_url}",
+        "INTERACT_BUS=redis",
+        "INTERACT_STATE=redis",
+        "CONFIG_URL=http://backend:5000/config",
+        "PIPELINE_CONFIG=/config/pipeline.yaml",
+        "PYTHONUNBUFFERED=1",
+    ]
 
     args = [
         "docker", "run", "-d",
         "--name", name,
         "--restart", "unless-stopped",
         "--network", infra["network"],
-        # Compose-parity DNS so the health monitor's http://<module>:8000
-        # resolves regardless of container name.
+        # Compose-parity DNS so the health monitor and other containers can
+        # resolve the actor by id regardless of container name.
         "--network-alias", module_id,
         "--label", f"{LBL_ROLE}={ROLE_ACTOR}",
         "--label", f"{LBL_ID}={module_id}",
-        "--label", f"{LBL_KIND}={kind}",
+        "--label", f"{LBL_KIND}={normalised_kind}",
     ]
     if infra["project"]:
         args += ["--label", f"com.docker.compose.project={infra['project']}"]
@@ -280,13 +294,13 @@ def create_actor(
         args += ["-p", f"{publish_port}:8000"]
     for e in env:
         args += ["-e", e]
-    args.append(_SHARED_IMAGE[kk])
+    args.append(_ACTOR_IMAGE)
 
     subprocess.run(
         ["docker", "rm", "-f", name],
         capture_output=True, text=True, timeout=15, check=False,
     )
-    _emit_log("system", f"[SYSTEM] Creating actor container: {name} ({kind})")
+    _emit_log("system", f"[SYSTEM] Creating actor container: {name} ({normalised_kind})")
     try:
         r = subprocess.run(
             args, capture_output=True, text=True, timeout=60, check=False
@@ -468,3 +482,36 @@ def reconcile_actors(desired: list[dict]) -> dict:
             + (f" !{len(failed)}" if failed else "")
         ),
     }
+
+
+def build_desired_from_config() -> list[dict]:
+    """Build the full desired actor set from the current pipeline_config.
+
+    Returns a list of dicts suitable for ``reconcile_actors(desired)``,
+    including BOTH arms (kind="arm") and AGVs (kind="agv").
+
+    This is the canonical helper for any code that needs the full desired
+    set without duplicating pipeline_config traversal.
+    """
+    from app.models import pipeline_config as pc
+
+    desired: list[dict] = []
+
+    # Arms from pipeline_config.get_arms()
+    for arm in pc.get_arms():
+        aid = f"arm-{arm['id']}"
+        desired.append({
+            "id": aid,
+            "kind": "arm",
+            "label": arm.get("label", aid),
+        })
+
+    # AGVs from pipeline_config.get_agvs()
+    for agv in pc.get_agvs():
+        desired.append({
+            "id": agv["id"],
+            "kind": "agv",
+            "label": agv.get("label", agv["id"]),
+        })
+
+    return desired

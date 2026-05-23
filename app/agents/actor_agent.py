@@ -5,8 +5,9 @@ solely by publishing to and subscribing from the NegotiationBus. No external
 component drives an agent: it owns its participation, bidding, acceptance,
 withdrawal, failure, and re-entry.
 
-Phase 1 (Stage 2) scope: one active task at a time; `_execute_leg` is a
-recorded/simulated step — real container/arm I/O is wired in Stage 3.
+Phase 4 Stage 3: ActorAgent is now a lifecycle container for per-task
+TaskParticipant objects. `self._tasks` maps task_id -> TaskParticipant so
+the agent can participate in N concurrent tasks independently.
 
 The agent is a single-threaded event loop: the thread blocks on the inbox
 queue with a timeout equal to the time until the next negotiation deadline,
@@ -23,7 +24,7 @@ import time
 from enum import Enum
 from typing import Optional
 
-from app.agents.bus import NegotiationBus
+from app.agents.bus import BusUnavailable, NegotiationBus
 from app.agents.capability import CapabilityProfile
 from app.agents.negotiation import (
     BID_WINDOW_S,
@@ -35,12 +36,13 @@ from app.agents.negotiation import (
     slots_complete,
     surviving_bids,
 )
+from app.agents.task_participant import TaskParticipant
 
 logger = logging.getLogger(__name__)
 
 
 class AgentState(str, Enum):
-    """An agent's lifecycle state for the current task."""
+    """An agent's lifecycle state (agent-level, not per-task)."""
 
     IDLE = "idle"
     BIDDING = "bidding"
@@ -56,9 +58,16 @@ _IDLE_TICK_S = 0.5
 
 class ActorAgent:
     """Base autonomous actor. Subclasses (ArmAgent, AGVAgent) add bid scoring
-    and leg execution; the base owns the thread, inbox, and lifecycle."""
+    and leg execution; the base owns the thread, inbox, lifecycle, and the
+    per-task participant registry."""
 
-    def __init__(self, profile: CapabilityProfile, bus: NegotiationBus) -> None:
+    def __init__(
+        self,
+        profile: CapabilityProfile,
+        bus: NegotiationBus,
+        *,
+        heartbeat_interval: float = 5.0,
+    ) -> None:
         self.profile = profile
         self.actor_id = profile.actor_id
         self.bus = bus
@@ -73,46 +82,75 @@ class ActorAgent:
         self._messages_seen = 0
         self._lifecycle_lock = threading.Lock()
 
-        # Active-task tracking. Phase 1: one task at a time.
-        self._task_id: Optional[str] = None
-        self._round: int = -1
-        self._task: Optional[dict] = None  # the task_announce payload
-        self._evaluated_round: int = -1    # highest round this agent evaluated
-        self._my_slots: list[str] = []       # slots this agent has accepted
-        self._executed_legs: list[str] = []  # slots this agent has executed
-        self._consensus_announced = False
-        self._failure_announced = False
-        self._reopened_rounds: set[int] = set()  # rounds this agent reopened
+        # Agent-level fault flag (not per-task).
         self._fault_requested = False
         self._fault_reason = ""
+
+        # Per-task participant registry (Phase 4 Stage 3).
+        # Maps task_id -> TaskParticipant. Single-task scenarios produce one entry.
+        self._tasks: dict[str, TaskParticipant] = {}
+
+        # Transient: set to the participant being executed, cleared after.
+        # Used by subclasses (_valid() in arm/agv agents) to access the
+        # participant without requiring a task_id argument on _execute_leg.
+        # Safe: the event loop is single-threaded, so no concurrent access.
+        self._current_participant: Optional[TaskParticipant] = None
+
+        # Heartbeat (Phase 4 Stage 5).
+        self._heartbeat_interval: float = heartbeat_interval
+        self._heartbeat_thread: Optional[threading.Thread] = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Subscribe to the bus and start the event-loop thread. Idempotent
-        and race-free under concurrent callers."""
+        """Subscribe to the bus, bootstrap from history, and start threads.
+
+        Order of operations (idempotent and race-free under concurrent callers):
+        1. subscribe_all — creates the consumer group (for RedisStreamsBus this
+           is necessary before PEL drain can work).
+        2. _bootstrap_from_history — rehydrate in-flight tasks from bus history
+           so a restarted actor remembers accepted slots and completed legs.
+        3. Spawn event-loop thread.
+        4. Spawn heartbeat thread.
+        """
         with self._lifecycle_lock:
             if self._running or self._thread is not None:
                 return
             self._running = True
-            self.bus.subscribe_all(self._enqueue)
+            self.bus.subscribe_all(self._enqueue, consumer_id=self.actor_id)
+            # Bootstrap from history BEFORE starting the event loop so that
+            # _tasks is populated before any incoming message is processed.
+            self._bootstrap_from_history()
             self._thread = threading.Thread(
                 target=self._run, name=f"agent-{self.actor_id}", daemon=True
             )
             self._thread.start()
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop,
+                name=f"heartbeat-{self.actor_id}",
+                daemon=True,
+            )
+            self._heartbeat_thread.start()
 
     def stop(self) -> None:
-        """Stop the event loop and join the thread. Logs a warning if the
-        thread does not exit within the join timeout."""
+        """Stop the event loop and heartbeat, then join both threads."""
         with self._lifecycle_lock:
             self._running = False
             thread = self._thread
             self._thread = None
+            hb_thread = self._heartbeat_thread
+            self._heartbeat_thread = None
         if thread is not None:
             thread.join(timeout=3.0)
             if thread.is_alive():
                 logger.warning(
                     "agent %s thread did not stop within 3s", self.actor_id
+                )
+        if hb_thread is not None:
+            hb_thread.join(timeout=3.0)
+            if hb_thread.is_alive():
+                logger.warning(
+                    "agent %s heartbeat thread did not stop within 3s", self.actor_id
                 )
 
     def is_running(self) -> bool:
@@ -121,6 +159,134 @@ class ActorAgent:
     def messages_seen(self) -> int:
         """Count of bus messages this agent has processed (excludes its own)."""
         return self._messages_seen
+
+    # ── bootstrap + heartbeat ──────────────────────────────────────────────
+
+    def _safe_history(self) -> list:
+        """Return bus.history(), falling back to [] on BusUnavailable."""
+        try:
+            return self.bus.history()
+        except BusUnavailable:
+            logger.warning(
+                "agent %s: bus unavailable during history read; using []",
+                self.actor_id,
+            )
+            return []
+
+    def _bootstrap_from_history(self) -> None:
+        """Rehydrate in-flight tasks from bus history on actor start.
+
+        Called by start() after subscribe_all but BEFORE spawning the event
+        loop thread, so _tasks is populated before any incoming message is
+        processed.
+
+        Algorithm:
+        1. Fetch full bus history (BusUnavailable → empty history, harmless).
+        2. Find every TASK_ANNOUNCE; group by task_id; keep the entry with the
+           highest negotiation_round per task.
+        3. For each such task: get-or-create a TaskParticipant. The participant's
+           __post_init__ calls _rehydrate_executed_legs(history) so already-
+           completed legs are known immediately and will not be re-executed.
+        4. Rehydrate my_slots from accepted_actors(history, task_id, round)
+           filtered to self.actor_id — a restarted actor remembers held slots.
+
+        Phase 4 limitation: a faulted-then-restarted actor starts as IDLE.
+        The prior FAULT message remains in bus history and peers have already
+        observed it. The new actor instance treats itself as fresh — it will not
+        re-enter the faulted task unless a reopen TASK_ANNOUNCE arrives. Full
+        faulted-state persistence (so the actor can resume FAULTED across
+        restarts) is deferred to Phase 5+.
+
+        A restarted actor with no in-flight tasks gets an empty _tasks dict
+        (harmless — the next TASK_ANNOUNCE creates a fresh participant).
+        """
+        history = self._safe_history()
+        if not history:
+            return
+
+        # Step 1: find highest-round TASK_ANNOUNCE per task.
+        best_announce: dict[str, Message] = {}
+        for msg in history:
+            if msg.type != MessageType.TASK_ANNOUNCE:
+                continue
+            task_id = msg.task_id
+            existing = best_announce.get(task_id)
+            if existing is None or msg.negotiation_round > existing.negotiation_round:
+                best_announce[task_id] = msg
+
+        # Step 2: hydrate participants from those announces.
+        for task_id, announce in best_announce.items():
+            if task_id in self._tasks:
+                # Already created (shouldn't happen in start(), but be safe).
+                participant = self._tasks[task_id]
+            else:
+                participant = TaskParticipant(
+                    actor_id=self.actor_id,
+                    bus=self.bus,
+                    bid_score_fn=self._bid_score,
+                    execute_leg_fn=self._execute_leg,
+                    fault_requested_fn=lambda: self._fault_requested,
+                    capability_broadcast_fn=self._broadcast_capability,
+                    task_id=task_id,
+                    round=announce.negotiation_round,
+                    task=dict(announce.payload),
+                )
+                self._tasks[task_id] = participant
+
+            # Step 3: rehydrate my_slots from accepted_actors filtered to this actor.
+            accepts = accepted_actors(history, task_id, announce.negotiation_round)
+            my_slots = [
+                slot_id for slot_id, actor in accepts.items()
+                if actor == self.actor_id
+            ]
+            participant.my_slots = my_slots
+
+            logger.debug(
+                "agent %s: bootstrapped task %s round=%d my_slots=%s executed_legs=%s",
+                self.actor_id,
+                task_id,
+                announce.negotiation_round,
+                my_slots,
+                participant.executed_legs,
+            )
+
+    def _heartbeat_loop(self) -> None:
+        """Publish AVAILABILITY_UPDATE at _heartbeat_interval seconds.
+
+        Observational only — heartbeats are NEVER consulted for consensus.
+        BusUnavailable is caught and silently dropped; the next interval retries.
+        Stops when self._running becomes False.
+        """
+        while self._running:
+            try:
+                self.bus.publish(
+                    Message(
+                        type=MessageType.AVAILABILITY_UPDATE,
+                        task_id="",
+                        negotiation_round=0,
+                        sender=self.actor_id,
+                        payload={"ts": time.time(), "state": self.state.value},
+                    )
+                )
+            except BusUnavailable:
+                logger.debug(
+                    "agent %s: bus unavailable during heartbeat; skipping tick",
+                    self.actor_id,
+                )
+            time.sleep(self._heartbeat_interval)
+
+    def _safe_publish(self, message: Message) -> bool:
+        """Publish a message, catching BusUnavailable. Returns True on success."""
+        try:
+            self.bus.publish(message)
+            return True
+        except BusUnavailable:
+            logger.warning(
+                "agent %s: bus unavailable; dropping %s publish",
+                self.actor_id,
+                message.type.value,
+            )
+            return False
 
     # ── bus intake ─────────────────────────────────────────────────────────
 
@@ -163,99 +329,115 @@ class ActorAgent:
                     )
 
     def _next_wakeup(self) -> float:
-        """Wake the loop at the next pending deadline, else tick slowly."""
-        if self._task is None:
-            return _IDLE_TICK_S
+        """Wake at the soonest pending deadline across all participants, else tick slowly."""
         now = time.time()
         targets = []
-        if self._evaluated_round < self._round:
-            deadline = self._task.get("bid_deadline_ts")
-            if deadline is not None:
-                targets.append(deadline)
-        if not self._consensus_announced and not self._failure_announced:
-            consensus_deadline = self._task.get("consensus_deadline_ts")
-            if consensus_deadline is not None:
-                targets.append(consensus_deadline)
+        for participant in self._tasks.values():
+            dl = participant.next_deadline()
+            if dl is not None:
+                targets.append(dl)
         soonest = min((t - now for t in targets), default=_IDLE_TICK_S)
         return max(0.0, min(soonest, _IDLE_TICK_S))
 
     # ── handlers ───────────────────────────────────────────────────────────
 
     def _handle(self, message: Message) -> None:
-        # Monotonic-round invariant: ignore anything older than the round we
-        # are already on for this task.
-        if (
-            message.task_id == self._task_id
-            and message.negotiation_round < self._round
-        ):
-            return
-        # _on_task_announce applies a stricter (<=) guard so a duplicate
-        # announce for the round we are already on is ignored.
+        """Route incoming bus messages to the appropriate participant."""
+        task_id = message.task_id
+
         if message.type == MessageType.TASK_ANNOUNCE:
             self._on_task_announce(message)
-        elif message.type in (MessageType.WITHDRAW, MessageType.FAULT):
-            self._maybe_reopen(message)
+            return
+
+        # For WITHDRAW / FAULT: route to the matching participant's maybe_reopen.
+        if message.type in (MessageType.WITHDRAW, MessageType.FAULT):
+            participant = self._tasks.get(task_id)
+            if participant is not None and self.state != AgentState.FAULTED:
+                # Monotonic-round guard: ignore older-round triggers.
+                if message.negotiation_round >= participant.round:
+                    participant.maybe_reopen(message)
 
     def _on_task_announce(self, message: Message) -> None:
-        # A faulted agent stays out of the negotiation — it does not rejoin
-        # on a reopen (Phase 1 has no agent-level recover).
+        """Handle TASK_ANNOUNCE: get-or-create a participant and delegate."""
+        # A faulted agent stays out of all negotiations — it does not rejoin
+        # on a reopen (Phase 1/Phase 4 invariant: no agent-level recover).
         if self.state == AgentState.FAULTED:
             return
-        # Adopt the (possibly new) task/round. A higher round supersedes.
-        if (
-            message.task_id == self._task_id
-            and message.negotiation_round <= self._round
-        ):
-            return
-        self._task_id = message.task_id
-        self._round = message.negotiation_round
-        self._task = dict(message.payload)
-        self.state = AgentState.IDLE
 
-        self._consensus_announced = False
-        self._failure_announced = False
-        self._my_slots = []
-        # _executed_legs is NOT reset — a leg already physically done stays done.
+        task_id = message.task_id
+        participant = self._tasks.get(task_id)
 
-        self._broadcast_capability()
-        self._place_bids()
+        if participant is None:
+            # New task for this agent — create a participant.
+            participant = self._make_participant(task_id, message)
+            self._tasks[task_id] = participant
+            # Broadcast capability then place bids.
+            self._broadcast_capability(task_id, message.negotiation_round)
+            bid_placed = self._place_bids_for(participant)
+            if bid_placed:
+                self.state = AgentState.BIDDING
+            # else: state stays IDLE (agent cannot fill any slot in this task)
+        else:
+            # Existing task — check monotonic-round guard.
+            if message.negotiation_round <= participant.round:
+                return
+            # Higher round: adopt it. Broadcast capability then re-bid.
+            participant.round = message.negotiation_round
+            participant.task = dict(message.payload)
+            participant.consensus_announced = False
+            participant.failure_announced = False
+            participant.my_slots = []
+            # executed_legs preserved — physical work already done.
+            self._broadcast_capability(task_id, message.negotiation_round)
+            bid_placed = self._place_bids_for(participant)
+            if bid_placed:
+                self.state = AgentState.BIDDING
 
-    def _broadcast_capability(self) -> None:
-        self._publish(
-            MessageType.CAPABILITY_BROADCAST,
-            payload=self.profile.to_dict(),
+    def _make_participant(self, task_id: str, message: Message) -> TaskParticipant:
+        """Create a fresh TaskParticipant for a new task."""
+        return TaskParticipant(
+            actor_id=self.actor_id,
+            bus=self.bus,
+            bid_score_fn=self._bid_score,
+            execute_leg_fn=self._execute_leg,
+            fault_requested_fn=lambda: self._fault_requested,
+            capability_broadcast_fn=self._broadcast_capability,
+            task_id=task_id,
+            round=message.negotiation_round,
+            task=dict(message.payload),
         )
 
-    def _place_bids(self) -> None:
-        slots = (self._task or {}).get("slots", [])
+    def _place_bids_for(self, participant: TaskParticipant) -> bool:
+        """Place bids for all slots in the participant's task. Returns True if any bid placed."""
+        slots = (participant.task or {}).get("slots", [])
         bid_placed = False
         for slot in slots:
             score = self._bid_score(slot)
             if score is None:
                 continue
-            self._publish(
-                MessageType.BID,
-                slot_id=slot["slot_id"],
-                payload={"score": score, "basis": self.profile.kind},
+            published = self._safe_publish(
+                Message(
+                    type=MessageType.BID,
+                    task_id=participant.task_id,
+                    negotiation_round=participant.round,
+                    sender=self.actor_id,
+                    slot_id=slot["slot_id"],
+                    payload={"score": score, "basis": self.profile.kind},
+                )
             )
-            bid_placed = True
-        if bid_placed:
-            self.state = AgentState.BIDDING
+            if published:
+                bid_placed = True
+        return bid_placed
 
-    def _publish(
-        self,
-        msg_type: MessageType,
-        slot_id: Optional[str] = None,
-        payload: Optional[dict] = None,
-    ) -> None:
-        self.bus.publish(
+    def _broadcast_capability(self, task_id: str, negotiation_round: int) -> None:
+        """Publish CAPABILITY_BROADCAST for a given task/round."""
+        self._safe_publish(
             Message(
-                type=msg_type,
-                task_id=self._task_id or "",
-                negotiation_round=self._round,
+                type=MessageType.CAPABILITY_BROADCAST,
+                task_id=task_id,
+                negotiation_round=negotiation_round,
                 sender=self.actor_id,
-                slot_id=slot_id,
-                payload=payload or {},
+                payload=self.profile.to_dict(),
             )
         )
 
@@ -265,47 +447,174 @@ class ActorAgent:
         return None
 
     def _check_deadlines(self) -> None:
-        if self._task is None:
+        """Iterate all participants and trigger deadline-driven actions."""
+        if self.state == AgentState.FAULTED:
             return
         now = time.time()
-        if (
-            self._evaluated_round < self._round
-            and now >= self._task.get("bid_deadline_ts", float("inf"))
-        ):
-            self._evaluate()
-        # _evaluate (above) publishes ACCEPTs to the bus before _check_consensus
-        # reads history — relies on synchronous in-process bus delivery.
-        self._check_consensus()
-        self._check_failure()
+        for participant in list(self._tasks.values()):
+            if participant.task is None:
+                continue
+            # Bid evaluation deadline.
+            if (
+                participant.evaluated_round < participant.round
+                and now >= participant.task.get("bid_deadline_ts", float("inf"))
+            ):
+                self._evaluate_participant(participant)
 
-    def _evaluate(self) -> None:
-        """Leaderless evaluation: for every slot, apply the public rule to the
-        public bid set. Win -> accept; lost (but bid) -> withdraw."""
-        self._evaluated_round = self._round
-        history = self.bus.history()
-        constraint = (self._task or {}).get("constraint", "")
+            # Consensus check (triggers execution if complete).
+            self._check_consensus_for(participant)
+
+            # Failure check.
+            participant.check_failure()
+
+    def _evaluate_participant(self, participant: TaskParticipant) -> None:
+        """Leaderless evaluation for one participant.
+
+        For every slot: apply the public winner rule.
+        Won -> ACCEPT published + slot recorded + state -> WON.
+        Lost (but bid) -> WITHDRAW published.
+        """
+        from app.agents.negotiation import surviving_bids, public_winner
+        participant.evaluated_round = participant.round
+        history = self._safe_history()
+        constraint = (participant.task or {}).get("constraint", "")
         won_any = False
-        for slot in (self._task or {}).get("slots", []):
+        for slot in (participant.task or {}).get("slots", []):
             slot_id = slot["slot_id"]
-            bids = surviving_bids(history, self._task_id, self._round, slot_id)
+            bids = surviving_bids(history, participant.task_id, participant.round, slot_id)
             i_bid = any(b.sender == self.actor_id for b in bids)
             if not i_bid:
                 continue
             winner = public_winner(bids, constraint)
             if winner == self.actor_id:
-                self._publish(MessageType.ACCEPT, slot_id=slot_id)
-                self._my_slots.append(slot_id)
+                self._safe_publish(
+                    Message(
+                        type=MessageType.ACCEPT,
+                        task_id=participant.task_id,
+                        negotiation_round=participant.round,
+                        sender=self.actor_id,
+                        slot_id=slot_id,
+                    )
+                )
+                participant.my_slots.append(slot_id)
                 won_any = True
             else:
-                self._publish(
-                    MessageType.WITHDRAW,
-                    slot_id=slot_id,
-                    payload={"reason": "lost evaluation"},
+                self._safe_publish(
+                    Message(
+                        type=MessageType.WITHDRAW,
+                        task_id=participant.task_id,
+                        negotiation_round=participant.round,
+                        sender=self.actor_id,
+                        slot_id=slot_id,
+                        payload={"reason": "lost evaluation"},
+                    )
                 )
-        self.state = AgentState.WON if won_any else AgentState.IDLE
+        if won_any:
+            self.state = AgentState.WON
+        # If we didn't win any slots in this task but already have WON/EXECUTING
+        # state from another task, don't downgrade to IDLE.
+        elif self.state not in (AgentState.WON, AgentState.EXECUTING):
+            self.state = AgentState.IDLE
 
-    def executed_legs(self) -> list[str]:
-        return list(self._executed_legs)
+    def _check_consensus_for(self, participant: TaskParticipant) -> None:
+        """Observe consensus for one participant, then run held legs.
+
+        Note: we do NOT gate on agent-level state here. Agent state is a
+        diagnostic aggregate — per-task consensus must be evaluated independently
+        of other tasks' execution status. Participant-level flags
+        (consensus_announced) are the idempotency guard.
+        """
+        from app.agents.negotiation import accepted_actors, slots_complete
+        if participant.task is None:
+            return
+        if self.state == AgentState.FAULTED:
+            return
+        history = self._safe_history()
+        required = {s["slot_id"] for s in participant.task.get("slots", [])}
+        accepts = accepted_actors(history, participant.task_id, participant.round)
+        if not slots_complete(required, accepts):
+            return
+
+        # Observational consensus marker — idempotent, non-authoritative.
+        if not participant.consensus_announced:
+            participant.consensus_announced = True
+            self._safe_publish(
+                Message(
+                    type=MessageType.CONSENSUS_REACHED,
+                    task_id=participant.task_id,
+                    negotiation_round=participant.round,
+                    sender=self.actor_id,
+                    payload={"round": participant.round},
+                )
+            )
+
+        if not participant.my_slots:
+            return  # consensus reached but this agent holds nothing
+
+        self.state = AgentState.EXECUTING
+        all_complete = True
+        for slot_id in participant.my_slots:
+            if slot_id not in participant.executed_legs:
+                # Store the participant so _execute_leg implementations can
+                # access task_id/round/execution_valid without needing an extra arg.
+                # The event loop is single-threaded: no concurrent access.
+                self._current_participant = participant
+                try:
+                    self._publish_leg_event(MessageType.LEG_STARTED, slot_id, participant)
+                    completed = self._execute_leg(slot_id)
+                    evt = MessageType.LEG_COMPLETED if completed else MessageType.LEG_HALTED
+                    self._publish_leg_event(evt, slot_id, participant)
+                finally:
+                    self._current_participant = None
+                if completed:
+                    # Keep the in-process append so the local view immediately
+                    # matches what _rehydrate_executed_legs would compute from
+                    # the LEG_COMPLETED just published. The publish is synchronous
+                    # (before this append), so history already reflects the
+                    # completion before any other agent's bus.history() read.
+                    participant.executed_legs.append(slot_id)
+                else:
+                    all_complete = False
+
+        if all_complete:
+            # Check if ALL participants' slots are complete before moving to DONE.
+            all_tasks_done = all(
+                all(s in p.executed_legs for s in p.my_slots)
+                for p in self._tasks.values()
+                if p.my_slots
+            )
+            if all_tasks_done:
+                self.state = AgentState.DONE
+
+    def _publish_leg_event(
+        self,
+        msg_type: MessageType,
+        slot_id: str,
+        participant: "TaskParticipant",
+    ) -> None:
+        """Publish an observational LEG_* transition marker for one slot.
+
+        LEG_STARTED / LEG_COMPLETED / LEG_HALTED are audit-trail messages:
+        they record what this actor did, never instruct other actors. No
+        other agent changes its decisions based on these messages.
+
+        The payload mirrors the slot/task/round context so the bus log is
+        self-contained for replay and state rehydration.
+        """
+        self._safe_publish(
+            Message(
+                type=msg_type,
+                task_id=participant.task_id,
+                negotiation_round=participant.round,
+                sender=self.actor_id,
+                slot_id=slot_id,
+                payload={
+                    "slot_id": slot_id,
+                    "task_id": participant.task_id,
+                    "round": participant.round,
+                },
+            )
+        )
 
     def fault(self, reason: str) -> None:
         """Request that this agent fault. Thread-safe — callable from any
@@ -317,202 +626,55 @@ class ActorAgent:
 
     def _do_fault(self, reason: str) -> None:
         """Perform the fault — runs on the agent thread only. Withdraws every
-        held slot, publishes a FAULT, transitions to FAULTED."""
-        for slot_id in list(self._my_slots):
-            self._publish(
-                MessageType.WITHDRAW,
-                slot_id=slot_id,
-                payload={"reason": f"fault: {reason}"},
+        held slot across every active task, publishes FAULT per task, then
+        transitions to FAULTED.
+
+        A faulted agent does not rejoin new task adoptions (Phase 3/4 invariant).
+        """
+        for task_id, participant in list(self._tasks.items()):
+            for slot_id in list(participant.my_slots):
+                self._safe_publish(
+                    Message(
+                        type=MessageType.WITHDRAW,
+                        task_id=task_id,
+                        negotiation_round=participant.round,
+                        sender=self.actor_id,
+                        slot_id=slot_id,
+                        payload={"reason": f"fault: {reason}"},
+                    )
+                )
+            participant.my_slots.clear()
+            self._safe_publish(
+                Message(
+                    type=MessageType.FAULT,
+                    task_id=task_id,
+                    negotiation_round=participant.round,
+                    sender=self.actor_id,
+                    payload={"reason": reason},
+                )
             )
-        self._my_slots.clear()
-        self._publish(MessageType.FAULT, payload={"reason": reason})
         self.state = AgentState.FAULTED
 
-    def _check_consensus(self) -> None:
-        """Observe (never decide) the consensus condition, then run our leg.
+    def _execute_leg(self, slot_id: str, task_id: str = "", round: int = -1) -> bool:
+        """Run this agent's physical leg. Stage 3+ subclasses override.
 
-        Execution barrier: we execute only when we locally observe consensus,
-        we hold at least one accepted slot, and no higher round has appeared.
-        """
-        if self._task is None or self.state in (
-            AgentState.BIDDING,
-            AgentState.DONE,
-            AgentState.FAULTED,
-        ):
-            return
-        history = self.bus.history()
-        required = {s["slot_id"] for s in self._task.get("slots", [])}
-        accepts = accepted_actors(history, self._task_id, self._round)
-        if not slots_complete(required, accepts):
-            return
+        Base implementation: recorded/simulated stub — always returns True.
 
-        # Observational consensus marker — idempotent, non-authoritative.
-        if not self._consensus_announced:
-            self._consensus_announced = True
-            self._publish(
-                MessageType.CONSENSUS_REACHED, payload={"round": self._round}
-            )
+        Default args preserve backward compatibility: tests that monkeypatch
+        `_execute_leg(self, slot_id)` with the old single-arg signature will
+        still work; the new callers pass all three positional args.
 
-        if not self._my_slots:
-            return  # consensus reached, but this agent holds nothing to run
-        self.state = AgentState.EXECUTING
-        all_complete = True
-        for slot_id in self._my_slots:
-            if slot_id not in self._executed_legs:
-                completed = self._execute_leg(slot_id)
-                if completed:
-                    self._executed_legs.append(slot_id)
-                else:
-                    # Leg halted before completion (superseded round / fault).
-                    # Do NOT record it — if this slot is re-won on a reopened
-                    # round the agent must re-execute it.
-                    all_complete = False
-        if all_complete:
-            self.state = AgentState.DONE
-        # else: leave state as-is; a superseding _on_task_announce or _do_fault
-        # will set the next state.
-
-    def _check_failure(self) -> None:
-        """Observe (never decide) the failure condition: consensus deadline
-        expired with no viable bids for some slot. Idempotent and decentralised
-        — mirrors how _check_consensus works, purely from bus-visible data."""
-        if self._task is None or self._consensus_announced or self._failure_announced:
-            return
-        if self.state == AgentState.FAULTED:
-            return
-        if time.time() < self._task.get("consensus_deadline_ts", float("inf")):
-            return
-        # Double-check: if consensus is actually complete now, do not fail.
-        history = self.bus.history()
-        required = {s["slot_id"] for s in self._task.get("slots", [])}
-        accepts = accepted_actors(history, self._task_id, self._round)
-        if slots_complete(required, accepts):
-            return
-        # A slot reopen for the next round already handles a lost-holder case.
-        if (self._round + 1) in self._reopened_rounds:
-            return
-        # Determine reason: any required slot with zero surviving bids → unfillable.
-        reason = "consensus deadline expired"
-        for slot_id in required:
-            if not surviving_bids(history, self._task_id, self._round, slot_id):
-                reason = "no viable bids"
-                break
-        self._failure_announced = True
-        self._publish(
-            MessageType.TASK_FAILED,
-            payload={"round": self._round, "reason": reason},
-        )
-
-    def _execution_valid(self, slot_id: str) -> bool:
-        """Execution barrier — re-derive validity from a fresh bus snapshot.
-
-        Returns True only when ALL of:
-        1. Consensus is still complete (all required slots still accepted).
-        2. This agent still holds `slot_id` (no superseding withdraw/fault).
-        3. No higher round has been announced for this task_id.
-        4. No fault was requested on this agent (`_fault_requested`).
-
-        Called before each leg and between every motion chunk so a superseding
-        round or an agent fault halts execution promptly.
-        """
-        if self._fault_requested:
-            return False
-        if self._task is None or self._task_id is None:
-            return False
-
-        history = self.bus.history()
-        required = {s["slot_id"] for s in self._task.get("slots", [])}
-        accepts = accepted_actors(history, self._task_id, self._round)
-
-        # 1. Consensus still complete.
-        if not slots_complete(required, accepts):
-            return False
-
-        # 2. We still hold our slot.
-        if accepts.get(slot_id) != self.actor_id:
-            return False
-
-        # 3. No higher round announced for this task.
-        for m in history:
-            if (
-                m.type == MessageType.TASK_ANNOUNCE
-                and m.task_id == self._task_id
-                and m.negotiation_round > self._round
-            ):
-                return False
-
-        return True
-
-    def _execute_leg(self, slot_id: str) -> bool:
-        """Run this agent's physical leg. Stage 2: a recorded/simulated step.
-        Stage 3 wires real AGV-container HTTP and arm animation here.
-
-        Returns True when the leg completed fully, False when it halted early
-        (superseded round, fault, or any mid-execution abort). Callers in
-        _check_consensus only record the leg as done when True is returned.
+        Returns True when the leg completed fully, False when halted early.
         """
         logger.debug(
-            "agent %s executing leg %s (Stage 2 recorded stub)",
-            self.actor_id,
-            slot_id,
+            "agent %s executing leg %s task=%s round=%s (stub)",
+            self.actor_id, slot_id, task_id, round,
         )
         return True
 
-    def _maybe_reopen(self, trigger: Message) -> None:
-        """If a slot that WAS accepted has lost its holder (a fault/withdraw
-        after the bid deadline), any agent may publish the round+1 reopen.
-        The reopen's announce_ts is the trigger message's ts, so concurrent
-        reopens from different agents are byte-identical (idempotent). The
-        publishing agent adopts the new round locally — the bus does not echo
-        an agent its own messages."""
-        if self._task is None or self.state == AgentState.FAULTED:
-            return
-        if (
-            trigger.task_id != self._task_id
-            or trigger.negotiation_round != self._round
-        ):
-            return
-        next_round = self._round + 1
-        if next_round in self._reopened_rounds:
-            return
-        # Before the bid deadline, evaluation already excludes a lost bid, so
-        # no reopen is needed. A missing deadline means never reopen.
-        if time.time() < self._task.get("bid_deadline_ts", float("inf")):
-            return
-        history = self.bus.history()
-        # Reopen only when a slot that was ACCEPTED has since lost its holder
-        # (the holder withdrew/faulted). A slot that simply never received a
-        # bid is an unfillable task, not a fault — reopening would not help.
-        ever_accepted = {
-            m.slot_id
-            for m in history
-            if m.type == MessageType.ACCEPT
-            and m.task_id == self._task_id
-            and m.negotiation_round == self._round
-            and m.slot_id is not None
-        }
-        currently_accepted = set(
-            accepted_actors(history, self._task_id, self._round)
-        )
-        if not (ever_accepted - currently_accepted):
-            return  # no previously-held slot was lost — nothing to reopen
-
-        self._reopened_rounds.add(next_round)
-        base_ts = trigger.ts
-        payload = dict(self._task)
-        payload["announce_ts"] = base_ts
-        payload["bid_deadline_ts"] = base_ts + BID_WINDOW_S
-        payload["consensus_deadline_ts"] = (
-            base_ts + BID_WINDOW_S + CONSENSUS_WINDOW_S
-        )
-        reopen = Message(
-            type=MessageType.TASK_ANNOUNCE,
-            task_id=self._task_id or "",
-            negotiation_round=next_round,
-            sender=self.actor_id,
-            ts=base_ts,
-            payload=payload,
-        )
-        self.bus.publish(reopen)
-        # The bus does not echo own messages back, so adopt the round locally.
-        self._on_task_announce(reopen)
+    def executed_legs(self) -> list[str]:
+        """All legs executed across all tasks (union). Kept for test compat."""
+        result: list[str] = []
+        for p in self._tasks.values():
+            result.extend(p.executed_legs)
+        return result

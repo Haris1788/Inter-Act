@@ -13,9 +13,12 @@ from typing import Any, Literal, Optional
 
 
 class MessageType(str, Enum):
-    """The 12 negotiation message types. `counter_offer` is reserved for a
-    later phase and is never emitted in Phase 1. `task_failed` is an
-    observational marker — never an authority message."""
+    """The 15 negotiation message types. `counter_offer` is reserved for a
+    later phase and is never emitted in Phase 1. `task_failed`, `leg_started`,
+    `leg_completed`, and `leg_halted` are observational markers — never
+    authority messages. LEG_* types are bus-visible audit trail for replay,
+    recovery, and frontend observation; no actor changes decisions based on
+    another actor's LEG_* messages."""
 
     TASK_ANNOUNCE = "task_announce"
     CAPABILITY_BROADCAST = "capability_broadcast"
@@ -29,6 +32,11 @@ class MessageType(str, Enum):
     WITHDRAW = "withdraw"
     CONSENSUS_REACHED = "consensus_reached"
     TASK_FAILED = "task_failed"
+    # Execution-transition markers (Phase 4 Stage 4) — observational only.
+    # Published by the actor executing a leg; no actor acts on another's LEG_*.
+    LEG_STARTED = "leg_started"
+    LEG_COMPLETED = "leg_completed"
+    LEG_HALTED = "leg_halted"
 
 
 class RoundStatus(str, Enum):
