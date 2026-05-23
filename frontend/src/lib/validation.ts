@@ -20,7 +20,24 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
   const list = Object.values(actors);
   const arms = list.filter((a) => a.kind === "arm");
   const agvs = list.filter((a) => a.kind === "agv");
-  const zoneList = Object.values(zones);
+
+  // Zones come from TWO sources after the Phase 5.1 zone-marker fix:
+  //   - the legacy separate `zones` slice (kept for back-compat), and
+  //   - actor entries with `kind === "zone"` (current canvas-drop path).
+  // Merge both so the deploy panel + warnings see every zone the user
+  // dropped, regardless of which path created it.
+  const zoneActors = list.filter((a) => a.kind === "zone");
+  const zoneList = [
+    ...Object.values(zones),
+    // Project zone-kind actors onto the legacy { id, role, label } shape so
+    // downstream role checks (.role === "source" / "sink") keep working.
+    ...zoneActors.map((a) => ({
+      id: a.id,
+      role: a.subtype === "sink" ? "sink" : "source",
+      label: a.label ?? a.id,
+      position: a.position,
+    })),
+  ];
 
   // Functional actors only (not zone markers).
   const functionalList = list.filter((a) => a.kind !== "zone");
