@@ -1,21 +1,10 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-    - ${OLLAMA_HOST_PORT:-11434}:11434
-    volumes:
-    - ollama_data:/root/.ollama
-    environment:
-    - OLLAMA_KEEP_ALIVE=24h
-    healthcheck:
-      test:
-      - CMD
-      - ollama
-      - list
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
+  # NOTE: the embedded ollama service was removed (Phase 5 cleanup). All
+  # LLM traffic flows through host.docker.internal:11500 to the
+  # TU Clausthal tunnel (qwq:32b + qwen2.5:14b). Saves GPU/CPU + build
+  # time and removes a vestigial container. Any legacy
+  # OLLAMA_BASE_URL reader now resolves to the same tunnel via the
+  # backend env below.
   redis:
     image: redis:7-alpine
     command:
@@ -37,7 +26,7 @@ services:
     environment:
     - SERVER_HOST=http://backend:5000
     - DEMO_RUNNER_HOST=http://demo-runner:6000
-    - OLLAMA_BASE_URL=http://ollama:11434
+    - OLLAMA_BASE_URL=http://host.docker.internal:11500
     - LLM_BASE_URL=http://host.docker.internal:11500
     - OLLAMA_MODEL_PLANNER=qwq:32b-q4_K_M
     - OLLAMA_MODEL_TACTICAL=qwen2.5:14b-instruct-q4_K_M
@@ -67,8 +56,6 @@ services:
     extra_hosts:
     - host.docker.internal:host-gateway
     depends_on:
-      ollama:
-        condition: service_healthy
       redis:
         condition: service_started
   frontend:
@@ -119,5 +106,4 @@ services:
     profiles:
     - build-only
 volumes:
-  ollama_data: {}
   redis-data: {}

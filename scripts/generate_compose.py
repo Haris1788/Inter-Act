@@ -71,28 +71,17 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
     assets = _non_arm_assets(cfg)
     asset_ports = _asset_host_ports(assets)
     ai_cfg = cfg.get("ai") or {}
-    ollama_base_url = ai_cfg.get("ollama_base_url", "http://ollama:11434")
-    # The heavy two-model AI layer (llm_service) points at the TU Clausthal
-    # tunnel, separate from qwen_brain's local container. Defaults to the
-    # ollama url if not configured (back-compat).
+    # Phase 5 cleanup: embedded ollama service removed. All LLM traffic
+    # flows through the TU Clausthal tunnel at host.docker.internal:11500.
+    # OLLAMA_BASE_URL is kept as a back-compat env for any vestigial reader
+    # (qwen_brain etc.); it points at the same tunnel.
+    ollama_base_url = ai_cfg.get("ollama_base_url", "http://host.docker.internal:11500")
     llm_base_url = ai_cfg.get("llm_base_url", ollama_base_url)
     model_planner = ai_cfg.get("model_planner", "qwq:32b-q4_K_M")
     model_tactical = ai_cfg.get("model_tactical", "qwen2.5:14b-instruct-q4_K_M")
 
     services = {
-        "ollama": {
-            "image": "ollama/ollama:latest",
-            "ports": ["${OLLAMA_HOST_PORT:-11434}:11434"],
-            "volumes": ["ollama_data:/root/.ollama"],
-            "environment": ["OLLAMA_KEEP_ALIVE=24h"],
-            "healthcheck": {
-                "test": ["CMD", "ollama", "list"],
-                "interval": "10s",
-                "timeout": "5s",
-                "retries": 12,
-                "start_period": "20s",
-            },
-        },
+        # ollama service removed (Phase 5 cleanup). LLM via host tunnel.
         "redis": {
             "image": "redis:7-alpine",
             "command": [
@@ -148,7 +137,6 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
             # automatically on Docker Desktop; required on a Linux host.
             "extra_hosts": ["host.docker.internal:host-gateway"],
             "depends_on": {
-                "ollama": {"condition": "service_healthy"},
                 "redis": {"condition": "service_started"},
             },
         },
@@ -199,7 +187,7 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
 
     compose = {
         "services": services,
-        "volumes": {"ollama_data": {}, "redis-data": {}},
+        "volumes": {"redis-data": {}},
     }
 
     with open(output_path, "w", encoding="utf-8") as f:

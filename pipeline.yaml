@@ -68,10 +68,11 @@ warehouse:
     bay: [10, 7]
 
 ai:
-  # qwen_brain (legacy per-arm 0.5b) stays on the local container.
-  ollama_base_url: http://ollama:11434
-  # llm_service (interpreter/planner + tactical) -> TU Clausthal GPU tunnel,
-  # reached from inside the backend container via the docker host gateway.
+  # Embedded ollama service removed (Phase 5 cleanup). All LLM traffic
+  # flows through the TU Clausthal tunnel at host.docker.internal:11500.
+  # ollama_base_url kept for any vestigial reader (e.g. qwen_brain) but
+  # points at the same tunnel; nothing in the live path consults it.
+  ollama_base_url: http://host.docker.internal:11500
   llm_base_url: http://host.docker.internal:11500
   model_planner: qwq:32b-q4_K_M
   model_tactical: qwen2.5:14b-instruct-q4_K_M

@@ -58,12 +58,13 @@ def test_generate_compose_includes_assets_from_pipeline_yaml():
 
         # Unified model: compose defines ONLY core infrastructure. Arms /
         # AGVs are reconciler-owned actor containers, never compose services.
-        # Phase 4 Stage 1: redis is also a core service.
+        # Phase 4 Stage 1: redis is a core service.
         # Phase 4 Stage 2 Track C: actor-image is a build-only service
         # (profiles: [build-only]) so `docker compose build actor-image`
         # pre-builds interact-shared-actor without starting a container.
+        # Phase 5 cleanup: ollama service removed — LLM via TU Clausthal
+        # tunnel (host.docker.internal:11500).
         assert set(services) == {
-            "ollama",
             "redis",
             "backend",
             "frontend",
