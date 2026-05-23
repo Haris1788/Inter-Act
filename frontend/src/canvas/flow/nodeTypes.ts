@@ -1,12 +1,11 @@
 // Central nodeTypes registry for React Flow.
-// Import once and pass to <ReactFlow nodeTypes={nodeTypes} />.
+// Phase 5.1 Stage 1: ZoneNode removed (deleted). ActorNode is now invisible
+// (transparent shell for RF drag/pan/zoom math; Konva is the visual renderer).
 
 import { ActorNode } from "./nodes/ActorNode";
-import { ZoneNode } from "./nodes/ZoneNode";
 import { PoolLabelNode } from "./nodes/PoolLabelNode";
 
 export const nodeTypes = {
   actorNode: ActorNode,
-  zoneNode: ZoneNode,
   poolLabelNode: PoolLabelNode,
 } as const;

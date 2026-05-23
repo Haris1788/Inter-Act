@@ -45,6 +45,9 @@ export interface ActorSeed {
   capacity?: number;
   /** Speed multiplier (0.5–3.0). Default 1.0. */
   speed?: number;
+  // ── Phase 5.1 Stage 3: per-kind AGV silhouette ─────────────────────────
+  /** AGV vehicle subtype. Ignored for arms. Default "shuttle". */
+  subtype?: "shuttle" | "forklift" | "tow";
 }
 
 export function normalizeActor(seed: ActorSeed): TopologyActor {
@@ -69,5 +72,8 @@ export function normalizeActor(seed: ActorSeed): TopologyActor {
     reach_px: seed.reach_px ?? DEFAULT_REACH_PX,
     capacity: seed.capacity ?? DEFAULT_CAPACITY,
     speed: seed.speed ?? DEFAULT_SPEED,
+    // Phase 5.1 Stage 3: default "shuttle" for AGVs; arms carry the field but
+    // it is unused — consistent, additive, never breaks old localStorage entries.
+    subtype: seed.subtype ?? (isArm ? undefined : "shuttle"),
   };
 }

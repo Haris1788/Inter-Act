@@ -211,6 +211,44 @@ class _InMemoryReservationStore:
                     extended = True
         return extended
 
+    def snapshot_all(self) -> list:
+        """Return all live cell reservations grouped by (task_id, actor_id, epoch).
+
+        Returns a list of dicts:
+            {task_id, actor_id, epoch, cells: [[col, row], ...]}
+
+        Dead (expired) reservations are excluded.
+        """
+        # Key form: resv:task:<task_id>:actor:<actor_id>:epoch:<epoch>:cell:<col>:<row>
+        groups: dict[tuple[str, str, int], list[list[int]]] = {}
+        now_mono_ms = self._now_ms()
+        with self._lock:
+            for key, exp in self._cells.items():
+                if not key.startswith(_RESV_PREFIX + ":"):
+                    continue
+                if exp <= now_mono_ms:
+                    continue
+                cell = _parse_cell_from_key(key)
+                if cell is None:
+                    continue
+                # Parse task_id, actor_id, epoch from the key.
+                try:
+                    # resv:task:<task_id>:actor:<actor_id>:epoch:<epoch>:cell:...
+                    after_task = key.split(":task:", 1)[1]
+                    task_part, rest = after_task.split(":actor:", 1)
+                    actor_part, rest2 = rest.split(":epoch:", 1)
+                    epoch_part = rest2.split(":cell:", 1)[0]
+                    gkey: tuple[str, str, int] = (task_part, actor_part, int(epoch_part))
+                except (ValueError, IndexError):
+                    continue
+                if gkey not in groups:
+                    groups[gkey] = []
+                groups[gkey].append([cell[0], cell[1]])
+        return [
+            {"task_id": t, "actor_id": a, "epoch": e, "cells": cells}
+            for (t, a, e), cells in groups.items()
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Redis backend
@@ -337,6 +375,41 @@ class _RedisReservationStore:
                 break
         return extended
 
+    def snapshot_all(self) -> list:
+        """SCAN all resv:* keys and group by (task_id, actor_id, epoch).
+
+        Returns a list of dicts:
+            {task_id, actor_id, epoch, cells: [[col, row], ...]}
+
+        Only keys that still exist in Redis (not yet expired) are returned.
+        """
+        pattern = _RESV_PREFIX + ":task:*"
+        groups: dict[tuple[str, str, int], list[list[int]]] = {}
+        cursor = 0
+        while True:
+            cursor, keys = self._client.scan(cursor, match=pattern, count=_SCAN_BATCH)
+            for key in keys:
+                cell = _parse_cell_from_key(key)
+                if cell is None:
+                    continue
+                try:
+                    after_task = key.split(":task:", 1)[1]
+                    task_part, rest = after_task.split(":actor:", 1)
+                    actor_part, rest2 = rest.split(":epoch:", 1)
+                    epoch_part = rest2.split(":cell:", 1)[0]
+                    gkey: tuple[str, str, int] = (task_part, actor_part, int(epoch_part))
+                except (ValueError, IndexError):
+                    continue
+                if gkey not in groups:
+                    groups[gkey] = []
+                groups[gkey].append([cell[0], cell[1]])
+            if cursor == 0:
+                break
+        return [
+            {"task_id": t, "actor_id": a, "epoch": e, "cells": cells}
+            for (t, a, e), cells in groups.items()
+        ]
+
 
 # ---------------------------------------------------------------------------
 # ReservationStore — public facade
@@ -407,6 +480,17 @@ class ReservationStore:
         matching keys exist (e.g. all expired or never reserved).
         """
         return self._backend.touch(task_id, actor_id, epoch, ttl_ms)
+
+    def snapshot_all(self) -> list:
+        """Return a snapshot of all live cell reservations.
+
+        Delegates to the active backend (in-memory or Redis).  Returns a list
+        of ``{task_id, actor_id, epoch, cells: [[col, row], ...]}`` dicts, one
+        entry per unique *(task_id, actor_id, epoch)* group.
+
+        Pure read — no mutations, no side effects.
+        """
+        return self._backend.snapshot_all()
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ documented in the endpoint docstring.
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional
 
 from flask import Blueprint, jsonify, request
@@ -181,3 +182,25 @@ def bus_actors():
         )
 
     return jsonify({"actors": actors, "threshold_s": _DEAD_THRESHOLD_S}), 200
+
+
+@replay_bp.route("/reservations", methods=["GET"])
+def reservations():
+    """GET /reservations — snapshot of all current cell reservations.
+
+    Pure read; no mutation; no side effects.
+
+    Returns:
+        {
+            "reservations": [
+                {"task_id": str, "actor_id": str, "epoch": int,
+                 "cells": [[col, row], ...]},
+                ...
+            ],
+            "ts": float   # server wall-clock (time.time())
+        }
+    """
+    from app.spatial.reservation import get_store
+    store = get_store()
+    snapshot = store.snapshot_all()
+    return jsonify({"reservations": snapshot, "ts": time.time()}), 200

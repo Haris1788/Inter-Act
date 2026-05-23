@@ -22,7 +22,11 @@
 // This layer is listening={false}. Drag/select are handled by RF nodes above.
 
 import { useEffect, useRef, useState } from "react";
-import { Layer, Group, Rect, Line, RegularPolygon, Text, Circle, Arrow } from "react-konva";
+import { Layer, Group, Rect, Text, Arrow, Circle } from "react-konva";
+
+import { ShuttleAgv } from "./agv/ShuttleAgv";
+import { ForkliftAgv } from "./agv/ForkliftAgv";
+import { TowAgv } from "./agv/TowAgv";
 
 import type { ViewportTransform } from "./useViewportTransform";
 import {
@@ -33,17 +37,16 @@ import {
   useReplayMode,
   useReplayPositions,
 } from "@/store/selectors";
+import { useStore } from "@/store";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Vehicle body size in canvas pixels (stage space). */
+// Shuttle body dims are the reference for transit halo size + label placement.
+// Each silhouette component manages its own dims internally.
 const BODY_W = 50;
 const BODY_H = 30;
-
-/** Triangle pointer size (equilateral side). Points toward +x (front). */
-const POINTER_SIZE = 10;
 
 /** Default AGV color (spec: #16a085). */
 const DEFAULT_AGV_COLOR = "#16a085";
@@ -56,36 +59,8 @@ const TRAIL_OPACITY_IN_TRANSIT = 0.18;
 const IDLE_PULSE_SPEED = 1.0; // cycles per second (2 s period = 0.5 Hz × 2π)
 const BODY_DIAGONAL = Math.sqrt((BODY_W / 2) ** 2 + (BODY_H / 2) ** 2);
 
-/** Status dot radius. */
-const DOT_RADIUS = 4;
-
 /** Age threshold (ms) above which runtimePosition is considered stale. */
 const STALE_THRESHOLD_MS = 1500;
-
-// ---------------------------------------------------------------------------
-// Status dot color map (uses `phase` which carries raw backend status string)
-// ---------------------------------------------------------------------------
-
-const STATUS_DOT_COLORS: Record<string, string> = {
-  idle:      "#16a085",   // green
-  moving:    "#2563eb",   // blue
-  loading:   "#eab308",   // amber
-  unloading: "#eab308",   // amber
-  returning: "#3b82f6",   // dimmer blue
-  faulted:   "#dc2626",   // red
-  stopped:   "#6b7280",   // gray
-  // ActorStatus fallbacks
-  ok:        "#16a085",
-  warn:      "#eab308",
-  busy:      "#2563eb",
-  down:      "#dc2626",
-};
-
-const DEFAULT_DOT_COLOR = "#9ca3af";
-
-function statusDotColor(phase: string): string {
-  return STATUS_DOT_COLORS[phase] ?? DEFAULT_DOT_COLOR;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -96,14 +71,6 @@ function hexToRgba(hex: string, a: number): string {
   const g = parseInt(hex.slice(3, 5), 16) || 160;
   const b = parseInt(hex.slice(5, 7), 16) || 133;
   return `rgba(${r},${g},${b},${a.toFixed(3)})`;
-}
-
-/** Darken a hex color by the given fraction (0..1). */
-function darkenHex(hex: string, amount = 0.25): string {
-  const r = Math.round(parseInt(hex.slice(1, 3), 16) * (1 - amount));
-  const g = Math.round(parseInt(hex.slice(3, 5), 16) * (1 - amount));
-  const b = Math.round(parseInt(hex.slice(5, 7), 16) * (1 - amount));
-  return `rgb(${r},${g},${b})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +85,7 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
   // Phase 5 Stage 8 Track C — replay position source (highest priority).
   const replayMode = useReplayMode();
   const replayPositions = useReplayPositions();
+  const selectedActorId = useStore((s) => s.selectedActorId);
 
   // Per-AGV color fetched from /config (same as previous layer).
   const [agvColors, setAgvColors] = useState<Record<string, string>>({});
@@ -211,7 +179,7 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
           agvColors[id] ??
           (actor as (typeof actor & { color?: string }) | undefined)?.color ??
           DEFAULT_AGV_COLOR;
-        const strokeColor = darkenHex(agvColor, 0.30);
+        const isSelected = id === selectedActorId;
         const trailOpacity = inTransit ? pulse * TRAIL_OPACITY_IN_TRANSIT : 0;
         const cargo = agvCargo[id] ?? null;
 
@@ -271,21 +239,11 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
               />
             )}
 
-            {/* Vehicle group rotated to face heading direction.
-                Forward direction is +x in local space (heading=0 → right). */}
-            <Group rotation={headingDeg}>
-              {/* Drop shadow layer (subtle offset rect). */}
-              <Rect
-                x={-BODY_W / 2 + 2}
-                y={-BODY_H / 2 + 2}
-                width={BODY_W}
-                height={BODY_H}
-                cornerRadius={6}
-                fill="rgba(0,0,0,0.18)"
-              />
-
-              {/* Transit halo — subtle radial hint when in motion. */}
-              {inTransit && (
+            {/* Transit halo — subtle radial hint when in motion.
+                Rendered outside the silhouette group so it's always behind
+                the body regardless of subtype dimensions. */}
+            {inTransit && (
+              <Group rotation={headingDeg}>
                 <Rect
                   x={-BODY_W / 2 - 4}
                   y={-BODY_H / 2 - 4}
@@ -294,53 +252,33 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
                   cornerRadius={10}
                   fill={hexToRgba(agvColor, trailOpacity)}
                 />
-              )}
+              </Group>
+            )}
 
-              {/* Main chassis body */}
-              <Rect
-                x={-BODY_W / 2}
-                y={-BODY_H / 2}
-                width={BODY_W}
-                height={BODY_H}
-                cornerRadius={6}
-                fill={agvColor}
-                stroke={strokeColor}
-                strokeWidth={1.5}
-              />
-
-              {/* Front heading pointer: equilateral triangle, tip at +x edge. */}
-              <RegularPolygon
-                x={BODY_W / 2 + POINTER_SIZE * 0.55}
-                y={0}
-                sides={3}
-                radius={POINTER_SIZE * 0.7}
-                rotation={90}
-                fill={strokeColor}
-                opacity={0.9}
-              />
-
-              {/* Cargo indicator — visible when carrying a package */}
-              {cargo !== null && (
-                <>
-                  <Rect
-                    x={-BODY_W * 0.28}
-                    y={-BODY_H * 0.35}
-                    width={BODY_W * 0.56}
-                    height={BODY_H * 0.7}
-                    cornerRadius={3}
-                    fill="#d9a566"
-                    stroke="#7a4a1e"
-                    strokeWidth={1}
-                  />
-                  <Line
-                    points={[0, -BODY_H * 0.35, 0, BODY_H * 0.35]}
-                    stroke="#7a4a1e"
-                    strokeWidth={0.8}
-                    opacity={0.7}
-                  />
-                </>
-              )}
-            </Group>
+            {/* ── Per-kind silhouette dispatch ─────────────────────────────────
+                Each component renders its own body + status dot in the group's
+                local coordinate space (centred at 0,0). The label stays here
+                so it's always legible regardless of heading. */}
+            {(() => {
+              const subtype = actor?.subtype ?? "shuttle";
+              const silhouetteProps = {
+                x: 0,
+                y: 0,
+                theta,
+                color: agvColor,
+                isSelected,
+                carried: cargo !== null,
+                status: phase,
+              };
+              if (subtype === "forklift") {
+                return <ForkliftAgv {...silhouetteProps} />;
+              }
+              if (subtype === "tow") {
+                return <TowAgv {...silhouetteProps} />;
+              }
+              // Default: "shuttle"
+              return <ShuttleAgv {...silhouetteProps} />;
+            })()}
 
             {/* Actor id label — rendered in world space (not rotated with vehicle)
                 so it's always legible regardless of heading direction. */}
@@ -353,19 +291,6 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
               fontSize={9}
               fill="rgba(255,255,255,0.75)"
               fontStyle="500"
-            />
-
-            {/* ── Track C: Status dot ─────────────────────────────────────────
-                Small circle at bottom-right of the body (world-space, not
-                rotated) with phase-keyed color. Drawn on top of the label row
-                so it stays readable at any heading. */}
-            <Circle
-              x={BODY_W / 2 - DOT_RADIUS}
-              y={BODY_H / 2 + 5 + DOT_RADIUS}
-              radius={DOT_RADIUS}
-              fill={statusDotColor(phase)}
-              stroke="rgba(0,0,0,0.35)"
-              strokeWidth={0.8}
             />
           </Group>
         );

@@ -64,6 +64,7 @@ import { Layer, Group, Circle, Rect, Line, Text } from "react-konva";
 
 import type { ViewportTransform } from "./useViewportTransform";
 import { useActors, useArmAngles } from "@/store/selectors";
+import { useStore } from "@/store";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -96,6 +97,18 @@ const ARM_TWEEN_MS = 300;
 
 /** Default arm reach when not specified (px). */
 const DEFAULT_REACH_PX = 120;
+
+// ── Phase 5.1 Stage 5 Track A: hover chip constants ──────────────────────────
+
+/** Reach-circle alpha when hovered (from 0.12 → 0.30 or selected's 0.30 → 0.45). */
+const REACH_ALPHA_DEFAULT = 0.12;
+const REACH_ALPHA_HOVER = 0.30;
+const REACH_ALPHA_SELECTED = 0.30;
+const REACH_ALPHA_SELECTED_HOVER = 0.45;
+
+/** Chip background padding (px). */
+const CHIP_PAD_X = 5;
+const CHIP_PAD_Y = 3;
 
 // ── Track C constants ──────────────────────────────────────────────────────
 
@@ -191,6 +204,7 @@ interface ArmGripperState {
 export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
   const actors = useActors();
   const armAngles = useArmAngles();
+  const selectedActorId = useStore((s) => s.selectedActorId);
 
   // Per-arm tween state. Keyed by actor id. Stored in a ref so the RAF
   // closure always sees the latest target without triggering re-renders.
@@ -210,6 +224,10 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
   // the full gripper/breath map in React state (which would cause extra
   // renders for every field change).
   const [renderToken, setRenderToken] = useState(0);
+
+  // [Phase 5.1 Stage 5 Track A] Hover state: which arm id is hovered.
+  // Stored as a ref for fast RAF reads + a state for React re-render.
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
 
   // [Track C] Breathing phase accumulator (ms since epoch mod BREATH_PERIOD).
   // Kept as a ref; read each frame inside the RAF without triggering state.
@@ -406,8 +424,14 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
   const breathOpacity = breathT * BREATH_OPACITY_MAX;
 
   return (
+    // Phase 5.1 Stage 5 Track A — hover compromise:
+    // Layer has listening={true} so the hit-area Circle on the pivot can
+    // receive pointer events. All visual shapes inside have listening={false}
+    // so only the explicit hit area captures events. This avoids unintended
+    // hits on the stick/gripper/reach-circle while keeping Konva-layer-wide
+    // listening off for every other layer.
     <Layer
-      listening={false}
+      listening={true}
       x={tx.x}
       y={tx.y}
       scaleX={tx.zoom}
@@ -418,6 +442,13 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
         const reach = actor.reach_px ?? DEFAULT_REACH_PX;
         const stickLen = reach * STICK_FRACTION;
         const color = actorColor(actor as unknown as Record<string, unknown>);
+        const isSelected = actor.id === selectedActorId;
+        const isHovered = actor.id === hoveredId;
+
+        // Reach circle alpha: bumps up on hover.
+        const reachAlpha = isSelected
+          ? isHovered ? REACH_ALPHA_SELECTED_HOVER : REACH_ALPHA_SELECTED
+          : isHovered ? REACH_ALPHA_HOVER : REACH_ALPHA_DEFAULT;
 
         // Current displayed angle in degrees (screen convention: 0=right, 90=down).
         const angleDeg = displayAngles[actor.id] ?? tweenRef.current[actor.id]?.displayAngle ?? 90;
@@ -426,6 +457,11 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
         // Stick tip coordinates in actor-local space (pivot at origin).
         const tipX = Math.cos(angleRad) * stickLen;
         const tipY = Math.sin(angleRad) * stickLen;
+
+        // Gripper tip position (in actor-local space, unrotated).
+        // Used for chip placement: position chip near gripper endpoint.
+        const chipX = Math.cos(angleRad) * stickLen + 10;
+        const chipY = Math.sin(angleRad) * stickLen - 10;
 
         // Gripper is oriented along the stick: we rotate the Group by angleDeg
         // so the gripper rect aligns with the stick direction automatically.
@@ -442,11 +478,26 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
         const gs = gripperRef.current[actor.id];
         const isIdle = !gs || (performance.now() - gs.angleChangedAt) > IDLE_THRESHOLD_MS;
 
+        // Chip label text (e.g. "120px").
+        const chipLabel = `${reach}px`;
+        // Estimate chip width: ~6px per char + padding.
+        const chipW = chipLabel.length * 6 + CHIP_PAD_X * 2;
+        const chipH = 10 + CHIP_PAD_Y * 2;
+
         return (
           <Group key={actor.id} x={x} y={y}>
-            {/* ── Track B insertion point ────────────────────────────────────
-                TODO(Stage 6 Track B): reach radius circle goes here.
-                See file-top comment for the exact Konva shape snippet.     */}
+            {/* ── Reach radius circle (Stage 2) ──────────────────────────────
+                Dashed reach envelope. Alpha bumps on hover (Track A). */}
+            <Circle
+              x={0}
+              y={0}
+              radius={reach}
+              stroke={color}
+              strokeWidth={1}
+              dash={[4, 6]}
+              opacity={reachAlpha}
+              listening={false}
+            />
 
             {/* [Track C] Idle breathing ring — rendered below everything else.
                 Oscillates radius 6→7 px, opacity 0.15→0, 2-s sinusoidal period.
@@ -470,13 +521,14 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
               stroke={color}
               strokeWidth={STICK_WIDTH}
               lineCap="round"
+              listening={false}
             />
 
             {/* Gripper rectangle at the tip, oriented along the stick.
                 We use a Group rotated to angleDeg so the rect stays aligned
                 with the stick direction without trigonometry in props.
                 [Track C] Width animates 8→3 px on pickup/place, 3→8 on open. */}
-            <Group rotation={angleDeg}>
+            <Group rotation={angleDeg} listening={false}>
               <Rect
                 x={stickLen - gripperW / 2}
                 y={-GRIPPER_H / 2}
@@ -486,6 +538,7 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
                 stroke={strokeColor}
                 strokeWidth={0.8}
                 cornerRadius={1}
+                listening={false}
               />
             </Group>
 
@@ -498,6 +551,7 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
               fill={color}
               stroke={strokeColor}
               strokeWidth={1.2}
+              listening={false}
             />
             {/* Inner highlight to distinguish pivot from stick. */}
             <Circle
@@ -505,6 +559,7 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
               y={0}
               radius={PIVOT_INNER_RADIUS}
               fill="rgba(255,255,255,0.55)"
+              listening={false}
             />
 
             {/* Actor-id label below the pivot. White/low-opacity to stay
@@ -519,7 +574,56 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
               fontSize={9}
               fill="rgba(255,255,255,0.65)"
               fontStyle="500"
+              listening={false}
             />
+
+            {/* ── Phase 5.1 Stage 5 Track A: Hover hit area + reach chip ──────
+                Transparent circle centred on pivot — sole listening target.
+                onMouseEnter/Leave set hoveredId state which triggers a React
+                re-render to update the reach circle alpha and show the chip.
+                All other shapes above have listening={false}, so this is the
+                only hit zone in the layer. */}
+            <Circle
+              x={0}
+              y={0}
+              radius={PIVOT_RADIUS + 6}
+              fill="transparent"
+              listening={true}
+              onMouseEnter={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = "crosshair";
+                setHoveredId(actor.id);
+              }}
+              onMouseLeave={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = "";
+                setHoveredId(null);
+              }}
+            />
+
+            {/* Reach chip — shown only on hover. Positioned near gripper tip.
+                Background rect + label text. Intentionally tiny: informational,
+                not decorative. */}
+            {isHovered && (
+              <Group x={chipX} y={chipY} listening={false}>
+                <Rect
+                  x={-chipW / 2}
+                  y={-chipH / 2}
+                  width={chipW}
+                  height={chipH}
+                  fill="rgba(20,20,20,0.75)"
+                  cornerRadius={3}
+                />
+                <Text
+                  x={-chipW / 2 + CHIP_PAD_X}
+                  y={-chipH / 2 + CHIP_PAD_Y}
+                  text={chipLabel}
+                  fontSize={10}
+                  fill="rgba(255,255,255,0.92)"
+                  fontStyle="500"
+                />
+              </Group>
+            )}
           </Group>
         );
       })}

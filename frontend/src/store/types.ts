@@ -42,6 +42,9 @@ export interface TopologyActor {
   capacity: number;
   /** Speed multiplier (0.5 = slow … 3.0 = fast, step 0.5). Default 1.0. */
   speed: number;
+  // ── Phase 5.1 Stage 3: per-kind AGV silhouette ─────────────────────────
+  /** AGV vehicle subtype. Ignored for arms. Default "shuttle" (back-compat). */
+  subtype?: "shuttle" | "forklift" | "tow";
 }
 
 export interface TopologyZone {
@@ -174,6 +177,10 @@ export interface ActorRuntime {
   /** Stage 5 Track B — live pixel position from `agv_position` SocketIO event.
    *  Present only while an AGV is in spatial motion. Observational only. */
   runtimePosition?: AgvRuntimePosition;
+  /** Phase 5.1 Stage 5 Track A — latest negotiation state from availability_update
+   *  bus messages. One of: "idle" | "bidding" | "won" | "executing" | "done" | "faulted".
+   *  Absent until the first heartbeat arrives. */
+  negotiationState?: string;
 }
 
 // Real NegotiationBus message types — sourced directly from the backend
@@ -248,6 +255,17 @@ export interface ReplayPosition {
   theta: number;
 }
 
+// ---------- Phase 5.1 Stage 4: AGV path preview ----------
+/** One planned path for a single AGV, emitted by backend agv_path event. */
+export interface AgvPath {
+  /** Grid cells [[col, row], ...] from A*. */
+  cells: [number, number][];
+  /** Epoch counter — monotonic per (task_id, actor_id). */
+  epoch: number;
+  /** Backend wall-clock timestamp (epoch seconds). */
+  ts: number;
+}
+
 export interface RuntimeSlice {
   actorRuntime: Record<ActorId, ActorRuntime>;
   busMessages: BusMessage[];
@@ -276,6 +294,14 @@ export interface RuntimeSlice {
   setReplayPositions: (positions: Record<ActorId, ReplayPosition>) => void;
   /** Phase 5 Stage 8 Track C — exit replay mode, return to live. */
   clearReplayMode: () => void;
+  // ---------- Phase 5.1 Stage 4: AGV path preview ----------
+  /** Live planned paths per AGV, keyed by actor_id. Populated by agv_path SocketIO event. */
+  agvPaths: Record<ActorId, AgvPath>;
+  /** Store or supersede a planned path for one AGV.
+   *  Ignores the update when payload.epoch <= current stored epoch. */
+  setAgvPath: (actorId: ActorId, path: AgvPath) => void;
+  /** Remove the planned path entry for one AGV (called on leg_completed). */
+  clearAgvPath: (actorId: ActorId) => void;
   hydrateRuntime: (
     patch: Partial<
       Pick<

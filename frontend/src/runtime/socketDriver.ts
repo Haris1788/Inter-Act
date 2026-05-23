@@ -424,6 +424,26 @@ export function createSocketDriver(): RuntimeDriver {
         },
       );
 
+      // Phase 5.1 Stage 4 — AGV planned path overlay.
+      // Emitted by backend after successful A* + reserve, before traversal begins.
+      // Observational only: no consensus decisions depend on this event.
+      socket.on(
+        "agv_path",
+        (p: {
+          actor_id: string;
+          task_id: string;
+          epoch: number;
+          path_cells: [number, number][];
+          ts: number;
+        }) => {
+          st().setAgvPath(p.actor_id, {
+            cells: p.path_cells,
+            epoch: p.epoch,
+            ts: p.ts,
+          });
+        },
+      );
+
       socket.on("arm_angle_update", (p: { arm_id: number; angle: number }) => {
         st().setArmAngle(`arm-${p.arm_id}`, p.angle);
       });
@@ -555,6 +575,23 @@ export function createSocketDriver(): RuntimeDriver {
               tone: "err",
               ts,
             });
+          }
+
+          // Phase 5.1 Stage 4 — clear path preview after transport leg completes.
+          // leg_completed from an agv actor (slot_id = "transport") means the AGV
+          // has finished its planned path; the dashed overlay should be cleared.
+          if (kind === "leg_completed" && p.slot_id === "transport" && p.sender) {
+            st().clearAgvPath(p.sender);
+          }
+
+          // Phase 5.1 Stage 5 Track A — negotiation halo state.
+          // Extract state from availability_update heartbeats so the canvas
+          // can render a pulsing halo around actors currently in play.
+          if (kind === "availability_update" && p.sender && p.payload) {
+            const pay = p.payload as Record<string, unknown>;
+            if (typeof pay.state === "string") {
+              st().setActorRuntime(from, { negotiationState: pay.state });
+            }
           }
         },
       );

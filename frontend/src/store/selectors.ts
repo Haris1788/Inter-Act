@@ -70,3 +70,5 @@ export const useActorRuntimeAll = () => useStore((s) => s.actorRuntime);
 export const useReplayMode = () => useStore((s) => s.replayMode);
 /** Phase 5 Stage 8 Track C — historical AGV positions at the scrub cursor. */
 export const useReplayPositions = () => useStore((s) => s.replayPositions);
+/** Phase 5.1 Stage 4 — planned AGV paths from agv_path SocketIO event. */
+export const useAgvPaths = () => useStore((s) => s.agvPaths);

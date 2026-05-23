@@ -251,6 +251,19 @@ class AGVAgent(ActorAgent):
                 epoch = store.next_epoch(task_id, agv_id)
                 continue
 
+            # Emit agv_path for frontend spatial overlay (observational only).
+            try:
+                from app import socketio
+                socketio.emit("agv_path", {
+                    "actor_id": agv_id,
+                    "task_id": task_id,
+                    "epoch": epoch,
+                    "path_cells": [[c[0], c[1]] for c in path],
+                    "ts": time.time(),
+                })
+            except Exception:
+                pass  # best-effort, no consensus impact
+
             # Got path + reservation.  Traverse cell-by-cell.
             keepalive = PathKeepalive(
                 store, task_id, agv_id, epoch,

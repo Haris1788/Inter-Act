@@ -114,6 +114,14 @@ function ReachSlider({ value, onChange }: ReachSliderProps) {
   );
 }
 
+// ── AGV subtype options ────────────────────────────────────────────────────
+
+const AGV_SUBTYPES: { value: NonNullable<TopologyActor["subtype"]>; label: string }[] = [
+  { value: "shuttle", label: "Shuttle" },
+  { value: "forklift", label: "Forklift" },
+  { value: "tow", label: "Tow" },
+];
+
 // ── Section ────────────────────────────────────────────────────────────────
 
 export function SectionSpatial({ actor }: SectionSpatialProps) {
@@ -123,6 +131,14 @@ export function SectionSpatial({ actor }: SectionSpatialProps) {
   const patch = useCallback(
     <K extends "reach_px" | "capacity" | "speed">(key: K, value: TopologyActor[K]) => {
       updateActor(actor.id, { [key]: value });
+      markDirty();
+    },
+    [actor.id, updateActor, markDirty],
+  );
+
+  const patchSubtype = useCallback(
+    (value: NonNullable<TopologyActor["subtype"]>) => {
+      updateActor(actor.id, { subtype: value });
       markDirty();
     },
     [actor.id, updateActor, markDirty],
@@ -149,6 +165,25 @@ export function SectionSpatial({ actor }: SectionSpatialProps) {
           <span className="text-10.5 text-ink-5 whitespace-nowrap">move on canvas</span>
         </div>
       </Field>
+
+      {/* AGV silhouette subtype — AGVs only */}
+      {actor.kind === "agv" && (
+        <Field label="AGV silhouette">
+          <select
+            value={actor.subtype ?? "shuttle"}
+            onChange={(e) =>
+              patchSubtype(e.target.value as NonNullable<TopologyActor["subtype"]>)
+            }
+            className="h-[22px] font-mono text-11 text-ink bg-bg-surface border border-line rounded-[4px] outline-none focus:border-cta px-1 cursor-pointer"
+          >
+            {AGV_SUBTYPES.map(({ value, label }) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
 
       {/* Reach radius — arms only */}
       {actor.kind === "arm" && (

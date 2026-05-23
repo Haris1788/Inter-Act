@@ -10,6 +10,8 @@ export interface PaletteDescriptor {
   capabilities: string[];
   brain: string;
   spec: string;
+  /** AGV vehicle subtype — carried through to TopologyActor.subtype. */
+  subtype?: "shuttle" | "forklift" | "tow";
 }
 
 // dataTransfer key → descriptor. Keys are emitted by the sidebar drag source.
@@ -41,6 +43,7 @@ export const PALETTE: Record<string, PaletteDescriptor> = {
     capabilities: ["transit", "dock", "carry"],
     brain: "Scheduler · FIFO",
     spec: "fast · cap 1",
+    subtype: "shuttle",
   },
   "agv-forklift": {
     kind: "agv",
@@ -48,6 +51,7 @@ export const PALETTE: Record<string, PaletteDescriptor> = {
     capabilities: ["transit", "dock", "carry"],
     brain: "Scheduler · FIFO",
     spec: "heavy · pallet",
+    subtype: "forklift",
   },
   "agv-tow": {
     kind: "agv",
@@ -55,6 +59,7 @@ export const PALETTE: Record<string, PaletteDescriptor> = {
     capabilities: ["transit", "dock", "carry"],
     brain: "Scheduler · FIFO",
     spec: "balanced",
+    subtype: "tow",
   },
 };
 
@@ -100,5 +105,6 @@ export function createActorFromPalette(
     capabilities: d.capabilities,
     brain: d.brain,
     spec: d.spec,
+    subtype: d.subtype,
   });
 }

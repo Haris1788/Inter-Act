@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { AgvRuntimePosition, ReplayPosition, RootStore, RuntimeSlice } from "./types";
+import type { AgvPath, AgvRuntimePosition, ReplayPosition, RootStore, RuntimeSlice } from "./types";
 
 const BUS_CAP = 40;
 const LOG_CAP = 200;
@@ -31,6 +31,8 @@ export const createRuntimeSlice: StateCreator<
   // Phase 5 Stage 8 Track C — replay scrub. Off by default.
   replayMode: false,
   replayPositions: {},
+  // Phase 5.1 Stage 4 — planned AGV paths from agv_path SocketIO event.
+  agvPaths: {},
 
   pushBusMessage: (m) =>
     set((s) => ({ busMessages: [...s.busMessages, m].slice(-BUS_CAP) })),
@@ -90,6 +92,23 @@ export const createRuntimeSlice: StateCreator<
   // Phase 5 Stage 8 Track C — exit replay mode, clear historical positions.
   clearReplayMode: () =>
     set(() => ({ replayMode: false, replayPositions: {} })),
+
+  // Phase 5.1 Stage 4 — AGV path preview actions.
+  setAgvPath: (actorId: string, path: AgvPath) =>
+    set((s) => {
+      const existing = s.agvPaths[actorId];
+      // Idempotent: ignore if the incoming epoch is older than what we have.
+      if (existing && path.epoch < existing.epoch) return s;
+      return { agvPaths: { ...s.agvPaths, [actorId]: path } };
+    }),
+
+  clearAgvPath: (actorId: string) =>
+    set((s) => {
+      if (!(actorId in s.agvPaths)) return s;
+      const next = { ...s.agvPaths };
+      delete next[actorId];
+      return { agvPaths: next };
+    }),
 
   hydrateRuntime: (patch) => set(() => ({ ...patch })),
 });
