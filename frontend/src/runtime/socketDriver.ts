@@ -2,7 +2,6 @@ import { io, type Socket } from "socket.io-client";
 import type { useStore } from "@/store";
 import type { RuntimeDriver, ActorOpResult } from "./driver";
 import { normalizeConfig, type RawConfig } from "./configNormalizer";
-import { loadLocal } from "@/lib/persistence";
 import type { BusKind } from "@/store/types";
 import {
   armActorId,
@@ -115,17 +114,14 @@ export function createSocketDriver(): RuntimeDriver {
       const bootstrap = async () => {
         const cfg = await getJSON<RawConfig>("/config");
         if (cfg) {
-          const { actors, zones, adjacency: adj } = normalizeConfig(cfg);
+          const { adjacency: adj } = normalizeConfig(cfg);
           adjacency = adj;
-          // The authored topology (positions/labels) is the USER's document
-          // and is restored from local storage by useAutosave. Backend
-          // /config must NOT overwrite it on every (re)connect, or saved
-          // layout reverts on refresh. Only seed from /config when there is
-          // no saved workspace yet. Runtime (health/asset) is a separate
-          // slice and keeps flowing regardless.
-          const hasSaved = (loadLocal()?.actors?.length ?? 0) > 0;
-          if (!hasSaved && Object.keys(actors).length)
-            st().hydrateTopology({ actors, zones });
+          // Phase 5.1: canvas is the source of truth for topology.
+          // /config no longer auto-seeds the canvas. Runtime-only entities
+          // (backend reconciler-spawned agv-1/2/3, arm-1/2) populate the
+          // actorRuntime slice for Fleet Roster / Inspector observability,
+          // NOT the authored topology slice. The authored topology is
+          // restored from localStorage by useAutosave exclusively.
         }
         const [state, objects, arms, assets] = await Promise.all([
           getJSON<{

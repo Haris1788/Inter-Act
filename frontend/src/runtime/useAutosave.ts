@@ -49,7 +49,6 @@ export function useAutosave() {
       if (
         state.actors === prev.actors &&
         state.zones === prev.zones &&
-        state.pool === prev.pool &&
         state.goal === prev.goal &&
         state.workspaceName === prev.workspaceName
       )

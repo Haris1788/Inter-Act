@@ -7,7 +7,6 @@ import type { ActorId, TopologyActor, ActorRuntime } from "./types";
 export const useActors = () => useStore((s) => s.actors);
 export const useActor = (id: ActorId) => useStore((s) => s.actors[id]);
 export const useZones = () => useStore((s) => s.zones);
-export const usePool = () => useStore((s) => s.pool);
 export const useGoal = () => useStore((s) => s.goal);
 export const useSelectedActorId = () => useStore((s) => s.selectedActorId);
 

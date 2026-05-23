@@ -39,7 +39,7 @@ function subscribe(cb: () => void) {
   return () => listeners.delete(cb);
 }
 
-function snap(s: Pick<RootStore, "actors" | "zones" | "pool" | "goal" | "workspaceName">): Snapshot {
+function snap(s: Pick<RootStore, "actors" | "zones" | "goal" | "workspaceName">): Snapshot {
   return { doc: serializeTopology(s), name: s.workspaceName };
 }
 
@@ -48,7 +48,6 @@ function sameDoc(a: Snapshot, b: Snapshot): boolean {
     a.name === b.name &&
     JSON.stringify(a.doc.actors) === JSON.stringify(b.doc.actors) &&
     JSON.stringify(a.doc.zones) === JSON.stringify(b.doc.zones) &&
-    JSON.stringify(a.doc.pool) === JSON.stringify(b.doc.pool) &&
     JSON.stringify(a.doc.goal) === JSON.stringify(b.doc.goal)
   );
 }
@@ -57,7 +56,6 @@ function topologyChanged(a: RootStore, b: RootStore): boolean {
   return (
     a.actors !== b.actors ||
     a.zones !== b.zones ||
-    a.pool !== b.pool ||
     a.goal !== b.goal ||
     a.workspaceName !== b.workspaceName
   );

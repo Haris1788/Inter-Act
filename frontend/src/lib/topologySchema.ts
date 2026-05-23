@@ -1,12 +1,13 @@
 // Topology serialization - RF/store graph <-> orchestration JSON.
 // Frontend authoring format. NOT the backend YAML compiler (later phase).
-// Decentralised model: actors + zones + pool + goal. No handover/transfer
+// Decentralised model: actors + zones + goal. No pool, no handover/transfer
 // pads, no deterministic execution routes.
+// Phase 5.1 bug-fix: pool removed from TopologyDoc (dashboard widget deleted).
+// Old saved docs with a pool field are tolerated on load (field silently ignored).
 
 import type {
   TopologyActor,
   TopologyZone,
-  TopologyPool,
   TopologyGoal,
 } from "@/store/types";
 import { normalizeActor } from "./actorNormalizer";
@@ -18,14 +19,12 @@ export interface TopologyDoc {
   savedAt: string;
   actors: TopologyActor[];
   zones: TopologyZone[];
-  pool: TopologyPool;
   goal: TopologyGoal;
 }
 
 type TopologyState = {
   actors: Record<string, TopologyActor>;
   zones: Record<string, TopologyZone>;
-  pool: TopologyPool;
   goal: TopologyGoal;
 };
 
@@ -35,7 +34,6 @@ export function serializeTopology(s: TopologyState): TopologyDoc {
     savedAt: new Date().toISOString(),
     actors: Object.values(s.actors),
     zones: Object.values(s.zones),
-    pool: s.pool,
     goal: s.goal,
   };
 }
@@ -46,7 +44,7 @@ export function docToState(doc: TopologyDoc): TopologyState {
   for (const a of doc.actors) actors[a.id] = normalizeActor(a);
   const zones: Record<string, TopologyZone> = {};
   for (const z of doc.zones) zones[z.id] = z;
-  return { actors, zones, pool: doc.pool, goal: doc.goal };
+  return { actors, zones, goal: doc.goal };
 }
 
 export type ParseResult =
@@ -60,7 +58,7 @@ export function parseTopology(raw: string): ParseResult {
   } catch {
     return { ok: false, error: "Invalid JSON" };
   }
-  const d = json as Partial<TopologyDoc>;
+  const d = json as Partial<TopologyDoc & { pool?: unknown }>;
   if (typeof d !== "object" || d === null)
     return { ok: false, error: "Not an object" };
   if (typeof d.schemaVersion !== "number")
@@ -69,18 +67,13 @@ export function parseTopology(raw: string): ParseResult {
     return { ok: false, error: `Unsupported schemaVersion ${d.schemaVersion}` };
   if (!Array.isArray(d.actors)) return { ok: false, error: "Missing actors[]" };
   // Tolerate older/partial docs: backfill optional sections.
+  // pool is intentionally ignored (Phase 5.1: pool widget deleted).
   const doc: TopologyDoc = {
     schemaVersion: d.schemaVersion,
     savedAt:
       typeof d.savedAt === "string" ? d.savedAt : new Date().toISOString(),
     actors: d.actors as TopologyActor[],
     zones: Array.isArray(d.zones) ? (d.zones as TopologyZone[]) : [],
-    pool: (d.pool as TopologyPool) ?? {
-      id: "pool",
-      bounds: { x: 350, y: 410, w: 620, h: 200 },
-      label: "Mobile Transport Pool",
-      sub: "",
-    },
     goal: (d.goal as TopologyGoal) ?? { text: "", constraints: {} },
   };
   return { ok: true, doc };

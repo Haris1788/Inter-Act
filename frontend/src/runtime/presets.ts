@@ -5,16 +5,14 @@ import { useStore } from "@/store";
 import type {
   TopologyActor,
   TopologyZone,
-  TopologyPool,
   TopologyGoal,
 } from "@/store/types";
-import { mockActors, mockZones, mockPool, mockGoal } from "./mockData";
+import { mockActors, mockZones, mockGoal } from "./mockData";
 import { normalizeActor } from "@/lib/actorNormalizer";
 
 interface PresetTopology {
   actors: Record<string, TopologyActor>;
   zones: Record<string, TopologyZone>;
-  pool: TopologyPool;
   goal: TopologyGoal;
 }
 
@@ -82,10 +80,6 @@ const ZONES: Record<string, TopologyZone> = {
     count: "received · -",
   },
 };
-const poolFor = (nAgv: number): TopologyPool => ({
-  ...mockPool,
-  sub: `· ${nAgv} agent${nAgv === 1 ? "" : "s"} · available`,
-});
 const GOAL: TopologyGoal = {
   text: "move objects from feed-I to sink-O",
   constraints: { time: true, energy: false, throughput: false },
@@ -99,7 +93,6 @@ export const PRESETS: Preset[] = [
     build: () => ({
       actors: { ...mockActors },
       zones: { ...mockZones },
-      pool: { ...mockPool },
       goal: { ...mockGoal },
     }),
   },
@@ -127,7 +120,6 @@ export const PRESETS: Preset[] = [
         ),
       },
       zones: { ...ZONES },
-      pool: poolFor(1),
       goal: GOAL,
     }),
   },
@@ -180,7 +172,6 @@ export const PRESETS: Preset[] = [
         ),
       },
       zones: { ...ZONES },
-      pool: poolFor(4),
       goal: GOAL,
     }),
   },
@@ -191,7 +182,6 @@ export const PRESETS: Preset[] = [
     build: () => ({
       actors: {},
       zones: { ...ZONES },
-      pool: poolFor(0),
       goal: { text: "", constraints: {} },
     }),
   },

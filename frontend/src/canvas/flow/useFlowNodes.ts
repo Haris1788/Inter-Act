@@ -1,15 +1,15 @@
 // Derives RF Node arrays from store topology data.
 // Phase 5.1 Stage 1: ZoneNode removed. Actor nodes are invisible shells
 // (RF uses them for drag/pan/zoom math; Konva layers do all visual rendering).
+// Phase 5.1 bug-fix: PoolLabelNode removed — no dashboard widgets on canvas.
 
 import { useMemo } from "react";
 import type { Node } from "@xyflow/react";
-import { useActors, usePool } from "@/store/selectors";
+import { useActors } from "@/store/selectors";
 import { nodeStyle } from "./flowConfig";
 
 export function useFlowNodes(): Node[] {
   const actors = useActors();
-  const pool = usePool();
 
   return useMemo(() => {
     const nodes: Node[] = [];
@@ -31,22 +31,6 @@ export function useFlowNodes(): Node[] {
       });
     }
 
-    // ── Pool label node (centered) ─────────────────────────────────────────
-    // Prototype: left:660px; top:410px with translate(-50%, -50%)
-    // → center at (660, 410)
-    nodes.push({
-      id: "pool-label",
-      type: "poolLabelNode",
-      position: { x: 660, y: 410 },
-      data: { pool },
-      width: 240,
-      height: 64,
-      style: { ...nodeStyle },
-      origin: [0.5, 0.5],
-      draggable: false,
-      selectable: false,
-    });
-
     return nodes;
-  }, [actors, pool]);
+  }, [actors]);
 }

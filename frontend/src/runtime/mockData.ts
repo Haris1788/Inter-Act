@@ -6,7 +6,6 @@
 import type {
   TopologyActor,
   TopologyZone,
-  TopologyPool,
   TopologyGoal,
   ActorRuntime,
   LogLine,
@@ -118,13 +117,6 @@ export const mockZones: Record<string, TopologyZone> = {
     position: { x: 1265, y: 240 },
     count: "received · 0",
   },
-};
-
-export const mockPool: TopologyPool = {
-  id: "pool",
-  bounds: { x: 350, y: 410, w: 620, h: 200 },
-  label: "Mobile Transport Pool",
-  sub: "· 3 agents · available",
 };
 
 export const mockGoal: TopologyGoal = {

@@ -56,14 +56,6 @@ export interface TopologyZone {
   count: string;
 }
 
-export interface TopologyPool {
-  id: string;
-  /** stadium bounds in stage space */
-  bounds: { x: number; y: number; w: number; h: number };
-  label: string;
-  sub: string;
-}
-
 export interface TopologyGoal {
   text: string;
   constraints: Record<string, boolean>;
@@ -72,7 +64,6 @@ export interface TopologyGoal {
 export interface TopologySlice {
   actors: Record<ActorId, TopologyActor>;
   zones: Record<string, TopologyZone>;
-  pool: TopologyPool;
   goal: TopologyGoal;
   selectedActorId: ActorId | null;
   setSelectedActor: (id: ActorId | null) => void;
@@ -86,10 +77,10 @@ export interface TopologySlice {
   updateActor: (id: ActorId, patch: Partial<TopologyActor>) => void;
   /** wholesale replace (import / load) */
   replaceTopology: (
-    patch: Pick<TopologySlice, "actors" | "zones" | "pool" | "goal">,
+    patch: Pick<TopologySlice, "actors" | "zones" | "goal">,
   ) => void;
   hydrateTopology: (
-    patch: Partial<Pick<TopologySlice, "actors" | "zones" | "pool" | "goal">>,
+    patch: Partial<Pick<TopologySlice, "actors" | "zones" | "goal">>,
   ) => void;
 }
 
