@@ -60,25 +60,33 @@ class AGVAgent(ActorAgent):
     """AGV actor. Bids on the transport slot; score = spatial cost to pickup + trip."""
 
     def _bid_score(self, slot: dict) -> Optional[float]:
-        """Spatial bid score: approach + trip Euclidean distance.
+        """Spatial bid score: time-to-deliver = distance / speed.
 
         When from_pos / to_pos are present (Phase 5 topology path):
-            score = hypot(position_px → from_pos) + hypot(from_pos → to_pos)
-        Falls back to legacy Manhattan dock-cell path when from_pos/to_pos absent.
+            distance = hypot(position_px → from_pos) + hypot(from_pos → to_pos)
+            score    = distance / max(profile.speed, 0.001)
+
+        Dividing by speed makes "shortest time" constraints honour the AGV
+        speed multiplier (a 2× AGV beats a closer 1× AGV when its time-to-
+        deliver is lower). With every AGV at speed=1.0 the score collapses
+        to pure distance (Phase 5 acceptance test path).
+
+        Falls back to legacy Manhattan dock-cell path when from_pos / to_pos
+        absent.
         """
         if slot.get("kind") != "agv":
             return None
         from_pos = slot.get("from_pos")
         to_pos = slot.get("to_pos")
         if from_pos is not None and to_pos is not None:
-            # Spatial path (Phase 5+).
             ax, ay = float(self.profile.position_px[0]), float(self.profile.position_px[1])
             fx, fy = float(from_pos[0]), float(from_pos[1])
             tx, ty = float(to_pos[0]), float(to_pos[1])
             approach = math.hypot(ax - fx, ay - fy)
             trip = math.hypot(fx - tx, fy - ty)
-            return approach + trip
-        # Legacy zone-string path — fall back to Manhattan dock-cell.
+            distance = approach + trip
+            speed = max(float(self.profile.speed or 1.0), 0.001)
+            return distance / speed
         return self._legacy_bid_score(slot)
 
     def _legacy_bid_score(self, slot: dict) -> Optional[float]:

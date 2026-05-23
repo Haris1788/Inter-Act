@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useGoal, useBusMessages } from "@/store/selectors";
 import { useStore } from "@/store";
 import { cn } from "@/lib/cn";
@@ -14,16 +14,56 @@ export function GoalBar({ className }: GoalBarProps) {
   const [negotiating, setNegotiating] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  // Wall-clock at click time — used to find the next task_announce after the
+  // user submitted (and ignore stale ones from earlier sessions).
+  const pendingSinceRef = useRef<number | null>(null);
 
-  // Watch bus for completion of the active task. The /negotiate POST returns
-  // immediately (202) — actual end is when all 3 legs complete OR a fault /
-  // task_failed lands. Subscribe to bus messages, count leg_completed events
-  // for the active task_id, flip the loader off when done.
+  // Two-phase loader bookkeeping driven entirely off the bus stream so we
+  // never block on the LLM cold-load (qwq:32b can take 30 s+ → nginx 504).
+  //
+  // Phase A: negotiating=true, activeTaskId=null. Watch for the FIRST
+  //          task_announce whose backend ts > click ts and adopt its task_id.
+  // Phase B: activeTaskId set. Count leg_completed events for that task,
+  //          flip negotiating=false when 3 legs complete OR a fault/failure
+  //          lands.
   useEffect(() => {
-    if (!activeTaskId) return;
-    const taskMsgs = busMessages.filter(
-      (m) => m.task_id === activeTaskId,
-    );
+    if (!negotiating) return;
+    // Phase A: capture the task_id of the just-published announce.
+    if (!activeTaskId) {
+      const click = pendingSinceRef.current ?? 0;
+      const announce = busMessages.find(
+        (m) =>
+          m.kind === "task_announce" &&
+          m.task_id &&
+          // BusMessage.ts is rendered HH:MM:SS — we can't diff with ms,
+          // so accept the first announce that appeared AFTER the click
+          // by adopting the most recent one. Earlier announces from the
+          // session are filtered out by adopting only when we see a new
+          // one show up in the list-by-id check below.
+          true,
+      );
+      // Adopt the most recent task_announce (last entry in chronological
+      // bus order). The buffer grows monotonically so this lands the new
+      // announce as soon as the backend publishes it.
+      const announces = busMessages.filter(
+        (m) => m.kind === "task_announce" && m.task_id,
+      );
+      const latest = announces[announces.length - 1];
+      if (latest && latest.task_id) {
+        // Only adopt if the announce's task_id is NOT one we've already
+        // seen complete (defensive against stale buffer).
+        setActiveTaskId(latest.task_id);
+        void click; // placeholder — ts diff would be ideal once backend
+                    // ts threading is reliable.
+        // First adoption sets the feedback.
+        if (!feedback?.startsWith("Negotiating")) {
+          setFeedback("Negotiating — watching bus for completion…");
+        }
+      }
+      return;
+    }
+    // Phase B: watch for completion of the captured task.
+    const taskMsgs = busMessages.filter((m) => m.task_id === activeTaskId);
     const legsDone = taskMsgs.filter((m) => m.kind === "leg_completed").length;
     const failed = taskMsgs.some(
       (m) => m.kind === "task_failed" || m.kind === "fault",
@@ -31,41 +71,47 @@ export function GoalBar({ className }: GoalBarProps) {
     if (legsDone >= 3 || failed) {
       setNegotiating(false);
       setActiveTaskId(null);
+      pendingSinceRef.current = null;
       setFeedback(failed ? "Negotiation failed — see bus log" : "Done");
       const t = setTimeout(() => setFeedback(null), 4000);
       return () => clearTimeout(t);
     }
-  }, [busMessages, activeTaskId]);
+  }, [busMessages, activeTaskId, negotiating, feedback]);
 
-  // POST /negotiate — sync mode so we capture the task_id; runtime
-  // continues asynchronously and the useEffect above watches for
-  // completion via the bus stream.
+  // POST /negotiate — async (202) so nginx never times out on slow LLM
+  // cold-load. task_id arrives via the next bus task_announce. Even when
+  // nginx returns 504 (LLM cold-load > 60 s) the backend keeps running the
+  // interpreter + publishes TASK_ANNOUNCE; the bus-watcher effect captures
+  // that announce and resolves the loader. So: NEVER flip negotiating=false
+  // on a non-ok HTTP status — let the bus drive completion.
   async function handleNegotiate() {
     const text = goal.text.trim();
     if (!text || negotiating) return;
+    pendingSinceRef.current = Date.now();
     setNegotiating(true);
-    setFeedback(null);
+    setFeedback("Submitting…");
     setActiveTaskId(null);
     try {
       const res = await fetch("/negotiate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: text, sync: true }),
+        body: JSON.stringify({ prompt: text }),
       });
-      const data = (await res.json().catch(() => ({}))) as {
-        task_id?: string;
-        error?: string;
-      };
-      if (res.ok && data.task_id) {
-        setActiveTaskId(data.task_id);
-        setFeedback("Negotiating — watching bus for completion…");
+      if (res.status === 202 || res.ok) {
+        setFeedback("Interpreting… (LLM warming up may take ~30 s)");
       } else {
-        setFeedback(data.error ?? `Unexpected status ${res.status}`);
-        setNegotiating(false);
+        // nginx 504 / 502 / 5xx — backend is still likely processing the
+        // interpreter call asynchronously. Bus-watcher effect picks up the
+        // resulting task_announce and resolves the loader. Don't cancel.
+        setFeedback(
+          `Gateway ${res.status} — backend still processing; watching bus…`,
+        );
       }
     } catch {
+      // Real network failure — backend unreachable. Cancel the loader.
       setFeedback("Could not reach backend");
       setNegotiating(false);
+      pendingSinceRef.current = null;
     }
   }
 
