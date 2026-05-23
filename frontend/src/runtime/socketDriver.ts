@@ -535,6 +535,9 @@ export function createSocketDriver(): RuntimeDriver {
             "leg_started",
             "leg_completed",
             "leg_halted",
+            // Stage 8 — bus-mirrored position update (drives canvas motion
+            // in distributed mode where actor SocketIO is not browser-bound)
+            "position_update",
           ]);
           if (!KNOWN_KINDS.has(p.type)) return;
 

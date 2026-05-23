@@ -193,7 +193,8 @@ export type BusKind =
   | "task_failed"
   | "leg_started"
   | "leg_completed"
-  | "leg_halted";
+  | "leg_halted"
+  | "position_update";
 
 export interface BusMessage {
   id: string;
