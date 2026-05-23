@@ -40,12 +40,18 @@ COPY pipeline.yaml ./pipeline.yaml
 # Flush stdout/stderr immediately — critical for log streaming.
 ENV PYTHONUNBUFFERED=1
 
+# Make /interact importable so `from app.agents import ...` resolves when
+# CMD runs `python scripts/actor_runner.py` (Python's default sys.path
+# uses the script's directory, not the cwd).
+ENV PYTHONPATH=/interact
+
 # Default backend selection: redis for both bus and state.
 ENV INTERACT_BUS=redis
 ENV INTERACT_STATE=redis
 
-# Lightweight health check: verify the python process is running.
+# Lightweight health check: confirm PID 1 is python via /proc (python:3.11-slim
+# has neither pgrep nor ps). Reads PID 1's comm file directly.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-    CMD pgrep -x python > /dev/null || exit 1
+    CMD grep -q python /proc/1/comm || exit 1
 
 CMD ["python", "scripts/actor_runner.py"]

@@ -241,6 +241,38 @@ class ActorAgent:
             ]
             participant.my_slots = my_slots
 
+            # Step 4: mark the round as already-evaluated if we have any
+            # ACCEPT or WITHDRAW from this actor for this (task_id, round) in
+            # history. Without this, _check_deadlines sees evaluated_round=-1
+            # and re-evaluates after every restart, re-publishing duplicate
+            # ACCEPTs (Bug #6 from real-LLM verification).
+            already_evaluated = any(
+                m.type in (MessageType.ACCEPT, MessageType.WITHDRAW)
+                and m.sender == self.actor_id
+                and m.task_id == task_id
+                and m.negotiation_round == announce.negotiation_round
+                for m in history
+            )
+            if already_evaluated:
+                participant.evaluated_round = announce.negotiation_round
+
+            # Step 5: rehydrate consensus_announced / failure_announced from history
+            # so we do not republish observational markers we've already emitted.
+            participant.consensus_announced = any(
+                m.type == MessageType.CONSENSUS_REACHED
+                and m.sender == self.actor_id
+                and m.task_id == task_id
+                and m.negotiation_round == announce.negotiation_round
+                for m in history
+            )
+            participant.failure_announced = any(
+                m.type == MessageType.TASK_FAILED
+                and m.sender == self.actor_id
+                and m.task_id == task_id
+                and m.negotiation_round == announce.negotiation_round
+                for m in history
+            )
+
             logger.debug(
                 "agent %s: bootstrapped task %s round=%d my_slots=%s executed_legs=%s",
                 self.actor_id,

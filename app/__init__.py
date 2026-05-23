@@ -69,6 +69,22 @@ def create_app(config_class=None):
     except Exception as exc:
         print(f"[startup] AGV pre-register skipped: {exc}")
 
+    # Phase 4: in distributed mode (INTERACT_BUS=redis) liveness comes from
+    # actor heartbeats on the bus, not the HTTP /arms/<id>/health poll. Reset
+    # any stale 'dead'/'unhealthy' marks from prior backend runs so the
+    # Fleet Roster does not start with falsely-dead arms. Actors then refresh
+    # state via execution + heartbeat paths.
+    try:
+        import os
+        if os.environ.get("INTERACT_BUS", "inprocess").lower() == "redis":
+            from app.models import arm_state
+            for arm_id in arm_state.get_arm_ids():
+                h = arm_state.get_health(arm_id) or {}
+                if h.get("health") in ("dead", "stopped", "unhealthy"):
+                    arm_state.set_health(arm_id, "alive")
+    except Exception as exc:
+        print(f"[startup] arm liveness reset skipped: {exc}")
+
     # Phase 4 Stage 2: actors run in isolated containers, NOT in-backend
     # threads. The reconciler owns their lifecycle via reconcile_actors().
     # agent_registry.start_agents() is intentionally NOT called here; it
