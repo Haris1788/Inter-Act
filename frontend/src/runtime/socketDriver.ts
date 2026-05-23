@@ -539,9 +539,13 @@ export function createSocketDriver(): RuntimeDriver {
           if (!KNOWN_KINDS.has(p.type)) return;
 
           const kind = p.type as BusKind;
+          // Backend Message.ts is Python time.time() — SECONDS since epoch.
+          // JS Date constructor expects MILLISECONDS. Multiply by 1000 or
+          // the bus pane renders 1970-era timestamps that look reasonable
+          // ("14:19:21") but are actually 21 days into 1970.
           const ts =
-            p.ts
-              ? new Date(p.ts).toISOString().slice(11, 19)
+            typeof p.ts === "number"
+              ? new Date(p.ts * 1000).toISOString().slice(11, 19)
               : new Date().toISOString().slice(11, 19);
           const from = p.sender ?? "system";
 
@@ -638,6 +642,34 @@ export function createSocketDriver(): RuntimeDriver {
           // has finished its planned path; the dashed overlay should be cleared.
           if (kind === "leg_completed" && p.slot_id === "transport" && p.sender) {
             st().clearAgvPath(p.sender);
+          }
+
+          // Phase 5.1 Fix — drive AGV canvas motion from POSITION_UPDATE on the
+          // bus stream. Actor containers publish agv_position via their own
+          // (disconnected) SocketIO instance, so the dedicated agv_position
+          // handler above never fires in distributed mode. The bus mirror DOES
+          // forward POSITION_UPDATE to the browser as bus_message, so translate
+          // that into the same setRuntimePosition + setAgvTarget flow used by
+          // the in-process agv_position event.
+          if (kind === "position_update" && p.sender && p.payload) {
+            const pay = p.payload as Record<string, unknown>;
+            const x = typeof pay.x === "number" ? pay.x : null;
+            const y = typeof pay.y === "number" ? pay.y : null;
+            const theta = typeof pay.theta === "number" ? pay.theta : 0;
+            const posTs = typeof pay.ts === "number" ? pay.ts : 0;
+            if (x !== null && y !== null) {
+              const s = st();
+              s.setRuntimePosition(p.sender, { x, y, theta, ts: posTs });
+              const existing = s.agvKinematics[p.sender];
+              if (!existing || !existing.pos) {
+                s.setAgvKinematics(p.sender, { pos: { x, y }, heading: theta });
+              } else {
+                // POSITION_UPDATE cadence is ~500 ms; bump tween speed
+                // accordingly so the token reaches the target before the
+                // next update arrives (else it visibly stalls).
+                s.setAgvTarget(p.sender, { x, y }, 120);
+              }
+            }
           }
         },
       );
