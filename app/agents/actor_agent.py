@@ -216,6 +216,32 @@ class ActorAgent:
 
         # Step 2: hydrate participants from those announces.
         for task_id, announce in best_announce.items():
+            # Only rehydrate participants for tasks WE actually engaged in
+            # (own BID, ACCEPT, or LEG_* in history). Skipping non-participated
+            # tasks prevents a stale TASK_ANNOUNCE in history from blocking a
+            # fresh redelivery of the same task_id at startup — without this,
+            # `_on_task_announce` sees the rehydrated participant and falls
+            # into the "existing task, same round → skip" guard, silently
+            # dropping the agent's chance to bid (Phase-6 bug found in live
+            # verification: AGVs stayed idle after restart on a task whose
+            # announce predated their startup).
+            participated = any(
+                m.sender == self.actor_id
+                and m.task_id == task_id
+                and m.negotiation_round == announce.negotiation_round
+                and m.type in (
+                    MessageType.BID,
+                    MessageType.ACCEPT,
+                    MessageType.WITHDRAW,
+                    MessageType.LEG_STARTED,
+                    MessageType.LEG_COMPLETED,
+                    MessageType.LEG_HALTED,
+                )
+                for m in history
+            )
+            if not participated:
+                continue
+
             if task_id in self._tasks:
                 # Already created (shouldn't happen in start(), but be safe).
                 participant = self._tasks[task_id]
@@ -582,13 +608,28 @@ class ActorAgent:
             # bidder's score (lower = better for `shortest *`) and the winner.
             constraint = (participant.task or {}).get("constraint", "")
             rationale: list[dict] = []
+            # We want EVERY bid that was placed for this slot, including those
+            # since withdrawn — `surviving_bids` filters out withdrawn senders
+            # which makes the rationale collapse to just the winner once losers
+            # withdraw. Build the candidate list directly from the raw BID
+            # messages instead so the user sees why the winner won vs the rest.
             for slot in participant.task.get("slots", []):
                 slot_id = slot["slot_id"]
-                bids = surviving_bids(
-                    history, participant.task_id, participant.round, slot_id
-                )
-                if not bids:
+                raw_bids = [
+                    m for m in history
+                    if m.type == MessageType.BID
+                    and m.task_id == participant.task_id
+                    and m.negotiation_round == participant.round
+                    and m.slot_id == slot_id
+                ]
+                if not raw_bids:
                     continue
+                # Keep latest bid_version per sender (mirrors surviving_bids).
+                latest: dict[str, Message] = {}
+                for b in raw_bids:
+                    cur = latest.get(b.sender)
+                    if cur is None or b.bid_version >= cur.bid_version:
+                        latest[b.sender] = b
                 cands = sorted(
                     (
                         {
@@ -596,7 +637,7 @@ class ActorAgent:
                             "score": float(b.payload.get("score", 0.0)),
                             "capacity": int(b.payload.get("capacity", 1)),
                         }
-                        for b in bids
+                        for b in latest.values()
                     ),
                     key=lambda c: (c["score"], c["sender"]),
                 )

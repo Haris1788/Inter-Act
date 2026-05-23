@@ -109,7 +109,19 @@ class Slot:
 BID_WINDOW_S = 1.5
 CONSENSUS_WINDOW_S = 1.5
 
-_SCORED_CONSTRAINTS = ("shortest time", "shortest distance")
+_SCORED_CONSTRAINTS = (
+    "shortest time", "shortest distance",
+    # Phase-6: alias common natural-language forms the LLM emits so user
+    # phrasings like "optimise for time" / "minimize distance" hit the
+    # speed-weighted / distance-weighted winner rules instead of silently
+    # falling through to the unconstrained default (lowest sender id).
+    "optimise for time", "optimize for time",
+    "fastest", "fastest delivery",
+    "minimise time", "minimize time",
+    "optimise for distance", "optimize for distance",
+    "minimise distance", "minimize distance",
+    "nearest", "shortest path",
+)
 _SCORED_CONSTRAINTS_MAX = ("longest time", "longest distance")
 
 

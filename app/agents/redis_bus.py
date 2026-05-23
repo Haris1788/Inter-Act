@@ -39,6 +39,12 @@ from app.agents.negotiation import Message, MessageType
 logger = logging.getLogger(__name__)
 
 STREAM_KEY = "interact:negotiation"
+# Cap the bus stream length to prevent unbounded growth (heartbeats every ~2s
+# from N agents accumulate ~43k/day per agent). XADD with `maxlen=~` is the
+# approximate-trim mode — Redis trims to roughly this many entries on insert,
+# which is O(1) amortised. 5000 keeps several minutes of context around the
+# most-recent activity, plenty for bootstrap rehydration and replay views.
+_STREAM_MAXLEN = 5000
 
 # Bounded LRU for per-consumer dedup.
 _DEDUP_CAPACITY = 1024
@@ -124,7 +130,14 @@ class RedisStreamsBus:
         backoff = _BACKOFF_INITIAL_S
         for attempt in range(_MAX_RETRIES):
             try:
-                self._client.xadd(STREAM_KEY, {"data": data})
+                # Approximate trim keeps stream length bounded ~_STREAM_MAXLEN.
+                # `approximate=True` lets Redis trim at whole-node boundaries
+                # (much faster than exact trim) — actual length may exceed the
+                # target by a few hundred between rebalances, which is fine.
+                self._client.xadd(
+                    STREAM_KEY, {"data": data},
+                    maxlen=_STREAM_MAXLEN, approximate=True,
+                )
                 return
             except redis_lib.RedisError as exc:
                 logger.error(
@@ -328,6 +341,26 @@ class RedisStreamsBus:
             except redis_lib.RedisError as exc:
                 if self._stop_flag.is_set():
                     return
+                # NOGROUP: the consumer group was deleted (e.g. operator ran
+                # `DEL <stream>`). Re-create it idempotently so the loop
+                # self-heals instead of spinning forever on a dead group.
+                msg = str(exc)
+                if "NOGROUP" in msg:
+                    try:
+                        self._client.xgroup_create(
+                            STREAM_KEY, consumer_id, id="$", mkstream=True,
+                        )
+                        logger.warning(
+                            "RedisStreamsBus consumer %s: NOGROUP — recreated group",
+                            consumer_id,
+                        )
+                        continue  # immediate retry, do not sleep
+                    except redis_lib.ResponseError as inner:
+                        if "BUSYGROUP" not in str(inner):
+                            logger.error(
+                                "RedisStreamsBus consumer %s: failed to recreate group: %s",
+                                consumer_id, inner,
+                            )
                 logger.error(
                     "RedisStreamsBus consumer %s: Redis error (%s); "
                     "retrying in %.1fs",
