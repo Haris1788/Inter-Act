@@ -962,7 +962,28 @@ def get_grid():
 
 
 def get_agvs():
-    """Return the list of AGV config dicts ({id,label,color,bay:[c,r]})."""
+    """Return the list of AGV config dicts ({id,label,color,bay:[c,r]}).
+
+    Phase 5: prefer the canvas-authored topology: block when present.
+    Topology AGV specs are converted to the legacy {id,label,color,bay}
+    shape (bay derived from position px / cell_px so downstream callers
+    that expect a cell tuple still work). Falls back to the legacy
+    warehouse.agvs block when no topology is authored.
+    """
+    topo = get_topology()
+    if topo is not None:
+        agvs = []
+        cell_px = topo.cell_px or 40
+        for spec in topo.agvs():
+            agvs.append({
+                "id": spec.id,
+                "label": spec.label or spec.id,
+                "color": spec.color or "#16a085",
+                "bay": [int(spec.x // cell_px), int(spec.y // cell_px)],
+                "speed": spec.speed,
+                "capacity": spec.capacity,
+            })
+        return agvs
     return list(get_warehouse_config().get("agvs") or [])
 
 
