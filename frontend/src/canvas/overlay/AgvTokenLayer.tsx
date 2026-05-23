@@ -343,7 +343,8 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
             })()}
 
             {/* Actor id label — rendered in world space (not rotated with vehicle)
-                so it's always legible regardless of heading direction. */}
+                so it's always legible regardless of heading direction.
+                Black for legibility against the light canvas background. */}
             <Text
               x={-BODY_W / 2}
               y={BODY_H / 2 + 5}
@@ -351,8 +352,8 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
               align="center"
               text={labelText}
               fontSize={9}
-              fill="rgba(255,255,255,0.75)"
-              fontStyle="500"
+              fill="rgba(0,0,0,0.85)"
+              fontStyle="600"
             />
           </Group>
         );

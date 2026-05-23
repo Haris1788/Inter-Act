@@ -643,9 +643,8 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
               listening={false}
             />
 
-            {/* Actor-id label below the pivot. White/low-opacity to stay
-                legible on the dark canvas without competing with the RF node
-                label above (which is the primary identity affordance). */}
+            {/* Actor-id label below the pivot. Black for legibility against
+                the light canvas background. */}
             <Text
               x={-24}
               y={pRadius + 4}
@@ -653,8 +652,8 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
               align="center"
               text={actor.id}
               fontSize={9}
-              fill="rgba(255,255,255,0.65)"
-              fontStyle="500"
+              fill="rgba(0,0,0,0.85)"
+              fontStyle="600"
               listening={false}
             />
 
