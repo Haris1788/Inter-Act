@@ -393,6 +393,37 @@ export function createSocketDriver(): RuntimeDriver {
         },
       );
 
+      // Stage 5 Track B — live AGV pixel-space position at ~10 Hz.
+      // Emitted by the backend spatial movement loop (_traverse_to).
+      // 1. Stores runtimePosition in the runtime slice (observational, never
+      //    sent back to the backend).
+      // 2. Drives the existing spatial kinematics tween so tick() interpolates
+      //    smoothly between updates (ANIM_DURATION ≈ 200 ms, well below the
+      //    100 ms × 2 = 200 ms catch-up threshold).
+      socket.on(
+        "agv_position",
+        (p: { actor_id: string; x: number; y: number; theta: number; ts: number }) => {
+          const s = st();
+          // Store raw observational position (Track C surfaces this for polish).
+          s.setRuntimePosition(p.actor_id, { x: p.x, y: p.y, theta: p.theta, ts: p.ts });
+          // Feed the spatial tween so the token moves smoothly.
+          const existing = s.agvKinematics[p.actor_id];
+          if (!existing || !existing.pos) {
+            // First sighting: place the token at the reported position without
+            // animation so it doesn't slide in from a stale location.
+            s.setAgvKinematics(p.actor_id, {
+              pos: { x: p.x, y: p.y },
+              heading: p.theta,
+            });
+          } else {
+            // Subsequent updates: set new position as the interpolation target.
+            // tick() will ease there; speed=260 px/s gives ~200 ms over a 52 px
+            // step (typical at 10 Hz × 5 px/step), satisfying ANIM_DURATION < 2×cadence.
+            s.setAgvTarget(p.actor_id, { x: p.x, y: p.y }, 260);
+          }
+        },
+      );
+
       socket.on("arm_angle_update", (p: { arm_id: number; angle: number }) => {
         st().setArmAngle(`arm-${p.arm_id}`, p.angle);
       });

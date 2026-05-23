@@ -1,4 +1,5 @@
-// Canvas toolbar - top-left tool clusters (select, pan, edit, spatial, fit).
+// Canvas toolbar - top-left tool clusters (select, pan, edit, spatial, fit,
+// snap-to-grid toggle).
 // Mirrors .canvas-toolbar / .tool-cluster from styles-v2.css.
 
 import { useEditorMode } from "@/store/selectors";
@@ -6,9 +7,15 @@ import { useStore } from "@/store";
 
 interface CanvasToolbarProps {
   onFit?: () => void;
+  snapEnabled?: boolean;
+  onToggleSnap?: () => void;
 }
 
-export function CanvasToolbar({ onFit }: CanvasToolbarProps) {
+export function CanvasToolbar({
+  onFit,
+  snapEnabled = true,
+  onToggleSnap,
+}: CanvasToolbarProps) {
   const mode = useEditorMode();
   const setMode = useStore((s) => s.setMode);
 
@@ -100,6 +107,33 @@ export function CanvasToolbar({ onFit }: CanvasToolbarProps) {
             <polyline points="15 4 20 4 20 9" />
             <polyline points="20 15 20 20 15 20" />
             <polyline points="9 20 4 20 4 15" />
+          </svg>
+        </ToolBtn>
+        {/* Snap-to-grid toggle — active = snap ON */}
+        <ToolBtn
+          active={snapEnabled}
+          title={snapEnabled ? "Snap to grid: ON (hold Shift to override)" : "Snap to grid: OFF"}
+          onClick={onToggleSnap}
+        >
+          {/* Grid icon: 3×3 dot lattice */}
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          >
+            <circle cx="4" cy="4" r="1.2" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="4" r="1.2" fill="currentColor" stroke="none" />
+            <circle cx="20" cy="4" r="1.2" fill="currentColor" stroke="none" />
+            <circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
+            <circle cx="20" cy="12" r="1.2" fill="currentColor" stroke="none" />
+            <circle cx="4" cy="20" r="1.2" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="20" r="1.2" fill="currentColor" stroke="none" />
+            <circle cx="20" cy="20" r="1.2" fill="currentColor" stroke="none" />
           </svg>
         </ToolBtn>
       </div>

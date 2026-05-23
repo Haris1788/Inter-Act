@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { RootStore, RuntimeSlice } from "./types";
+import type { AgvRuntimePosition, ReplayPosition, RootStore, RuntimeSlice } from "./types";
 
 const BUS_CAP = 40;
 const LOG_CAP = 200;
@@ -28,6 +28,9 @@ export const createRuntimeSlice: StateCreator<
   dataSource: "mock",
   linkStatus: "connecting",
   events: [],
+  // Phase 5 Stage 8 Track C — replay scrub. Off by default.
+  replayMode: false,
+  replayPositions: {},
 
   pushBusMessage: (m) =>
     set((s) => ({ busMessages: [...s.busMessages, m].slice(-BUS_CAP) })),
@@ -63,8 +66,30 @@ export const createRuntimeSlice: StateCreator<
       },
     })),
 
+  // Stage 5 Track B — observational runtime position from `agv_position` event.
+  // Stored separately from authored position; never sent back to backend.
+  setRuntimePosition: (id: string, pos: AgvRuntimePosition) =>
+    set((s) => ({
+      actorRuntime: {
+        ...s.actorRuntime,
+        [id]: {
+          ...DEFAULT_RUNTIME,
+          ...s.actorRuntime[id],
+          runtimePosition: pos,
+        },
+      },
+    })),
+
   setConnection: (source, status) =>
     set(() => ({ dataSource: source, linkStatus: status })),
+
+  // Phase 5 Stage 8 Track C — enter replay mode with a positions snapshot.
+  setReplayPositions: (positions: Record<string, ReplayPosition>) =>
+    set(() => ({ replayMode: true, replayPositions: positions })),
+
+  // Phase 5 Stage 8 Track C — exit replay mode, clear historical positions.
+  clearReplayMode: () =>
+    set(() => ({ replayMode: false, replayPositions: {} })),
 
   hydrateRuntime: (patch) => set(() => ({ ...patch })),
 });

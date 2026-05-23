@@ -225,7 +225,13 @@ def _infra_runtime() -> dict:
 
 
 def create_actor(
-    module_id: str, kind: str, label: str, publish_port: Optional[int]
+    module_id: str, kind: str, label: str, publish_port: Optional[int],
+    *,
+    x: Optional[float] = None,
+    y: Optional[float] = None,
+    reach_px: Optional[float] = None,
+    capacity: Optional[int] = None,
+    speed: Optional[float] = None,
 ) -> Optional[str]:
     """Create ONE labelled actor container (arm or agv). Idempotent
     (removes any same-name leftover first). None on success / honest
@@ -271,6 +277,17 @@ def create_actor(
         "PIPELINE_CONFIG=/config/pipeline.yaml",
         "PYTHONUNBUFFERED=1",
     ]
+    # Optional spatial env from topology (actor_runner priority 1: env > topology > legacy).
+    if x is not None:
+        env.append(f"ACTOR_X={x}")
+    if y is not None:
+        env.append(f"ACTOR_Y={y}")
+    if reach_px is not None:
+        env.append(f"ACTOR_REACH_PX={reach_px}")
+    if capacity is not None:
+        env.append(f"ACTOR_CAPACITY={capacity}")
+    if speed is not None:
+        env.append(f"ACTOR_SPEED={speed}")
 
     args = [
         "docker", "run", "-d",
@@ -464,7 +481,14 @@ def reconcile_actors(desired: list[dict]) -> dict:
             else:
                 restarted.append(mid)
         else:
-            err = create_actor(mid, kind, d.get("label", mid), port)
+            err = create_actor(
+                mid, kind, d.get("label", mid), port,
+                x=d.get("x"),
+                y=d.get("y"),
+                reach_px=d.get("reach_px"),
+                capacity=d.get("capacity"),
+                speed=d.get("speed"),
+            )
             if err is None:
                 created.append(mid)
             else:
@@ -490,12 +514,35 @@ def build_desired_from_config() -> list[dict]:
     Returns a list of dicts suitable for ``reconcile_actors(desired)``,
     including BOTH arms (kind="arm") and AGVs (kind="agv").
 
-    This is the canonical helper for any code that needs the full desired
-    set without duplicating pipeline_config traversal.
+    Stage 3: when a topology block is present, uses topology actors as the
+    authoritative source (topology overrides warehouse). Falls back to the
+    legacy arms+AGVs path when only the `warehouse:` block is present.
+
+    Each dict carries optional spatial fields (x, y, reach_px, capacity,
+    speed) so the reconciler can forward them to the actor container via env.
     """
     from app.models import pipeline_config as pc
 
-    desired: list[dict] = []
+    topology = pc.get_topology()
+    if topology is not None:
+        # Topology path: one entry per actor in the topology block.
+        desired: list[dict] = []
+        for spec in topology.actors:
+            entry: dict = {
+                "id": spec.id,
+                "kind": spec.kind,
+                "label": spec.label or spec.id,
+                "x": spec.x,
+                "y": spec.y,
+                "reach_px": spec.reach_px,
+                "capacity": spec.capacity,
+                "speed": spec.speed,
+            }
+            desired.append(entry)
+        return desired
+
+    # Legacy path: arms + AGVs from warehouse config.
+    desired = []
 
     # Arms from pipeline_config.get_arms()
     for arm in pc.get_arms():

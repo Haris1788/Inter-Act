@@ -13,6 +13,11 @@ export type DataSource = "mock" | "live";
 export type LinkStatus = "connecting" | "connected" | "disconnected";
 
 // ---------- SLICE 1: Topology (user-composed; persisted to YAML later) ----------
+// Phase 5 Stage 2A schema bump (2026-05-23):
+//   Added: reach_px (default 120), capacity (default 1), speed (default 1.0).
+//   Migration rule: old localStorage workspaces lacking these fields get
+//   defaults injected by normalizeActor (called in docToState on every load).
+//   Shape is additive — no existing field renamed or removed.
 export interface TopologyActor {
   id: ActorId;
   kind: ActorKind;
@@ -28,6 +33,15 @@ export interface TopologyActor {
   liveCapability: string | null;
   brain: string;
   spec: string;
+  // ── Phase 5 spatial fields ──────────────────────────────────────────────
+  /** Arm reach radius in canvas pixels. Meaningful for arms; kept on AGVs
+   *  (default 120) for a symmetric shape. Backend uses this to determine
+   *  which dock positions are reachable. */
+  reach_px: number;
+  /** Maximum simultaneous payload capacity (integer ≥ 1). */
+  capacity: number;
+  /** Speed multiplier (0.5 = slow … 3.0 = fast, step 0.5). Default 1.0. */
+  speed: number;
 }
 
 export interface TopologyZone {
@@ -135,6 +149,18 @@ export interface EditorSlice {
 }
 
 // ---------- SLICE 2: Runtime (live status; read-mostly in UI) ----------
+
+/** Observational AGV position emitted by the backend at ~10 Hz.
+ *  Never sent back. Authored position (canvas drag) is untouched. */
+export interface AgvRuntimePosition {
+  x: number;
+  y: number;
+  /** Heading in radians (atan2 convention). */
+  theta: number;
+  /** Backend timestamp (epoch ms). */
+  ts: number;
+}
+
 export interface ActorRuntime {
   status: ActorStatus;
   phase: string;
@@ -145,6 +171,9 @@ export interface ActorRuntime {
     battery: number;
     busLatencyMs: number;
   };
+  /** Stage 5 Track B — live pixel position from `agv_position` SocketIO event.
+   *  Present only while an AGV is in spatial motion. Observational only. */
+  runtimePosition?: AgvRuntimePosition;
 }
 
 // Real NegotiationBus message types — sourced directly from the backend
@@ -212,6 +241,13 @@ export interface OperationalEvent {
   tone: "ok" | "warn" | "err" | "info";
 }
 
+/** Phase 5 Stage 8 Track C — historical AGV position for a single replay frame. */
+export interface ReplayPosition {
+  x: number;
+  y: number;
+  theta: number;
+}
+
 export interface RuntimeSlice {
   actorRuntime: Record<ActorId, ActorRuntime>;
   busMessages: BusMessage[];
@@ -222,11 +258,24 @@ export interface RuntimeSlice {
   linkStatus: LinkStatus;
   /** Phase 8 - bounded operational event timeline (observability). */
   events: OperationalEvent[];
+  /** Phase 5 Stage 8 Track C — replay scrub state.
+   *  Observational only: never published back to the backend.
+   *  When replayMode is true, AGV tokens snap to replayPositions
+   *  (skipping tween) rather than reading live runtimePosition/kinematics. */
+  replayMode: boolean;
+  replayPositions: Record<ActorId, ReplayPosition>;
   pushBusMessage: (m: BusMessage) => void;
   pushLogLine: (l: LogLine) => void;
   pushEvent: (e: Omit<OperationalEvent, "id" | "ts"> & { ts?: string }) => void;
   setActorRuntime: (id: ActorId, patch: Partial<ActorRuntime>) => void;
+  /** Stage 5 Track B — update live pixel position for a single AGV.
+   *  Does NOT touch authored (canvas) position. */
+  setRuntimePosition: (id: ActorId, pos: AgvRuntimePosition) => void;
   setConnection: (source: DataSource, status: LinkStatus) => void;
+  /** Phase 5 Stage 8 Track C — enter replay mode with computed positions. */
+  setReplayPositions: (positions: Record<ActorId, ReplayPosition>) => void;
+  /** Phase 5 Stage 8 Track C — exit replay mode, return to live. */
+  clearReplayMode: () => void;
   hydrateRuntime: (
     patch: Partial<
       Pick<

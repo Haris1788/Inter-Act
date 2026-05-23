@@ -454,7 +454,14 @@ class ActorAgent:
                     negotiation_round=participant.round,
                     sender=self.actor_id,
                     slot_id=slot["slot_id"],
-                    payload={"score": score, "basis": self.profile.kind},
+                    payload={
+                        "score": score,
+                        "basis": self.profile.kind,
+                        # Phase 5 Stage 4: peers need capacity + reach_px to
+                        # re-derive winners from bus history (leaderless invariant).
+                        "capacity": self.profile.capacity,
+                        "reach_px": self.profile.reach_px,
+                    },
                 )
             )
             if published:

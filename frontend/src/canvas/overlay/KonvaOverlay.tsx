@@ -29,6 +29,8 @@ import {
 } from "@/store/selectors";
 import { tokens } from "@/lib/tokens";
 import { AgvTokenLayer } from "./AgvTokenLayer";
+import { AgvTrailLayer } from "./AgvTrailLayer";
+import { ArmRenderer } from "./ArmRenderer";
 import { WarehouseGridLayer } from "./WarehouseGridLayer";
 
 type Transform = ViewportTransform;
@@ -483,6 +485,16 @@ export function KonvaOverlay() {
           dockGlows={dockGlows}
         />
         <ArmLayer tx={tx} />
+        {/* Stage 6 Track A — topology-driven arm articulation.
+            ArmRenderer reads arm actors from the topology slice (kind="arm")
+            and drives their pivot/stick/gripper from arm_angle_update events.
+            Mounted as a sibling Layer to AgvTokenLayer for render isolation. */}
+        <ArmRenderer tx={tx} />
+        {/* Stage 8 Track B — AGV path trail overlay.
+            Mounted BEFORE AgvTokenLayer so trails draw behind vehicle tokens.
+            selectedTaskId is undefined here; Track C will pass it when the
+            replay cursor is active (via a prop drilled from ReplayPanel). */}
+        <AgvTrailLayer tx={tx} />
         <AgvTokenLayer tx={tx} />
       </Stage>
     </div>

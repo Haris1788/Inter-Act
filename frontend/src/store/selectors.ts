@@ -64,3 +64,9 @@ export const useAgvKinematics = () => useStore((s) => s.agvKinematics);
 export const useArmAngles = () => useStore((s) => s.armAngles);
 export const useTablePkgs = () => useStore((s) => s.tablePkgs);
 export const useAgvCargo = () => useStore((s) => s.agvCargo);
+/** Stage 5 Track B — all actor runtime entries (for runtimePosition). */
+export const useActorRuntimeAll = () => useStore((s) => s.actorRuntime);
+/** Phase 5 Stage 8 Track C — replay scrub flag. */
+export const useReplayMode = () => useStore((s) => s.replayMode);
+/** Phase 5 Stage 8 Track C — historical AGV positions at the scrub cursor. */
+export const useReplayPositions = () => useStore((s) => s.replayPositions);

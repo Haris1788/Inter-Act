@@ -91,17 +91,87 @@ def _validate_env() -> tuple[str, str, str]:
 # ── Profile loading ─────────────────────────────────────────────────────────
 
 def _load_profile(actor_id: str, logger: logging.Logger):
-    """Load CapabilityProfile for actor_id from pipeline_config.
+    """Load CapabilityProfile for actor_id with priority:
 
-    Calls capability.load_profiles() (which reads pipeline.yaml) and returns
-    the matching profile.  Exits nonzero if the profile is not found.
+    1. Env vars (ACTOR_X + ACTOR_Y present) — build profile directly from env.
+       Fastest path: no yaml read needed. ACTOR_KIND must already be set.
+    2. Topology lookup via get_topology_or_legacy_shim() — yaml read once,
+       actor looked up by id; profile built via from_topology_spec().
+    3. Legacy fallback — capability.load_profiles() + filter by actor_id.
+
+    Exits nonzero (sys.exit(1)) if no profile can be resolved at any level.
     """
+    # Priority 1: env has explicit spatial coordinates.
+    actor_x_str = os.environ.get("ACTOR_X", "").strip()
+    actor_y_str = os.environ.get("ACTOR_Y", "").strip()
+
+    if actor_x_str and actor_y_str:
+        try:
+            actor_x = float(actor_x_str)
+            actor_y = float(actor_y_str)
+        except ValueError:
+            pass  # malformed → fall through to topology lookup
+        else:
+            from app.agents.capability import CapabilityProfile
+            from app.models.topology import ActorSpec
+
+            actor_kind_str = os.environ.get("ACTOR_KIND", "arm").strip().lower()
+            kind = actor_kind_str if actor_kind_str in ("arm", "agv") else "arm"
+            reach_px = float(os.environ.get("ACTOR_REACH_PX", "120.0").strip() or "120.0")
+            capacity = int(os.environ.get("ACTOR_CAPACITY", "1").strip() or "1")
+            speed = float(os.environ.get("ACTOR_SPEED", "1.0").strip() or "1.0")
+
+            spec = ActorSpec(
+                id=actor_id,
+                kind=kind,
+                x=actor_x,
+                y=actor_y,
+                reach_px=reach_px,
+                capacity=capacity,
+                speed=speed,
+            )
+            profile = CapabilityProfile.from_topology_spec(spec)
+            # Arms get their own id as the reachable zone so Phase 4 zone-match works.
+            if kind == "arm":
+                profile.reachable_zones = [actor_id]
+            logger.info(
+                "profile loaded from env: kind=%s x=%s y=%s zones=%s",
+                profile.kind, actor_x, actor_y, profile.reachable_zones,
+            )
+            return profile
+
+    # Priority 2: topology lookup (topology block or legacy shim).
+    try:
+        from app.models.pipeline_config import get_topology_or_legacy_shim
+        from app.agents.capability import CapabilityProfile
+
+        topology = get_topology_or_legacy_shim()
+        spec = topology.actor(actor_id)
+        if spec is not None:
+            profile = CapabilityProfile.from_topology_spec(spec)
+            if spec.kind == "arm":
+                profile.reachable_zones = [actor_id]
+            else:
+                # AGVs reach all arm zones — reconstruct from topology arms.
+                profile.reachable_zones = [a.id for a in topology.arms()]
+            logger.info(
+                "profile loaded from topology: kind=%s x=%s y=%s zones=%s",
+                profile.kind, spec.x, spec.y, profile.reachable_zones,
+            )
+            return profile
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("topology lookup failed (%s), falling back to legacy", exc)
+
+    # Priority 3: legacy load_profiles() + filter.
     from app.agents.capability import load_profiles
 
     profiles = load_profiles()
     for profile in profiles:
         if profile.actor_id == actor_id:
-            logger.info("profile loaded: kind=%s zones=%s", profile.kind, profile.reachable_zones)
+            logger.info(
+                "profile loaded (legacy): kind=%s zones=%s",
+                profile.kind, profile.reachable_zones,
+            )
             return profile
 
     print(

@@ -1,42 +1,109 @@
 // AgvTokenLayer - Live AGV motion tokens rendered in Konva stage-space.
 //
-// For each AGV in useAgvKinematics() with a non-null pos, draws a matte
-// industrial marker at that position, locked to React Flow pan/zoom via the
-// same useViewportTransform() transform that the other Layers receive.
+// Stage 5 Track B changes:
+//   - Subscribes to `agv_position` SocketIO events via the runtime slice's
+//     `runtimePosition` field. Prefers runtimePosition when present (live
+//     motion); falls back to authored actor.position (idle/initial state).
+//   - Position tween: delegates to the existing spatialSlice tick() mechanism
+//     (setAgvTarget in socketDriver → tick() interpolates). The layer reads
+//     the already-interpolated pos from agvKinematics.
+//   - Heading: uses runtimePosition.theta when available (precise atan2 from
+//     backend); falls back to kinematics.heading (derived from travel direction).
+//   - Vehicle shape upgraded to spec: 50×30 px rounded rect body + triangle
+//     front pointer + drop shadow + actor_id label below.
 //
-// Rendering rules:
-//   - Token: rounded rect 18×14 px (stage units), tokens.cta stroke, subtle
-//     warm fill, heading tick line pointing in the direction of travel.
-//   - In-transit (target non-null): soft radial trail halo; pulse phase driven
-//     by a dedicated rAF (cosmetic only - position integration is in the store).
-//   - Settled (target null): no trail; reduced opacity on heading tick.
-//   - Tether: thin low-opacity line from token centre to the AGV's RF home
-//     card centre (actor.position + size/2) while in transit.
+// Stage 5 Track C changes (additive on top of Track B):
+//   - Return path arrow: faint tapered line from current pos → authored origin
+//     when phase === "returning". Drawn behind the body group.
+//   - Idle breathing pulse: soft oscillating ring when idle at origin. Reuses
+//     the existing RAF pulsePhase (no extra animation loop).
+//   - Status dot: small circle beside the label with phase-keyed color.
 //
-// This layer is listening={false} and does NOT integrate positions - it only
-// reads current store state each render frame.
+// This layer is listening={false}. Drag/select are handled by RF nodes above.
 
 import { useEffect, useRef, useState } from "react";
-import { Layer, Group, Rect, Circle, Line } from "react-konva";
+import { Layer, Group, Rect, Line, RegularPolygon, Text, Circle, Arrow } from "react-konva";
 
 import type { ViewportTransform } from "./useViewportTransform";
-import { useAgvKinematics, useActors, useAgvCargo } from "@/store/selectors";
+import {
+  useAgvKinematics,
+  useActors,
+  useAgvCargo,
+  useActorRuntimeAll,
+  useReplayMode,
+  useReplayPositions,
+} from "@/store/selectors";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const TOKEN_W = 22;
-const TOKEN_H = 16;
-const TRAIL_R = 24;
-const TETHER_OPACITY = 0.18;
+/** Vehicle body size in canvas pixels (stage space). */
+const BODY_W = 50;
+const BODY_H = 30;
+
+/** Triangle pointer size (equilateral side). Points toward +x (front). */
+const POINTER_SIZE = 10;
+
+/** Default AGV color (spec: #16a085). */
+const DEFAULT_AGV_COLOR = "#16a085";
+
+/** Pulse speed for the cosmetic trail halo (legacy, kept for compat). */
 const PULSE_SPEED = 2.4;
+const TRAIL_OPACITY_IN_TRANSIT = 0.18;
+
+/** Idle breathing ring — 2-second period. */
+const IDLE_PULSE_SPEED = 1.0; // cycles per second (2 s period = 0.5 Hz × 2π)
+const BODY_DIAGONAL = Math.sqrt((BODY_W / 2) ** 2 + (BODY_H / 2) ** 2);
+
+/** Status dot radius. */
+const DOT_RADIUS = 4;
+
+/** Age threshold (ms) above which runtimePosition is considered stale. */
+const STALE_THRESHOLD_MS = 1500;
+
+// ---------------------------------------------------------------------------
+// Status dot color map (uses `phase` which carries raw backend status string)
+// ---------------------------------------------------------------------------
+
+const STATUS_DOT_COLORS: Record<string, string> = {
+  idle:      "#16a085",   // green
+  moving:    "#2563eb",   // blue
+  loading:   "#eab308",   // amber
+  unloading: "#eab308",   // amber
+  returning: "#3b82f6",   // dimmer blue
+  faulted:   "#dc2626",   // red
+  stopped:   "#6b7280",   // gray
+  // ActorStatus fallbacks
+  ok:        "#16a085",
+  warn:      "#eab308",
+  busy:      "#2563eb",
+  down:      "#dc2626",
+};
+
+const DEFAULT_DOT_COLOR = "#9ca3af";
+
+function statusDotColor(phase: string): string {
+  return STATUS_DOT_COLORS[phase] ?? DEFAULT_DOT_COLOR;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function hexToRgba(hex: string, a: number): string {
-  const r = parseInt(hex.slice(1, 3), 16) || 24;
-  const g = parseInt(hex.slice(3, 5), 16) || 24;
-  const b = parseInt(hex.slice(5, 7), 16) || 27;
+  const r = parseInt(hex.slice(1, 3), 16) || 22;
+  const g = parseInt(hex.slice(3, 5), 16) || 160;
+  const b = parseInt(hex.slice(5, 7), 16) || 133;
   return `rgba(${r},${g},${b},${a.toFixed(3)})`;
+}
+
+/** Darken a hex color by the given fraction (0..1). */
+function darkenHex(hex: string, amount = 0.25): string {
+  const r = Math.round(parseInt(hex.slice(1, 3), 16) * (1 - amount));
+  const g = Math.round(parseInt(hex.slice(3, 5), 16) * (1 - amount));
+  const b = Math.round(parseInt(hex.slice(5, 7), 16) * (1 - amount));
+  return `rgb(${r},${g},${b})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,8 +114,13 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
   const kinematics = useAgvKinematics();
   const actors = useActors();
   const agvCargo = useAgvCargo();
-  const [agvColors, setAgvColors] = useState<Record<string, string>>({});
+  const actorRuntime = useActorRuntimeAll();
+  // Phase 5 Stage 8 Track C — replay position source (highest priority).
+  const replayMode = useReplayMode();
+  const replayPositions = useReplayPositions();
 
+  // Per-AGV color fetched from /config (same as previous layer).
+  const [agvColors, setAgvColors] = useState<Record<string, string>>({});
   useEffect(() => {
     fetch("/config")
       .then((r) => r.json())
@@ -56,7 +128,7 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
         const m: Record<string, string> = {};
         (cfg.warehouse?.agvs ?? []).forEach(
           (a: { id: string; color?: string }) => {
-            m[a.id] = a.color ?? "#888";
+            m[a.id] = a.color ?? DEFAULT_AGV_COLOR;
           },
         );
         setAgvColors(m);
@@ -64,9 +136,8 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
       .catch(() => {});
   }, []);
 
-  // Cosmetic pulse phase - only used for the trail glow, harmless if no AGVs
-  // are in transit. A single shared phase is fine; all tokens pulse together
-  // which reads as a system heartbeat rather than per-unit animation.
+  // Shared RAF for both transit halo pulse and idle breathing ring.
+  // Track C reuses this loop — no second requestAnimationFrame.
   const [pulsePhase, setPulsePhase] = useState(0);
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef<number | null>(null);
@@ -88,12 +159,24 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
     };
   }, []);
 
+  // Collect entries: prefer runtimePosition for position when kinematics has
+  // no entry yet (first-sighting fallback to authored). Once agv_position
+  // drives kinematics, the kin.pos is the tweened value to render.
   const entries = Object.entries(kinematics).filter(([, k]) => k.pos !== null);
 
   if (entries.length === 0) return null;
 
-  // Pulse multiplier: 0..1 sine, biased to spend more time near 0 (calm)
   const pulse = (Math.sin(pulsePhase) * 0.5 + 0.5) * 0.55 + 0.15; // 0.15..0.70
+
+  // Idle breathing ring oscillates independently at IDLE_PULSE_SPEED Hz.
+  // We derive a separate phase from pulsePhase, scaled by the ratio of speeds.
+  const idlePhaseNorm = (pulsePhase / (Math.PI * 2)) * (IDLE_PULSE_SPEED / PULSE_SPEED);
+  const idleSin = Math.sin(idlePhaseNorm * Math.PI * 2); // -1..1
+  const idleT = idleSin * 0.5 + 0.5; // 0..1
+  const idleRingRadius = BODY_DIAGONAL * (1 + idleT * 0.15); // diagonal .. diagonal × 1.15
+  const idleRingAlpha = 0.05 + idleT * 0.10; // 0.05..0.15
+
+  const now = Date.now();
 
   return (
     <Layer
@@ -104,113 +187,153 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
       scaleY={tx.zoom}
     >
       {entries.map(([id, k]) => {
-        const { pos, heading, target } = k;
-        const inTransit = target !== null;
+        // Phase 5 Stage 8 Track C — position-resolution seam.
+        // Priority: replayPositions (highest) > runtimeKinematics > authored.
+        // In replay mode, snap to historical position (no tween).
+        const replayPos = replayMode ? (replayPositions[id] ?? null) : null;
+        const pos = replayPos !== null ? { x: replayPos.x, y: replayPos.y } : k.pos;
+        const { target } = k;
+        // In replay mode there is no live target; suppress transit halo.
+        const inTransit = replayPos === null && target !== null;
 
-        // Home card centre for tether
+        // Heading: replay > runtimePosition.theta > kinematics heading.
+        const rtp = actorRuntime[id]?.runtimePosition;
+        const theta =
+          replayPos !== null
+            ? replayPos.theta
+            : rtp != null
+              ? rtp.theta
+              : k.heading;
+        const headingDeg = (theta * 180) / Math.PI;
+
         const actor = actors[id];
-        const homeX = actor ? actor.position.x + actor.size.w / 2 : null;
-        const homeY = actor ? actor.position.y + actor.size.h / 2 : null;
-
-        // Vehicle faces its travel direction (forward = +x in local space).
-        const headingDeg = (heading * 180) / Math.PI;
-
-        const agvColor = agvColors[id] ?? "#888";
-        const bodyFill = inTransit ? agvColor : hexToRgba(agvColor, 0.85);
-        const strokeColor = "rgba(0,0,0,0.35)";
-        const strokeWidth = inTransit ? 1.4 : 1.0;
-        const trailOpacity = inTransit ? pulse * 0.45 : 0;
+        const agvColor =
+          agvColors[id] ??
+          (actor as (typeof actor & { color?: string }) | undefined)?.color ??
+          DEFAULT_AGV_COLOR;
+        const strokeColor = darkenHex(agvColor, 0.30);
+        const trailOpacity = inTransit ? pulse * TRAIL_OPACITY_IN_TRANSIT : 0;
         const cargo = agvCargo[id] ?? null;
+
+        // Label text: full actor id (e.g. "agv-1").
+        const labelText = id;
+
+        // --- Track C: phase-based status for dot + return arrow + idle pulse ---
+        const rt = actorRuntime[id];
+        // `phase` holds the raw backend status string ("returning", "moving", etc.)
+        const phase = rt?.phase ?? "";
+
+        // Return path arrow: authored origin (canvas drop position).
+        const origin = actor?.position ?? null;
+        const isReturning = phase === "returning";
+
+        // Idle pulse: shown when phase is idle AND runtimePosition is stale/absent.
+        const rtpAge = rtp != null ? now - rtp.ts * 1000 : Infinity;
+        const isIdleAtOrigin =
+          (phase === "idle" || rt?.status === "idle") &&
+          rtpAge > STALE_THRESHOLD_MS;
 
         return (
           <Group key={id} x={pos.x} y={pos.y}>
-            {/* Tether line to home card - only while in transit */}
-            {inTransit && homeX !== null && homeY !== null && (
-              <Line
-                points={[0, 0, homeX - pos.x, homeY - pos.y]}
-                stroke={agvColor}
-                strokeWidth={0.7}
-                dash={[3, 5]}
-                opacity={TETHER_OPACITY}
+
+            {/* ── Track C: Return path arrow ──────────────────────────────────
+                Rendered first (lowest z) so it's behind everything else.
+                Visible only when phase === "returning". Origin coords are in
+                stage space relative to the layer's own transform, so we
+                translate from the group's current position (pos) to origin. */}
+            {isReturning && origin !== null && (
+              <Arrow
+                points={[
+                  0,
+                  0,
+                  origin.x - pos.x,
+                  origin.y - pos.y,
+                ]}
+                pointerLength={8}
+                pointerWidth={6}
+                fill={hexToRgba(agvColor, 0.4)}
+                stroke={hexToRgba(agvColor, 0.4)}
+                strokeWidth={1.5}
+                dash={[6, 4]}
+                opacity={1}
               />
             )}
 
-            {/* Radial trail halo (in-transit pulse) */}
-            {inTransit && (
+            {/* ── Track C: Idle breathing ring ────────────────────────────────
+                Drawn behind the body group. Subtle — low opacity 0.05→0.15. */}
+            {isIdleAtOrigin && (
               <Circle
                 x={0}
                 y={0}
-                radius={TRAIL_R}
-                fillRadialGradientStartPoint={{ x: 0, y: 0 }}
-                fillRadialGradientEndPoint={{ x: 0, y: 0 }}
-                fillRadialGradientStartRadius={0}
-                fillRadialGradientEndRadius={TRAIL_R}
-                fillRadialGradientColorStops={[
-                  0,
-                  hexToRgba(agvColor, trailOpacity * 0.5),
-                  1,
-                  hexToRgba(agvColor, 0),
-                ]}
+                radius={idleRingRadius}
+                fill={hexToRgba(agvColor, idleRingAlpha)}
+                listening={false}
               />
             )}
 
-            {/* Vehicle, rotated to face its direction of travel */}
+            {/* Vehicle group rotated to face heading direction.
+                Forward direction is +x in local space (heading=0 → right). */}
             <Group rotation={headingDeg}>
-              {/* Four wheels (dark, straddling the chassis edges) */}
-              {[
-                [-TOKEN_W * 0.34, -TOKEN_H / 2 - 1.5],
-                [TOKEN_W * 0.1, -TOKEN_H / 2 - 1.5],
-                [-TOKEN_W * 0.34, TOKEN_H / 2 - 2.5],
-                [TOKEN_W * 0.1, TOKEN_H / 2 - 2.5],
-              ].map(([wx, wy], wi) => (
+              {/* Drop shadow layer (subtle offset rect). */}
+              <Rect
+                x={-BODY_W / 2 + 2}
+                y={-BODY_H / 2 + 2}
+                width={BODY_W}
+                height={BODY_H}
+                cornerRadius={6}
+                fill="rgba(0,0,0,0.18)"
+              />
+
+              {/* Transit halo — subtle radial hint when in motion. */}
+              {inTransit && (
                 <Rect
-                  key={wi}
-                  x={wx}
-                  y={wy}
-                  width={TOKEN_W * 0.24}
-                  height={4}
-                  cornerRadius={1.5}
-                  fill="rgba(20,20,24,0.85)"
+                  x={-BODY_W / 2 - 4}
+                  y={-BODY_H / 2 - 4}
+                  width={BODY_W + 8}
+                  height={BODY_H + 8}
+                  cornerRadius={10}
+                  fill={hexToRgba(agvColor, trailOpacity)}
                 />
-              ))}
+              )}
 
-              {/* Chassis */}
+              {/* Main chassis body */}
               <Rect
-                x={-TOKEN_W / 2}
-                y={-TOKEN_H / 2}
-                width={TOKEN_W}
-                height={TOKEN_H}
-                cornerRadius={3}
-                fill={bodyFill}
+                x={-BODY_W / 2}
+                y={-BODY_H / 2}
+                width={BODY_W}
+                height={BODY_H}
+                cornerRadius={6}
+                fill={agvColor}
                 stroke={strokeColor}
-                strokeWidth={strokeWidth}
+                strokeWidth={1.5}
               />
 
-              {/* Front bumper / headlight strip (forward = +x) */}
-              <Rect
-                x={TOKEN_W / 2 - 3}
-                y={-TOKEN_H * 0.3}
-                width={3}
-                height={TOKEN_H * 0.6}
-                cornerRadius={1}
-                fill="rgba(255,255,255,0.75)"
+              {/* Front heading pointer: equilateral triangle, tip at +x edge. */}
+              <RegularPolygon
+                x={BODY_W / 2 + POINTER_SIZE * 0.55}
+                y={0}
+                sides={3}
+                radius={POINTER_SIZE * 0.7}
+                rotation={90}
+                fill={strokeColor}
+                opacity={0.9}
               />
 
-              {/* Package on the cargo bed - clearly visible when carrying */}
+              {/* Cargo indicator — visible when carrying a package */}
               {cargo !== null && (
                 <>
                   <Rect
-                    x={-TOKEN_W * 0.3}
-                    y={-TOKEN_H * 0.36}
-                    width={TOKEN_W * 0.6}
-                    height={TOKEN_H * 0.72}
-                    cornerRadius={1.5}
+                    x={-BODY_W * 0.28}
+                    y={-BODY_H * 0.35}
+                    width={BODY_W * 0.56}
+                    height={BODY_H * 0.7}
+                    cornerRadius={3}
                     fill="#d9a566"
                     stroke="#7a4a1e"
                     strokeWidth={1}
                   />
                   <Line
-                    points={[0, -TOKEN_H * 0.36, 0, TOKEN_H * 0.36]}
+                    points={[0, -BODY_H * 0.35, 0, BODY_H * 0.35]}
                     stroke="#7a4a1e"
                     strokeWidth={0.8}
                     opacity={0.7}
@@ -218,6 +341,32 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
                 </>
               )}
             </Group>
+
+            {/* Actor id label — rendered in world space (not rotated with vehicle)
+                so it's always legible regardless of heading direction. */}
+            <Text
+              x={-BODY_W / 2}
+              y={BODY_H / 2 + 5}
+              width={BODY_W}
+              align="center"
+              text={labelText}
+              fontSize={9}
+              fill="rgba(255,255,255,0.75)"
+              fontStyle="500"
+            />
+
+            {/* ── Track C: Status dot ─────────────────────────────────────────
+                Small circle at bottom-right of the body (world-space, not
+                rotated) with phase-keyed color. Drawn on top of the label row
+                so it stays readable at any heading. */}
+            <Circle
+              x={BODY_W / 2 - DOT_RADIUS}
+              y={BODY_H / 2 + 5 + DOT_RADIUS}
+              radius={DOT_RADIUS}
+              fill={statusDotColor(phase)}
+              stroke="rgba(0,0,0,0.35)"
+              strokeWidth={0.8}
+            />
           </Group>
         );
       })}

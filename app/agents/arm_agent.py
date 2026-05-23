@@ -12,11 +12,16 @@ For backward compatibility: when `self._current_participant` is None (e.g. old
 monkeypatched test code calls _execute_leg with slot_id only), we fall back to
 reading task_id from the first participant in self._tasks (single-task path),
 or to empty string if none available.
+
+Phase 5 Stage 4: `_bid_score` is now spatial — returns Euclidean distance from
+arm's `position_px` to `slot.target_pos`, or None if out of reach. Falls back
+to legacy zone-match when `target_pos` is absent (Phase 1–4 paths preserved).
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Optional
 
@@ -31,16 +36,30 @@ UNLOAD_CLEAR_TIMEOUT: float = 30.0  # wait for AGV to clear the unload signal
 
 
 class ArmAgent(ActorAgent):
-    """Robotic-arm actor. Bids on reachable arm slots; bid score is reach
-    cost (0.0 when it serves the slot's zone)."""
+    """Robotic-arm actor. Bids on reachable arm slots.
+
+    Phase 5 Stage 4: bid score = Euclidean distance to slot.target_pos.
+    Returns None when the slot is out of reach_px. Falls back to zone-match
+    (score=0.0) when target_pos is absent (Phase 1–4 backward-compat).
+    """
 
     def _bid_score(self, slot: dict) -> Optional[float]:
         if slot.get("kind") != "arm":
             return None
-        zone = slot.get("zone")
-        if zone is None or zone not in self.profile.reachable_zones:
-            return None
-        return 0.0
+        target = slot.get("target_pos")
+        if target is None:
+            # Legacy zone-string path (Phase 1–4) — fall back to zone match.
+            zone = slot.get("zone")
+            if zone is None or zone not in self.profile.reachable_zones:
+                return None
+            return 0.0
+        # Spatial path (Phase 5+).
+        ax, ay = float(self.profile.position_px[0]), float(self.profile.position_px[1])
+        tx, ty = float(target[0]), float(target[1])
+        dist = math.hypot(ax - tx, ay - ty)
+        if dist > self.profile.reach_px:
+            return None  # physically out of reach
+        return dist
 
     # ── Stage 3: real leg execution ────────────────────────────────────────
 

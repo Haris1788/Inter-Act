@@ -13,12 +13,14 @@ from typing import Any, Literal, Optional
 
 
 class MessageType(str, Enum):
-    """The 15 negotiation message types. `counter_offer` is reserved for a
+    """The 16 negotiation message types. `counter_offer` is reserved for a
     later phase and is never emitted in Phase 1. `task_failed`, `leg_started`,
-    `leg_completed`, and `leg_halted` are observational markers — never
-    authority messages. LEG_* types are bus-visible audit trail for replay,
-    recovery, and frontend observation; no actor changes decisions based on
-    another actor's LEG_* messages."""
+    `leg_completed`, `leg_halted`, and `position_update` are observational
+    markers — never authority messages. LEG_* types are bus-visible audit trail
+    for replay, recovery, and frontend observation; no actor changes decisions
+    based on another actor's LEG_* messages. `position_update` is emitted by
+    AGVs at 500 ms cadence during spatial traversal for replay fidelity; it is
+    purely observational and has no consensus impact."""
 
     TASK_ANNOUNCE = "task_announce"
     CAPABILITY_BROADCAST = "capability_broadcast"
@@ -37,6 +39,9 @@ class MessageType(str, Enum):
     LEG_STARTED = "leg_started"
     LEG_COMPLETED = "leg_completed"
     LEG_HALTED = "leg_halted"
+    # Phase 5 Stage 8 — spatial position snapshot for replay (observational only).
+    # Emitted by AGVs at 500 ms cadence during _traverse_to; no consensus impact.
+    POSITION_UPDATE = "position_update"
 
 
 class RoundStatus(str, Enum):
@@ -73,13 +78,25 @@ class Message:
 class Slot:
     """One leg of a transport task. Slot *structure* is a physical-topology
     fact (an arm serves each station; AGVs move between) — it names no actor.
-    Who fills a slot is decided by negotiation, never by this module."""
+    Who fills a slot is decided by negotiation, never by this module.
+
+    Phase 1–4 zone-string fields are preserved unchanged.  Phase 5 adds
+    optional spatial fields — all have defaults so every existing constructor
+    call continues to work without modification.
+    """
 
     slot_id: str
     kind: Literal["arm", "agv"]
+    # Zone-string path (Phase 1–4 — keep forever for backward compat)
     zone: Optional[str] = None       # arm slots: the station zone
     from_zone: Optional[str] = None  # agv slot: pickup zone
     to_zone: Optional[str] = None    # agv slot: dropoff zone
+    # Phase 5 spatial fields (all optional — new fields with defaults)
+    target_pos: Optional[tuple[float, float]] = None   # arm slot: target canvas px
+    from_pos: Optional[tuple[float, float]] = None     # agv slot: pickup position px
+    to_pos: Optional[tuple[float, float]] = None       # agv slot: dropoff position px
+    served_by: Optional[str] = None    # arm slots — pins the slot to a specific actor
+    constraint_tag: Optional[str] = None  # forwarded from announce constraint
 
 
 # Bid / consensus window sizes (seconds). Generous vs. sub-millisecond
@@ -88,6 +105,7 @@ BID_WINDOW_S = 1.5
 CONSENSUS_WINDOW_S = 1.5
 
 _SCORED_CONSTRAINTS = ("shortest time", "shortest distance")
+_SCORED_CONSTRAINTS_MAX = ("longest time", "longest distance")
 
 
 def public_winner(bids: list[Message], constraint: Optional[str]) -> Optional[str]:
@@ -100,6 +118,14 @@ def public_winner(bids: list[Message], constraint: Optional[str]) -> Optional[st
     `bids` must already be filtered to the surviving bids for one slot
     (latest bid_version per sender, withdrawn bids removed). Returns the
     winning sender id, or None when there are no bids.
+
+    Supported constraints (Phase 5 Stage 4):
+        ""  or unrecognised  → lowest sender id (default — Phase 1–4 behaviour).
+        "shortest time"      → min payload.score; ties by lowest sender id.
+        "shortest distance"  → min payload.score; ties by lowest sender id.
+        "longest time"       → max payload.score; ties by lowest sender id.
+        "longest distance"   → max payload.score; ties by lowest sender id.
+        "heaviest load"      → max payload.capacity (default 1); ties by min score.
     """
     if not bids:
         return None
@@ -111,6 +137,33 @@ def public_winner(bids: list[Message], constraint: Optional[str]) -> Optional[st
             key=lambda m: (m.payload.get("score", float("inf")), m.sender),
         )
         return best.sender
+    if norm in _SCORED_CONSTRAINTS_MAX:
+        # Higher score wins; ties broken deterministically by lowest sender id.
+        best = max(
+            bids,
+            key=lambda m: (m.payload.get("score", float("-inf")), [-ord(c) for c in m.sender]),
+        )
+        # Re-apply tie-break: among those with the max score, pick lowest sender.
+        max_score = best.payload.get("score", float("-inf"))
+        candidates = [m for m in bids if m.payload.get("score", float("-inf")) >= max_score]
+        return min(m.sender for m in candidates)
+    if norm == "heaviest load":
+        # Max capacity wins; ties by min score, then by lowest sender id.
+        best = max(
+            bids,
+            key=lambda m: (
+                m.payload.get("capacity", 1),
+                -m.payload.get("score", float("inf")),
+                # negate sender for tiebreak (lowest sender preferred)
+            ),
+        )
+        max_cap = best.payload.get("capacity", 1)
+        cap_candidates = [m for m in bids if m.payload.get("capacity", 1) >= max_cap]
+        # Among max-capacity bidders, pick lowest score; ties by lowest sender id.
+        return min(
+            cap_candidates,
+            key=lambda m: (m.payload.get("score", float("inf")), m.sender),
+        ).sender
     # Unconstrained: lowest sender id among valid bidders.
     return min(b.sender for b in bids)
 
@@ -195,6 +248,8 @@ def derive_slots(source_zone: str, dest_zone: str) -> list[Slot]:
 
     "move X -> Y" always needs: an arm at X, an AGV X->Y, an arm at Y.
     This is structural validation, not assignment.
+
+    UNCHANGED from Phase 1–4. Zone-string path kept intact.
     """
     return [
         Slot(slot_id="pickup", kind="arm", zone=source_zone),
@@ -205,4 +260,80 @@ def derive_slots(source_zone: str, dest_zone: str) -> list[Slot]:
             to_zone=dest_zone,
         ),
         Slot(slot_id="place", kind="arm", zone=dest_zone),
+    ]
+
+
+def derive_slots_by_actor(
+    source_arm_id: str,
+    dest_arm_id: str,
+    topology: Any,
+) -> list[Slot]:
+    """Phase 5 spatial decomposition — populates positions from Topology.
+
+    Returns the same 3-slot structure (pickup / transport / place) as
+    `derive_slots` but fills in canvas-pixel position fields from the Topology.
+
+    Why ``zone=arm.id`` on arm slots: Phase 4 `ArmAgent._bid_score` reads
+    ``slot["zone"]`` for zone-match. Setting it to the actor's own id makes
+    the pre-Phase-5 logic naturally pin the slot to its served-by arm (an arm
+    "reaches" its own zone-id). Stage 4 replaces this with a position+reach
+    check; until then, backward-compat is preserved.
+
+    Args:
+        source_arm_id: id of the source arm actor (e.g. ``"arm-1"``).
+        dest_arm_id:   id of the destination arm actor (e.g. ``"arm-2"``).
+        topology:      a ``Topology`` instance (``app.models.topology.Topology``).
+
+    Raises:
+        ValueError: if either actor id is not found in the topology, or if
+                    either actor is not of kind ``"arm"``.
+    """
+    src = topology.actor(source_arm_id)
+    dst = topology.actor(dest_arm_id)
+
+    if src is None:
+        raise ValueError(
+            f"derive_slots_by_actor: unknown actor {source_arm_id!r} in topology"
+        )
+    if dst is None:
+        raise ValueError(
+            f"derive_slots_by_actor: unknown actor {dest_arm_id!r} in topology"
+        )
+    if src.kind != "arm":
+        raise ValueError(
+            f"derive_slots_by_actor: source {source_arm_id!r} must be an arm "
+            f"(got kind={src.kind!r})"
+        )
+    if dst.kind != "arm":
+        raise ValueError(
+            f"derive_slots_by_actor: dest {dest_arm_id!r} must be an arm "
+            f"(got kind={dst.kind!r})"
+        )
+
+    src_pos = (src.x, src.y)
+    dst_pos = (dst.x, dst.y)
+
+    return [
+        Slot(
+            slot_id="pickup",
+            kind="arm",
+            zone=src.id,           # backward-compat zone-match pin
+            served_by=src.id,
+            target_pos=src_pos,
+        ),
+        Slot(
+            slot_id="transport",
+            kind="agv",
+            from_zone=src.id,      # backward-compat zone-match pin
+            to_zone=dst.id,
+            from_pos=src_pos,
+            to_pos=dst_pos,
+        ),
+        Slot(
+            slot_id="place",
+            kind="arm",
+            zone=dst.id,           # backward-compat zone-match pin
+            served_by=dst.id,
+            target_pos=dst_pos,
+        ),
     ]

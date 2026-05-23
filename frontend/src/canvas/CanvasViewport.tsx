@@ -10,15 +10,18 @@
 // switch RF interaction, keyboard shortcuts delete/duplicate. Konva stays a
 // pure runtime slave to the RF transform (coexistence preserved).
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
   MiniMap,
+  Background,
+  BackgroundVariant,
   useReactFlow,
   type NodeChange,
   type Node,
 } from "@xyflow/react";
+import { useSnapPreference, CELL_PX } from "./snap/useSnapPreference";
 
 import { useStore } from "@/store";
 import {
@@ -47,6 +50,13 @@ function FlowInner() {
   const focusRequest = useFocusRequest();
   const selectedId = useSelectedActorId();
 
+  // ── Snap-to-grid (Track C) ─────────────────────────────────────────────
+  const [snapEnabled, toggleSnap] = useSnapPreference();
+  // Track Shift key: when held, skip snap for that drag even if toggle is ON.
+  const shiftHeldRef = useRef(false);
+  // useState so RF re-renders with correct snapToGrid when toggle changes.
+  const [shiftHeld, setShiftHeld] = useState(false);
+
   const setSelectedActor = useStore((s) => s.setSelectedActor);
   const moveActor = useStore((s) => s.moveActor);
   const addActor = useStore((s) => s.addActor);
@@ -73,16 +83,47 @@ function FlowInner() {
     });
   }, [focusRequest, rf]);
 
+  // Track Shift key for per-drag snap override (Track C).
+  useEffect(() => {
+    const onDown = (e: KeyboardEvent) => {
+      if (e.key === "Shift") {
+        shiftHeldRef.current = true;
+        setShiftHeld(true);
+      }
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key === "Shift") {
+        shiftHeldRef.current = false;
+        setShiftHeld(false);
+      }
+    };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+    };
+  }, []);
+
   const handleNodesChange = useCallback(
     (changes: NodeChange<Node>[]) => {
       for (const c of changes) {
         if (c.type === "position" && c.position) {
-          moveActor(c.id, { x: c.position.x, y: c.position.y });
+          // Snap math: when snap is ON and Shift is NOT held, round to
+          // nearest cell_px multiple. RF's native snapToGrid handles live
+          // drag feedback; this ensures the stored value is always snapped
+          // even if RF's internal rounding drifts slightly.
+          let { x, y } = c.position;
+          if (snapEnabled && !shiftHeldRef.current) {
+            x = Math.round(x / CELL_PX) * CELL_PX;
+            y = Math.round(y / CELL_PX) * CELL_PX;
+          }
+          moveActor(c.id, { x, y });
           markDirty();
         }
       }
     },
-    [moveActor, markDirty],
+    [moveActor, markDirty, snapEnabled],
   );
 
   const handleNodeClick = useCallback(
@@ -262,7 +303,25 @@ function FlowInner() {
         fitView={false}
         className="h-full w-full"
         style={{ background: "transparent" }}
+        // ── Snap-to-grid (Track C) ─────────────────────────────────────
+        // RF native snap drives live drag feedback; shiftHeld disables it
+        // for that drag; manual rounding in handleNodesChange guarantees
+        // the stored value is always on-grid.
+        snapToGrid={snapEnabled && !shiftHeld}
+        snapGrid={[CELL_PX, CELL_PX]}
       >
+        {/* Faint grid overlay when snap is ON (Track C).
+            gap=40 matches cell_px; dots read as a position reference,
+            not a visual distraction. Opacity kept very low. */}
+        {snapEnabled && (
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={CELL_PX}
+            size={1}
+            color="rgba(96,94,88,0.18)"
+          />
+        )}
+
         {/* Real, functional overview: live nodes, viewport mask synced to
             pan/zoom, click/drag to navigate. Styled as the prototype
             "TOPOLOGY · OVERVIEW" card; the label strip is the chrome
@@ -310,7 +369,11 @@ function FlowInner() {
         <LabelsOverlay />
       </div>
 
-      <CanvasToolbar onFit={fitToStage} />
+      <CanvasToolbar
+        onFit={fitToStage}
+        snapEnabled={snapEnabled}
+        onToggleSnap={toggleSnap}
+      />
       <CanvasMeta />
       <ZoomCluster onFit={fitToStage} />
       <GoalBar />

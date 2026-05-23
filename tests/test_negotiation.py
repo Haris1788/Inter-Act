@@ -45,13 +45,15 @@ def test_message_defaults():
     assert m.ts > 0
 
 
-def test_fifteen_message_types_exist():
+def test_sixteen_message_types_exist():
     expected = {
         "task_announce", "capability_broadcast", "availability_update",
         "bid", "counter_offer", "accept", "reject", "busy",
         "fault", "withdraw", "consensus_reached", "task_failed",
         # Phase 4 Stage 4 — execution-transition observational markers.
         "leg_started", "leg_completed", "leg_halted",
+        # Phase 5 Stage 8 — spatial position snapshot (observational only).
+        "position_update",
     }
     assert {t.value for t in MessageType} == expected
 

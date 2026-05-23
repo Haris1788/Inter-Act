@@ -1,3 +1,22 @@
+// Phase 5 Stage 2A — topology slice schema bump (2026-05-23)
+// ──────────────────────────────────────────────────────────────────────────────
+// TopologyActor gained three spatial fields: reach_px, capacity, speed.
+// All three are optional in ActorSeed and receive defaults inside normalizeActor
+// so every creation path (drag-drop, duplicate, import, localStorage restore)
+// is covered without touching call sites.
+//
+// localStorage migration strategy:
+//   loadLocal() → parseTopology() → docToState() → normalizeActor() per actor.
+//   normalizeActor already fills `?? DEFAULT` for the three new fields, so
+//   old workspaces missing them get defaults on every load. Additive + idempotent.
+//
+// x/y position wiring:
+//   moveActor() updates actor.position.{x,y} — called by handleNodesChange in
+//   CanvasViewport.tsx on every RF "position" change event (line 80-84).
+//   No changes needed to existing drag behaviour; Stage 2A is a pure schema
+//   extension.
+// ──────────────────────────────────────────────────────────────────────────────
+
 import type { StateCreator } from "zustand";
 import type { RootStore, TopologySlice, TopologyActor } from "./types";
 import { normalizeActor } from "@/lib/actorNormalizer";

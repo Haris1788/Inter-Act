@@ -38,6 +38,7 @@ from app.agents.negotiation import (
     Message,
     MessageType,
     derive_slots,
+    derive_slots_by_actor,
 )
 
 negotiate_bp = Blueprint("negotiate", __name__)
@@ -112,11 +113,34 @@ def negotiate_prompt():
             dest_zone = _DEST_ZONE
 
         # ── Step 3: derive structural slots ──────────────────────────────────
-        slots = derive_slots(source_zone, dest_zone)
+        # When a topology block is present, use spatial derive_slots_by_actor
+        # which populates target_pos / from_pos / to_pos for distance-aware
+        # bidding. Otherwise keep the legacy zone-string path.
+        try:
+            from app.models import pipeline_config as _pc
+            topology = _pc.get_topology()
+        except Exception:
+            topology = None
+
+        if topology is not None:
+            # Pick first arm as source and second arm as dest (default for Stage 4).
+            arm_ids = [a.id for a in topology.arms()]
+            source_arm_id = arm_ids[0] if len(arm_ids) >= 1 else None
+            dest_arm_id = arm_ids[1] if len(arm_ids) >= 2 else None
+            if source_arm_id and dest_arm_id:
+                try:
+                    slots = derive_slots_by_actor(source_arm_id, dest_arm_id, topology)
+                except Exception:
+                    slots = derive_slots(source_zone, dest_zone)
+            else:
+                slots = derive_slots(source_zone, dest_zone)
+        else:
+            slots = derive_slots(source_zone, dest_zone)
+
         # Convert Slot dataclasses to dicts matching the shape expected by agents
         # (see _announce() in tests/test_negotiation_integration.py):
-        # arm slots → {slot_id, kind, zone}
-        # agv slots → {slot_id, kind, from_zone, to_zone}
+        # arm slots  → {slot_id, kind, zone[, target_pos, served_by]}
+        # agv slot   → {slot_id, kind, from_zone, to_zone[, from_pos, to_pos]}
         slot_dicts = []
         for s in slots:
             d: dict = {"slot_id": s.slot_id, "kind": s.kind}
@@ -126,6 +150,14 @@ def negotiate_prompt():
                 d["from_zone"] = s.from_zone
             if s.to_zone is not None:
                 d["to_zone"] = s.to_zone
+            if s.target_pos is not None:
+                d["target_pos"] = list(s.target_pos)
+            if s.from_pos is not None:
+                d["from_pos"] = list(s.from_pos)
+            if s.to_pos is not None:
+                d["to_pos"] = list(s.to_pos)
+            if s.served_by is not None:
+                d["served_by"] = s.served_by
             slot_dicts.append(d)
 
         # ── Step 4: build and publish TASK_ANNOUNCE ───────────────────────────

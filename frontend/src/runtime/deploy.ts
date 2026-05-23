@@ -10,6 +10,15 @@ import { serializeTopology } from "@/lib/topologySchema";
 
 export const DEPLOY_PAYLOAD_VERSION = 1 as const;
 
+// Stage 2D: canvas dimensions fallback constants. Real viewport sizing is not
+// yet threaded through to deploy; when it becomes available, pass it in via
+// DeployState.canvasWidth/canvasHeight. Until then, these match the Stage 1
+// backend Topology defaults (canvas_width=1600, canvas_height=1000).
+const CANVAS_WIDTH_DEFAULT = 1600 as const;
+const CANVAS_HEIGHT_DEFAULT = 1000 as const;
+// Matches Stage 1 backend default (cell_px=40) and Track C snap unit.
+const CELL_PX = 40 as const;
+
 export interface DeployActor {
   id: string;
   kind: "arm" | "agv";
@@ -20,12 +29,42 @@ export interface DeployActor {
   position: { x: number; y: number };
 }
 
+// Stage 2D: topology actor shape sent to backend (subset of TopologyActor).
+// Backend Stage 3 will read this; Stage 2 backend silently ignores it.
+export interface DeployTopologyActor {
+  id: string;
+  kind: "arm" | "agv";
+  x: number;
+  y: number;
+  reach_px: number;
+  capacity: number;
+  speed: number;
+  label?: string;
+  color?: string;
+}
+
+// Stage 2D: topology canvas descriptor — matches Stage 1 parse_topology input.
+export interface DeployTopologyCanvas {
+  width: number;
+  height: number;
+  cell_px: typeof CELL_PX;
+}
+
+// Stage 2D: top-level topology block appended to the deploy payload.
+// Backend Stage 3 reads this; until then it is ignored (warehouse: block wins).
+export interface DeployTopology {
+  canvas: DeployTopologyCanvas;
+  actors: DeployTopologyActor[];
+}
+
 export interface DeployPayload {
   payloadVersion: number;
   generatedAt: string;
   actors: DeployActor[];
   zones: { id: string; role: string; label: string }[];
   goal: TopologyGoal;
+  // Stage 2D: additive — backend ignores until Stage 3 wires it in.
+  topology: DeployTopology;
 }
 
 type DeployState = {
@@ -53,6 +92,28 @@ export function buildDeployPayload(s: DeployState): DeployPayload {
       label: z.label,
     })),
     goal: s.goal,
+    // Stage 2D: topology block — additive, backward-compatible. Canvas dims
+    // fall back to Stage 1 backend defaults (no real viewport source yet).
+    topology: {
+      canvas: {
+        width: CANVAS_WIDTH_DEFAULT,
+        height: CANVAS_HEIGHT_DEFAULT,
+        cell_px: CELL_PX,
+      },
+      actors: Object.values(s.actors).map((a) => {
+        const actor: DeployTopologyActor = {
+          id: a.id,
+          kind: a.kind,
+          x: a.position.x,
+          y: a.position.y,
+          reach_px: a.reach_px,
+          capacity: a.capacity,
+          speed: a.speed,
+        };
+        if (a.label) actor.label = a.label;
+        return actor;
+      }),
+    },
   };
 }
 

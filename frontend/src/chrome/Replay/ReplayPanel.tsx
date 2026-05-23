@@ -1,10 +1,22 @@
 // ReplayPanel.tsx — read-only playback of NegotiationBus history.
 // Fetches GET /bus/replay (no filters → full history). No backend mutations.
+//
+// Phase 5 Stage 8 Track C additions:
+//   - On cursor change (play tick or scrub): scans messages[0..cursor] in
+//     reverse per actor for the most recent `position_update` message and
+//     dispatches setReplayPositions to the runtime slice. replayMode is set to
+//     true automatically.
+//   - "Return to live" button: calls clearReplayMode() and returns the panel to
+//     live mode.
+//   - "REPLAY" banner rendered via a portal-free overlay on the canvas edge is
+//     instead shown inside the panel controls bar to avoid touching the canvas
+//     layer tree (Track B constraint).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
-import type { BusMessage } from "@/store/types";
+import type { BusMessage, ReplayPosition } from "@/store/types";
 import { KIND_LABELS, kindChipClass } from "@/chrome/LogsPanel/busMessageChip";
 import { Timeline } from "./Timeline";
+import { useStore } from "@/store";
 
 type Speed = 1 | 2 | 4;
 
@@ -25,6 +37,43 @@ interface RawBusMessage {
   slot_id?: string;
   bid_version?: number;
   payload?: unknown;
+}
+
+// Shape of payload for type === "position_update" messages.
+interface PositionUpdatePayload {
+  actor_id?: string;
+  agv_id?: string;
+  x?: number;
+  y?: number;
+  theta?: number;
+}
+
+/**
+ * Scan messages[0..cursorIndex] in reverse and collect the most recent
+ * position_update per actor. Returns a map suitable for setReplayPositions.
+ * O(N) worst-case but stops per-actor as soon as the most-recent is found.
+ */
+function computeReplayPositions(
+  raw: RawBusMessage[],
+  cursorIndex: number,
+): Record<string, ReplayPosition> {
+  const result: Record<string, ReplayPosition> = {};
+  // Walk backwards from cursor to 0.
+  for (let i = cursorIndex; i >= 0; i--) {
+    const msg = raw[i];
+    if (msg.type !== "position_update") continue;
+    const pay = msg.payload as PositionUpdatePayload | undefined;
+    if (!pay) continue;
+    const actorId = pay.actor_id ?? pay.agv_id;
+    if (!actorId) continue;
+    // Already have a more-recent entry for this actor — skip.
+    if (actorId in result) continue;
+    const x = pay.x ?? 0;
+    const y = pay.y ?? 0;
+    const theta = pay.theta ?? 0;
+    result[actorId] = { x, y, theta };
+  }
+  return result;
 }
 
 /** Normalise a raw backend message into BusMessage (mirrors socketDriver logic). */
@@ -61,11 +110,18 @@ function normalise(raw: RawBusMessage, idx: number): BusMessage {
 
 export function ReplayPanel() {
   const [messages, setMessages] = useState<BusMessage[]>([]);
+  // Keep the raw backend messages so computeReplayPositions can scan payloads.
+  const [rawMessages, setRawMessages] = useState<RawBusMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<Speed>(1);
+
+  // Runtime slice actions — Phase 5 Stage 8 Track C.
+  const setReplayPositions = useStore((s) => s.setReplayPositions);
+  const clearReplayMode = useStore((s) => s.clearReplayMode);
+  const replayMode = useStore((s) => s.replayMode);
 
   // Auto-play interval ref.
   const playRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -83,6 +139,7 @@ export function ReplayPanel() {
       const data = (await resp.json()) as ReplayResponse;
       const normalised = data.messages.map(normalise);
       setMessages(normalised);
+      setRawMessages(data.messages);
       setCursor(0);
       setPlaying(false);
     } catch (e) {
@@ -96,6 +153,15 @@ export function ReplayPanel() {
   useEffect(() => {
     void fetchHistory();
   }, [fetchHistory]);
+
+  // Phase 5 Stage 8 Track C — dispatch replayPositions on every cursor change
+  // (play tick or user scrub). Reverse scan: O(N) but stops per-actor early.
+  // Only dispatches when there are messages loaded.
+  useEffect(() => {
+    if (rawMessages.length === 0) return;
+    const positions = computeReplayPositions(rawMessages, cursor);
+    setReplayPositions(positions);
+  }, [cursor, rawMessages, setReplayPositions]);
 
   // Auto-play tick.
   useEffect(() => {
@@ -250,6 +316,23 @@ export function ReplayPanel() {
             <path d="M3.51 15a9 9 0 1 0 .49-3" />
           </svg>
         </button>
+
+        {/* Phase 5 Stage 8 Track C — REPLAY badge + Return to live button.
+            Shown whenever replayMode is active (i.e. any cursor is set). */}
+        {replayMode && (
+          <>
+            <span className="shrink-0 rounded bg-amber-500/20 px-1.5 py-[2px] text-[9px] font-semibold uppercase tracking-widest text-amber-400 border border-amber-500/30">
+              REPLAY
+            </span>
+            <button
+              title="Return to live view"
+              onClick={clearReplayMode}
+              className="shrink-0 rounded border border-line px-2 py-[2px] text-[9.5px] text-ink-3 hover:bg-bg-hover hover:text-ink"
+            >
+              Return to live
+            </button>
+          </>
+        )}
       </div>
 
       {/* ── Error banner ── */}

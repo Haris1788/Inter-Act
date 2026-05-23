@@ -28,6 +28,10 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     liveCapability: "pick",
     brain: "Scripted",
     spec: "reach 1.2 m · 5 kg",
+    // Phase 5 spatial fields
+    reach_px: 120,
+    capacity: 1,
+    speed: 1.0,
   },
   "arm-2": {
     id: "arm-2",
@@ -41,6 +45,10 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     liveCapability: "place",
     brain: "Scripted",
     spec: "reach 0.9 m · 3 kg",
+    // Phase 5 spatial fields
+    reach_px: 120,
+    capacity: 1,
+    speed: 1.0,
   },
   "veh-1": {
     id: "veh-1",
@@ -53,6 +61,10 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     liveCapability: null,
     brain: "Scheduler · FIFO",
     spec: "10 m/s · cap 1",
+    // Phase 5 spatial fields
+    reach_px: 120,
+    capacity: 1,
+    speed: 1.0,
   },
   "veh-2": {
     id: "veh-2",
@@ -65,6 +77,10 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     liveCapability: null,
     brain: "Scheduler · FIFO",
     spec: "3 m/s · cap 4",
+    // Phase 5 spatial fields
+    reach_px: 120,
+    capacity: 4,
+    speed: 0.5,
   },
   "veh-3": {
     id: "veh-3",
@@ -77,6 +93,10 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     liveCapability: null,
     brain: "Scheduler · FIFO",
     spec: "6 m/s · cap 2",
+    // Phase 5 spatial fields
+    reach_px: 120,
+    capacity: 2,
+    speed: 1.5,
   },
 };
 

@@ -148,6 +148,42 @@ def build_pipeline_yaml(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if base.get("canvas"):
         out["canvas"] = base["canvas"]
+
+    # Stage 3: include topology block when the payload carries one.
+    # Coexists with warehouse: / arms: / assets: during Stage 1-3 transition.
+    topology_in = payload.get("topology")
+    if topology_in and isinstance(topology_in, dict):
+        canvas_block = topology_in.get("canvas") or {}
+        actors_raw = topology_in.get("actors") or []
+        # Serialize actors list — keep all optional fields if present.
+        actors_out = []
+        for a in actors_raw:
+            entry: dict[str, Any] = {
+                "id": a["id"],
+                "kind": a["kind"],
+                "x": float(a["x"]),
+                "y": float(a["y"]),
+            }
+            if "reach_px" in a:
+                entry["reach_px"] = float(a["reach_px"])
+            if "capacity" in a:
+                entry["capacity"] = int(a["capacity"])
+            if "speed" in a:
+                entry["speed"] = float(a["speed"])
+            if "label" in a and a["label"] is not None:
+                entry["label"] = a["label"]
+            if "color" in a and a["color"] is not None:
+                entry["color"] = a["color"]
+            actors_out.append(entry)
+        out["topology"] = {
+            "canvas": {
+                "width": int(canvas_block.get("width", 1600)),
+                "height": int(canvas_block.get("height", 1000)),
+                "cell_px": int(canvas_block.get("cell_px", 40)),
+            },
+            "actors": actors_out,
+        }
+
     return out
 
 

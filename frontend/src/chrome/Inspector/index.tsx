@@ -9,6 +9,7 @@ import { SectionDocking } from "./SectionDocking";
 import { SectionBrain } from "./SectionBrain";
 import { SectionRuntime } from "./SectionRuntime";
 import { SectionHistory } from "./SectionHistory";
+import { SectionSpatial } from "./SectionSpatial";
 import { ActionsRow } from "./ActionsRow";
 
 /** Subtle uppercase band divider - separates authored config from operational runtime. */
@@ -69,6 +70,7 @@ export function Inspector() {
             {/* ── Configuration band - authored / topology ── */}
             <BandDivider label="Configuration" />
             <SectionIdentity actor={actor} live={live} />
+            <SectionSpatial actor={actor} />
             <SectionCapabilities actor={actor} live={live} />
             <SectionMotion actor={actor} live={live} />
             <SectionBrain actor={actor} live={live} />

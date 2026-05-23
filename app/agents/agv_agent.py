@@ -14,11 +14,22 @@ a lookup on the agent's per-task participant dict.  When task_id is empty or
 the participant is not found (e.g. old-style monkeypatched test calls), the
 barrier falls through to checking only `_fault_requested`, preserving the
 original test contract.
+
+Phase 5 Stage 4: `_bid_score` is now spatial — returns Euclidean approach cost
+(position_px → from_pos) + trip cost (from_pos → to_pos). Falls back to the
+legacy Manhattan dock-cell path when from_pos/to_pos are absent.
+
+Phase 5 Stage 5: `_execute_leg` has a spatial branch. When the slot dict
+carries `from_pos`/`to_pos`, the AGV traverses in pixel space via
+`_traverse_to` (10 Hz, 20 px step). After the place leg, it returns to its
+dropped origin (`_origin_px`). The legacy 12-step cell-based path is
+unchanged when `from_pos` is absent.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Optional
 
@@ -27,19 +38,51 @@ from app.agents.actor_agent import ActorAgent
 logger = logging.getLogger(__name__)
 
 # Movement cadence — keep below ANIM_DURATION (600 ms) × speed_factor.
-MOVE_STEP_SLEEP: float = 0.5  # seconds between cell hops
+MOVE_STEP_SLEEP: float = 0.5  # seconds between cell hops (legacy cell-based path)
 LOAD_SIGNAL_TIMEOUT: float = 120.0
 UNLOAD_SIGNAL_TIMEOUT: float = 120.0
 LOCK_ACQUIRE_TIMEOUT: float = 60.0
 SIGNAL_POLL_INTERVAL: float = 0.25
 
+# Phase 5 Stage 5 — pixel-space traversal constants.
+MOVE_STEP_PX: float = 20.0          # pixels per interpolation step
+MOVE_STEP_SLEEP_S: float = 0.1      # seconds per step (10 Hz)
+CELL_PX: float = 40.0               # px per grid cell (used for cell snapping)
+
+# Phase 5 Stage 7 — A* pathfinding + epoch-scoped reservation constants.
+MAX_REPLAN_ATTEMPTS: int = 5        # max replan loops before fault
+REPLAN_BACKOFF_S: float = 0.2       # wait between failed replan attempts
+PATH_TTL_MS: int = 180_000          # reservation TTL in milliseconds (3 min)
+PATH_KEEPALIVE_INTERVAL_S: float = 60.0  # keepalive renewal interval
+
 
 class AGVAgent(ActorAgent):
-    """AGV actor. Bids on the transport slot; score = distance to pickup."""
+    """AGV actor. Bids on the transport slot; score = spatial cost to pickup + trip."""
 
     def _bid_score(self, slot: dict) -> Optional[float]:
+        """Spatial bid score: approach + trip Euclidean distance.
+
+        When from_pos / to_pos are present (Phase 5 topology path):
+            score = hypot(position_px → from_pos) + hypot(from_pos → to_pos)
+        Falls back to legacy Manhattan dock-cell path when from_pos/to_pos absent.
+        """
         if slot.get("kind") != "agv":
             return None
+        from_pos = slot.get("from_pos")
+        to_pos = slot.get("to_pos")
+        if from_pos is not None and to_pos is not None:
+            # Spatial path (Phase 5+).
+            ax, ay = float(self.profile.position_px[0]), float(self.profile.position_px[1])
+            fx, fy = float(from_pos[0]), float(from_pos[1])
+            tx, ty = float(to_pos[0]), float(to_pos[1])
+            approach = math.hypot(ax - fx, ay - fy)
+            trip = math.hypot(fx - tx, fy - ty)
+            return approach + trip
+        # Legacy zone-string path — fall back to Manhattan dock-cell.
+        return self._legacy_bid_score(slot)
+
+    def _legacy_bid_score(self, slot: dict) -> Optional[float]:
+        """Legacy Manhattan dock-cell scoring (Phase 1–4 backward-compat)."""
         from_zone = slot.get("from_zone")
         dock = self._dock_cell(from_zone)
         if dock is None:
@@ -63,12 +106,192 @@ class AGVAgent(ActorAgent):
             return None
         return [float(cell[0]), float(cell[1])]
 
+    # ── Stage 5: pixel-space traversal ────────────────────────────────────
+
+    def _traverse_to(
+        self,
+        target_x: float,
+        target_y: float,
+        agv_id: str,
+        agv_state,
+        grid_state,
+        valid_fn,
+    ) -> bool:
+        """Interpolate from self._last_px to (target_x, target_y) in px space.
+
+        Emits agv_position SocketIO events at MOVE_STEP_SLEEP_S cadence (10 Hz).
+        Emits POSITION_UPDATE bus messages at 500 ms cadence for replay fidelity.
+        Updates agv_state cell (snapped) between every step.
+        Checks valid_fn between every step; returns False on halt.
+        Updates self._last_px to (target_x, target_y) on success.
+        """
+        cur_x, cur_y = self._last_px
+        dx = target_x - cur_x
+        dy = target_y - cur_y
+        total = math.hypot(dx, dy)
+        steps = max(1, math.ceil(total / MOVE_STEP_PX))
+
+        for i in range(1, steps + 1):
+            # Barrier check between every step.
+            if not self._running or not valid_fn():
+                return False
+
+            # Linear interpolation.
+            t = i / steps
+            x = cur_x + dx * t
+            y = cur_y + dy * t
+
+            # Heading in radians.
+            theta = math.atan2(dy, dx) if total > 0 else 0.0
+
+            # Snap to grid cell for occupancy / lock back-compat.
+            cell = [int(x / CELL_PX), int(y / CELL_PX)]
+
+            # Update agv_state (cell + status).
+            try:
+                agv_state.set_target(agv_id, cell)
+                agv_state.set_cell(agv_id, cell)
+                agv_state.set_status(agv_id, "moving")
+            except (KeyError, ValueError) as exc:
+                logger.warning("AGVAgent %s: state update failed in traverse: %s", agv_id, exc)
+                return False
+
+            # Emit live position event (best-effort, observational only).
+            _emit_agv_position(agv_id, x, y, theta)
+
+            # Emit POSITION_UPDATE bus message at ≤ 2 Hz (500 ms minimum gap).
+            # _last_position_update_ts is an instance variable so the cadence is
+            # preserved across multiple _traverse_to calls within the same leg.
+            # Defaults to 0.0 if not yet set (e.g. when _traverse_to is called
+            # directly without going through _execute_leg).
+            # Observational only — no actor acts on this message.
+            now = time.time()
+            if now - getattr(self, "_last_position_update_ts", 0.0) >= 0.5:
+                _publish_position_update(self, agv_id, x, y, theta)
+                self._last_position_update_ts = now
+
+            time.sleep(MOVE_STEP_SLEEP_S)
+
+        # Success — record final position.
+        self._last_px = (target_x, target_y)
+        # Snap final cell.
+        final_cell = [int(target_x / CELL_PX), int(target_y / CELL_PX)]
+        try:
+            agv_state.set_cell(agv_id, final_cell)
+        except (KeyError, ValueError):
+            pass
+        return True
+
+    # ── Stage 7: A* pathfinding traversal ─────────────────────────────────
+
+    def _traverse_to_with_path(
+        self,
+        target_x: float,
+        target_y: float,
+        agv_id: str,
+        agv_state,
+        grid_state,
+        valid_fn,
+        task_id: str,
+    ) -> bool:
+        """Traverse from self._last_px to (target_x, target_y) using A* + reservation.
+
+        Algorithm:
+          1. Compute epoch from ReservationStore.
+          2. Build grid from topology.
+          3. Run A* with obstacles from other actors' reservations.
+          4. On path=None: wait REPLAN_BACKOFF_S and retry (up to MAX_REPLAN_ATTEMPTS).
+          5. Reserve the path cells; on conflict bump epoch and retry.
+          6. Start PathKeepalive for TTL renewal.
+          7. Traverse cell-by-cell (pixel interpolation via _traverse_to per hop).
+          8. Release reservation in try/finally so halt path also releases.
+
+        Falls back to bare _traverse_to when start_cell == goal_cell (no-op move).
+        """
+        from app.spatial.pathfinder import a_star, grid_from_topology
+        from app.spatial.reservation import get_store, PathKeepalive
+        from app.models import pipeline_config
+
+        store = get_store()
+        topology = pipeline_config.get_topology_or_legacy_shim()
+
+        start_cell = topology.cell_for(self._last_px[0], self._last_px[1])
+        goal_cell = topology.cell_for(target_x, target_y)
+
+        # Trivial: already at goal cell — still do pixel interpolation to land
+        # exactly on the target pixel, but no path reservation needed.
+        if start_cell == goal_cell:
+            return self._traverse_to(target_x, target_y, agv_id, agv_state, grid_state, valid_fn)
+
+        epoch = store.next_epoch(task_id, agv_id)
+
+        for attempt in range(MAX_REPLAN_ATTEMPTS):
+            if not self._running or not valid_fn():
+                return False
+
+            obstacles_others = store.held_by_others(task_id, agv_id)
+            grid = grid_from_topology(topology, extra_obstacles=())
+            path = a_star(grid, start_cell, goal_cell, blocked=obstacles_others)
+
+            if path is None:
+                logger.info(
+                    "AGVAgent %s: A* found no path (attempt %d/%d) — backing off %.1fs",
+                    agv_id, attempt + 1, MAX_REPLAN_ATTEMPTS, REPLAN_BACKOFF_S,
+                )
+                time.sleep(REPLAN_BACKOFF_S)
+                continue
+
+            reserved = store.reserve(task_id, agv_id, epoch, path, ttl_ms=PATH_TTL_MS)
+            if not reserved:
+                # Conflict — bump epoch and retry.
+                logger.info(
+                    "AGVAgent %s: reservation conflict (attempt %d/%d) — bumping epoch",
+                    agv_id, attempt + 1, MAX_REPLAN_ATTEMPTS,
+                )
+                epoch = store.next_epoch(task_id, agv_id)
+                continue
+
+            # Got path + reservation.  Traverse cell-by-cell.
+            keepalive = PathKeepalive(
+                store, task_id, agv_id, epoch,
+                ttl_ms=PATH_TTL_MS, interval_s=PATH_KEEPALIVE_INTERVAL_S,
+            )
+            keepalive.start()
+            try:
+                # path[0] == start_cell (we're already there); skip it.
+                for cell in path[1:]:
+                    cx = (cell[0] + 0.5) * CELL_PX
+                    cy = (cell[1] + 0.5) * CELL_PX
+                    ok = self._traverse_to(cx, cy, agv_id, agv_state, grid_state, valid_fn)
+                    if not ok:
+                        # _traverse_to already returned False on halt;
+                        # release is in the finally block.
+                        return False
+                # Final pixel-exact landing on target (may differ from cell center).
+                ok = self._traverse_to(target_x, target_y, agv_id, agv_state, grid_state, valid_fn)
+                if not ok:
+                    return False
+            finally:
+                keepalive.stop()
+                store.release(task_id, agv_id, epoch)
+
+            return True
+
+        # All attempts exhausted.
+        self.fault(f"{agv_id}: A* path replan exhausted after {MAX_REPLAN_ATTEMPTS} attempts")
+        return False
+
     # ── Stage 3: real leg execution ────────────────────────────────────────
 
     def _execute_leg(self, slot_id: str) -> bool:
-        """12-step transport sequence driving agv_state/grid_state directly.
+        """Transport sequence driving agv_state/grid_state directly.
 
-        Barrier-checked before each major step and between every cell hop.
+        Phase 5 Stage 5: two branches.
+        - Spatial (slot has from_pos/to_pos): pixel-space traversal via
+          _traverse_to. AGV returns to its dropped origin after the place leg.
+        - Legacy (no from_pos): existing 12-step cell-based loop UNCHANGED.
+
+        Barrier-checked before each major step and between every motion step.
         On any halt condition, releases all held locks and stops. On lock/signal
         timeout, calls self.fault() (unrecoverable in Phase 1).
 
@@ -77,8 +300,8 @@ class AGVAgent(ActorAgent):
         handshake signals are scoped per-task. When _current_participant is None
         (backward-compat path), task_id defaults to "" (single-task legacy key).
 
-        Returns True when the leg completed fully (step 12 reached), False on
-        any early-return path (halt, fault, or validity failure).
+        Returns True when the leg completed fully, False on any early-return
+        path (halt, fault, or validity failure).
         Non-transport slots and missing agv_state are no-op successes (True).
         """
         if slot_id != "transport":
@@ -103,22 +326,31 @@ class AGVAgent(ActorAgent):
             )
             return True
 
-        # ── Resolve route context from pipeline_config ──────────────────────
-        route_ctx = self._build_route_ctx()
-        if route_ctx is None:
-            logger.warning(
-                "AGVAgent %s: cannot build route context — leg skipped (no warehouse config)",
-                agv_id,
-            )
-            return True
+        # ── Capture origin px at leg entry (Phase 5 Stage 5 return-to-origin) ─
+        self._origin_px: tuple[float, float] = (
+            float(self.profile.position_px[0]),
+            float(self.profile.position_px[1]),
+        )
+        # _last_px tracks current pixel position during spatial traversal.
+        self._last_px: tuple[float, float] = self._origin_px
+        # _last_position_update_ts is reset at leg start so the first step
+        # always emits a POSITION_UPDATE immediately. Preserved across multiple
+        # _traverse_to calls within the same leg for correct 500 ms cadence.
+        self._last_position_update_ts: float = 0.0
 
-        bay = route_ctx["bay"]
-        route_to_input = route_ctx["route_to_input"]
-        lane_cells = route_ctx["lane_cells"]
-        output_dock = route_ctx["output_dock"]
-        route_to_bay = route_ctx["route_to_bay"]
+        # ── Resolve slot dict for spatial detection ──────────────────────────
+        slot_dict: dict = {}
+        if _participant is not None and _participant.task:
+            for s in _participant.task.get("slots", []):
+                if s.get("slot_id") == slot_id:
+                    slot_dict = s
+                    break
 
-        # Held-lock tracking for clean release on halt.
+        from_pos = slot_dict.get("from_pos")
+        to_pos = slot_dict.get("to_pos")
+        _spatial = from_pos is not None
+
+        # ── Held-lock tracking for clean release on halt ─────────────────────
         held_station: Optional[str] = None
         held_lane: bool = False
 
@@ -158,6 +390,213 @@ class AGVAgent(ActorAgent):
             _emit_agv(rec)
             time.sleep(MOVE_STEP_SLEEP)
             return True
+
+        # ════════════════════════════════════════════════════════════════════
+        # SPATIAL BRANCH (Phase 5 Stage 5) — pixel-space traversal
+        # ════════════════════════════════════════════════════════════════════
+        if _spatial:
+            logger.info(
+                "AGVAgent %s: spatial leg — from_pos=%s to_pos=%s origin=%s",
+                agv_id, from_pos, to_pos, self._origin_px,
+            )
+
+            # ── Step 1: acquire input arm station ────────────────────────────
+            if not _valid():
+                return False
+            logger.info("AGVAgent %s: spatial step 1 — acquire input_arm station", agv_id)
+            ok = grid_state.station_lock("input_arm").acquire(
+                agv_id,
+                timeout=LOCK_ACQUIRE_TIMEOUT,
+                cancel_check=lambda: agv_state.is_alive(agv_id) and _valid(),
+            )
+            if not ok:
+                if not _valid():
+                    _halt("input_arm station acquire cancelled by validity check")
+                else:
+                    self.fault(f"{agv_id}: input_arm station acquire timed out")
+                return False
+            held_station = "input_arm"
+
+            # ── Step 2: traverse to pickup position (A* when task_id available) ─
+            logger.info("AGVAgent %s: spatial step 2 — traverse to from_pos", agv_id)
+            if task_id:
+                ok = self._traverse_to_with_path(
+                    float(from_pos[0]), float(from_pos[1]),
+                    agv_id, agv_state, grid_state, _valid, task_id,
+                )
+            else:
+                ok = self._traverse_to(
+                    float(from_pos[0]), float(from_pos[1]),
+                    agv_id, agv_state, grid_state, _valid,
+                )
+            if not ok:
+                _halt("validity check failed during traverse to from_pos")
+                return False
+
+            # ── Step 3: poll load_ready ──────────────────────────────────────
+            logger.info("AGVAgent %s: spatial step 3 — waiting for load signal", agv_id)
+            rec = agv_state.set_status(agv_id, "loading")
+            if rec:
+                _emit_agv(rec)
+            deadline = time.time() + LOAD_SIGNAL_TIMEOUT
+            while not poll_load(agv_id, task_id=task_id):
+                if not self._running:
+                    _halt("agent stopped while waiting for load signal")
+                    return False
+                if not _valid():
+                    _halt("validity check failed while waiting for load signal")
+                    return False
+                if time.time() >= deadline:
+                    grid_state.station_lock("input_arm").release(agv_id)
+                    held_station = None
+                    self.fault(f"{agv_id}: load signal timed out after {LOAD_SIGNAL_TIMEOUT}s")
+                    return False
+                time.sleep(SIGNAL_POLL_INTERVAL)
+            clear_load(agv_id, task_id=task_id)
+            logger.info("AGVAgent %s: load signal received and cleared", agv_id)
+
+            # ── Step 4: release input station ────────────────────────────────
+            grid_state.station_lock("input_arm").release(agv_id)
+            held_station = None
+            _emit_log(agv_id, f"{agv_id} released input_arm station")
+
+            # ── Step 5: acquire lane lock ────────────────────────────────────
+            if not _valid():
+                _halt("validity check failed before lane acquire")
+                return False
+            logger.info("AGVAgent %s: spatial step 5 — acquire lane", agv_id)
+            ok = grid_state.lane().acquire(
+                agv_id,
+                timeout=LOCK_ACQUIRE_TIMEOUT,
+                cancel_check=lambda: agv_state.is_alive(agv_id) and _valid(),
+            )
+            if not ok:
+                if not _valid():
+                    _halt("lane acquire cancelled by validity check")
+                else:
+                    self.fault(f"{agv_id}: lane acquire timed out")
+                return False
+            held_lane = True
+
+            # ── Step 6: traverse to dropoff position (A* when task_id available) ─
+            logger.info("AGVAgent %s: spatial step 6 — traverse to to_pos", agv_id)
+            if task_id:
+                ok = self._traverse_to_with_path(
+                    float(to_pos[0]), float(to_pos[1]),
+                    agv_id, agv_state, grid_state, _valid, task_id,
+                )
+            else:
+                ok = self._traverse_to(
+                    float(to_pos[0]), float(to_pos[1]),
+                    agv_id, agv_state, grid_state, _valid,
+                )
+            if not ok:
+                _halt("validity check failed during traverse to to_pos")
+                return False
+
+            # ── Step 7: acquire output arm station ───────────────────────────
+            if not _valid():
+                _halt("validity check failed before output station acquire")
+                return False
+            logger.info("AGVAgent %s: spatial step 7 — acquire output_arm station", agv_id)
+            ok = grid_state.station_lock("output_arm").acquire(
+                agv_id,
+                timeout=LOCK_ACQUIRE_TIMEOUT,
+                cancel_check=lambda: agv_state.is_alive(agv_id) and _valid(),
+            )
+            if not ok:
+                if not _valid():
+                    _halt("output_arm station acquire cancelled by validity check")
+                else:
+                    grid_state.lane().release(agv_id)
+                    held_lane = False
+                    self.fault(f"{agv_id}: output_arm station acquire timed out")
+                return False
+            held_station = "output_arm"
+
+            # ── Step 8: poll unload_ready ────────────────────────────────────
+            logger.info("AGVAgent %s: spatial step 8 — waiting for unload signal", agv_id)
+            rec = agv_state.set_status(agv_id, "unloading")
+            if rec:
+                _emit_agv(rec)
+            deadline = time.time() + UNLOAD_SIGNAL_TIMEOUT
+            while not poll_unload(agv_id, task_id=task_id):
+                if not self._running:
+                    _halt("agent stopped while waiting for unload signal")
+                    return False
+                if not _valid():
+                    _halt("validity check failed while waiting for unload signal")
+                    return False
+                if time.time() >= deadline:
+                    grid_state.station_lock("output_arm").release(agv_id)
+                    held_station = None
+                    grid_state.lane().release(agv_id)
+                    held_lane = False
+                    self.fault(f"{agv_id}: unload signal timed out after {UNLOAD_SIGNAL_TIMEOUT}s")
+                    return False
+                time.sleep(SIGNAL_POLL_INTERVAL)
+            clear_unload(agv_id, task_id=task_id)
+            logger.info("AGVAgent %s: unload signal received and cleared", agv_id)
+
+            # ── Step 9: release output station + lane ────────────────────────
+            grid_state.station_lock("output_arm").release(agv_id)
+            held_station = None
+            grid_state.lane().release(agv_id)
+            held_lane = False
+            _emit_log(agv_id, f"{agv_id} released output_arm station and lane")
+
+            # ── Step 10: return to origin ────────────────────────────────────
+            logger.info(
+                "AGVAgent %s: spatial step 10 — return to origin %s",
+                agv_id, self._origin_px,
+            )
+            rec = agv_state.set_status(agv_id, "returning")
+            if rec:
+                _emit_agv(rec)
+            if task_id:
+                ok = self._traverse_to_with_path(
+                    self._origin_px[0], self._origin_px[1],
+                    agv_id, agv_state, grid_state, _valid, task_id,
+                )
+            else:
+                ok = self._traverse_to(
+                    self._origin_px[0], self._origin_px[1],
+                    agv_id, agv_state, grid_state, _valid,
+                )
+            if not ok:
+                # Locks already released; still safe to stop.
+                logger.info("AGVAgent %s: halt on return-to-origin path", agv_id)
+                return False
+
+            # ── Step 11: mark idle ───────────────────────────────────────────
+            agv_state.mark_idle(agv_id)
+            rec = agv_state.get(agv_id)
+            if rec:
+                _emit_agv(rec)
+            logger.info(
+                "AGVAgent %s: spatial transport leg complete — idle at origin %s",
+                agv_id, self._origin_px,
+            )
+            return True
+
+        # ════════════════════════════════════════════════════════════════════
+        # LEGACY BRANCH — 12-step cell-based loop (UNCHANGED from Phase 4)
+        # ════════════════════════════════════════════════════════════════════
+
+        # ── Resolve route context from pipeline_config ──────────────────────
+        route_ctx = self._build_route_ctx()
+        if route_ctx is None:
+            logger.warning(
+                "AGVAgent %s: cannot build route context — leg skipped (no warehouse config)",
+                agv_id,
+            )
+            return True
+
+        bay = route_ctx["bay"]
+        route_to_input = route_ctx["route_to_input"]
+        lane_cells = route_ctx["lane_cells"]
+        output_dock = route_ctx["output_dock"]
+        route_to_bay = route_ctx["route_to_bay"]
 
         # ── Step 1: acquire input station ───────────────────────────────────
         if not _valid():
@@ -410,5 +849,55 @@ def _emit_log(source: str, message: str) -> None:
             "source": source,
             "message": message,
         })
+    except Exception:
+        pass
+
+
+def _emit_agv_position(actor_id: str, x: float, y: float, theta: float) -> None:
+    """Best-effort SocketIO agv_position emit (Phase 5 Stage 5).
+
+    Observational only — no consensus decisions depend on this event.
+    Mirrors the _emit_log / _emit_agv best-effort pattern: never raises.
+    """
+    try:
+        from app import socketio
+        socketio.emit("agv_position", {
+            "actor_id": actor_id,
+            "x": x,
+            "y": y,
+            "theta": theta,
+            "ts": time.time(),
+        })
+    except Exception:
+        pass
+
+
+def _publish_position_update(agent: "AGVAgent", agv_id: str, x: float, y: float, theta: float) -> None:
+    """Publish a POSITION_UPDATE message to the negotiation bus at 500 ms cadence.
+
+    Phase 5 Stage 8 — observational only. Emitted from _traverse_to during
+    spatial AGV motion for replay fidelity. No actor changes decisions based on
+    POSITION_UPDATE messages; they are a bus-visible audit trail for replay/scrub.
+
+    Uses _current_participant to derive task_id and negotiation_round. When no
+    participant is set (e.g. in isolated unit tests), uses empty-string defaults.
+    """
+    from app.agents.negotiation import Message, MessageType
+
+    participant = agent._current_participant
+    task_id = participant.task_id if participant is not None else ""
+    negotiation_round = participant.round if participant is not None else 0
+
+    ts = time.time()
+    try:
+        agent._safe_publish(
+            Message(
+                type=MessageType.POSITION_UPDATE,
+                task_id=task_id,
+                negotiation_round=negotiation_round,
+                sender=agv_id,
+                payload={"x": x, "y": y, "theta": theta, "ts": ts},
+            )
+        )
     except Exception:
         pass
