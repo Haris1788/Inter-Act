@@ -151,6 +151,15 @@ interface PaletteSection {
 
 const PALETTE: PaletteSection[] = [
   {
+    label: "Zones",
+    grid: true,
+    items: [
+      { kind: "chip", name: "Source feed",    sub: "input · inbound",  paletteKey: "zone-source", icon: ZoneSource },
+      { kind: "chip", name: "Sink / outflow", sub: "output · outbound", paletteKey: "zone-sink",   icon: ZoneSink },
+      { kind: "row",  name: "Charging dock",  meta: "⚡",                                           icon: ZoneCharging },
+    ],
+  },
+  {
     label: "Capability Stations",
     grid: true,
     items: [
@@ -186,15 +195,6 @@ const PALETTE: PaletteSection[] = [
       { kind: "row", name: "Scripted",            meta: "default", icon: BrainScripted },
       { kind: "row", name: "Scheduler · FIFO",    meta: "FIFO",    icon: BrainScheduler },
       { kind: "row", name: "LLM assist · qwen2.5", meta: "qwen",  icon: BrainLLM },
-    ],
-  },
-  {
-    label: "Zones",
-    grid: true,
-    items: [
-      { kind: "chip", name: "Source feed",    sub: "input · inbound",  paletteKey: "zone-source", icon: ZoneSource },
-      { kind: "chip", name: "Sink / outflow", sub: "output · outbound", paletteKey: "zone-sink",   icon: ZoneSink },
-      { kind: "row",  name: "Charging dock",  meta: "⚡",                                           icon: ZoneCharging },
     ],
   },
 ];

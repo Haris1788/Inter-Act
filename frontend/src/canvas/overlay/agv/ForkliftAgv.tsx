@@ -2,8 +2,9 @@
 // extending from the front edge along the heading direction.
 // Forks: 10×3 each, gap 6 px between them, slightly darker than body.
 
-import { Group, Rect, RegularPolygon, Line, Circle } from "react-konva";
+import { Group, Rect, RegularPolygon, Line } from "react-konva";
 import type { AgvSilhouetteProps } from "./types";
+import { StatusDot } from "./StatusDot";
 
 const BODY_W = 50;
 const BODY_H = 40;
@@ -15,25 +16,6 @@ const FORK_L = 14;   // length (along heading)
 const FORK_T = 3;    // thickness (across heading)
 const FORK_GAP = 6;  // centre-to-centre gap between the two forks
 const FORK_OFFSET = FORK_GAP / 2 + FORK_T / 2; // from centre to fork mid-y
-
-const STATUS_DOT_COLORS: Record<string, string> = {
-  idle:      "#16a085",
-  moving:    "#2563eb",
-  loading:   "#eab308",
-  unloading: "#eab308",
-  returning: "#3b82f6",
-  faulted:   "#dc2626",
-  stopped:   "#6b7280",
-  ok:        "#16a085",
-  warn:      "#eab308",
-  busy:      "#2563eb",
-  down:      "#dc2626",
-};
-const DEFAULT_DOT_COLOR = "#9ca3af";
-
-function dotColor(status: string): string {
-  return STATUS_DOT_COLORS[status] ?? DEFAULT_DOT_COLOR;
-}
 
 function darkenHex(hex: string, amount = 0.25): string {
   const r = Math.round(parseInt(hex.slice(1, 3), 16) * (1 - amount));
@@ -134,14 +116,11 @@ export function ForkliftAgv({
         )}
       </Group>
 
-      {/* Status dot — world-space (not rotated) */}
-      <Circle
+      {/* Status dot — world-space (not rotated), pulsing */}
+      <StatusDot
         x={BODY_W / 2 - DOT_RADIUS}
         y={BODY_H / 2 + 5 + DOT_RADIUS}
-        radius={DOT_RADIUS}
-        fill={dotColor(status)}
-        stroke="rgba(0,0,0,0.35)"
-        strokeWidth={0.8}
+        status={status}
       />
     </>
   );

@@ -98,8 +98,6 @@ function stickWidth(reach: number): number { return Math.max(4, reach * 0.025); 
 /** Open gripper width: scales with reach. Floor = 10 px. */
 function gripperWOpen(reach: number): number { return Math.max(10, reach * 0.06); }
 
-/** Gripper height: scales with reach. Floor = 5 px. */
-function gripperHVal(reach: number): number { return Math.max(5, reach * 0.03); }
 
 /** Closed gripper width: fraction of open width, at least 3 px. */
 function gripperWClosed(reach: number): number { return Math.max(3, gripperWOpen(reach) * 0.35); }
@@ -500,7 +498,7 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
         const pRadius = pivotRadius(reach);
         const pInnerRadius = pivotInnerRadius(reach);
         const sWidth = stickWidth(reach);
-        const gH = gripperHVal(reach);
+
 
         const color = actorColor(actor as unknown as Record<string, unknown>);
         const isSelected = actor.id === selectedActorId;
@@ -606,19 +604,18 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
               listening={false}
             />
 
-            {/* Fix #2: Gripper rectangle at the stick TIP (at distance reach from pivot).
-                Width and height scale with reach. Track C animates width open↔closed.
-                Rotated group so gripper aligns with stick direction. */}
+            {/* Fix #2: Gripper circle (pinpoint) at the stick TIP.
+                Radius = gripperDisplayW / 2 so size is consistent with the
+                former rectangular paddle. Track C animates radius open↔closed.
+                Rotated group so the circle follows stick direction. */}
             <Group rotation={angleDeg} listening={false}>
-              <Rect
-                x={stickLen - gripperDisplayW / 2}
-                y={-gH / 2}
-                width={gripperDisplayW}
-                height={gH}
+              <Circle
+                x={stickLen}
+                y={0}
+                radius={gripperDisplayW / 2}
                 fill={color}
                 stroke={strokeColor}
                 strokeWidth={0.8}
-                cornerRadius={1}
                 listening={false}
               />
             </Group>
@@ -643,11 +640,12 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
               listening={false}
             />
 
-            {/* Actor-id label below the pivot. Black for legibility against
-                the light canvas background. */}
+            {/* Actor-id label below the entire arm assembly (reach circle).
+                y = reach radius + 16 px so label clears the gripper at REST
+                position regardless of stick angle. Black for legibility. */}
             <Text
               x={-24}
-              y={pRadius + 4}
+              y={reach + 16}
               width={48}
               align="center"
               text={actor.id}

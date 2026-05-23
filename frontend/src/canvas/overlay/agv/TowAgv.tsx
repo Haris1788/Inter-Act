@@ -1,8 +1,9 @@
 // TowAgv — compact body (45×28 px) with a short towing hitch
 // (~5×4 px rect) on the BACK edge (−x direction in local space).
 
-import { Group, Rect, RegularPolygon, Line, Circle } from "react-konva";
+import { Group, Rect, RegularPolygon, Line } from "react-konva";
 import type { AgvSilhouetteProps } from "./types";
+import { StatusDot } from "./StatusDot";
 
 const BODY_W = 45;
 const BODY_H = 28;
@@ -12,25 +13,6 @@ const DOT_RADIUS = 4;
 // Hitch geometry — on the rear face (−x edge)
 const HITCH_W = 5;
 const HITCH_H = 4;
-
-const STATUS_DOT_COLORS: Record<string, string> = {
-  idle:      "#16a085",
-  moving:    "#2563eb",
-  loading:   "#eab308",
-  unloading: "#eab308",
-  returning: "#3b82f6",
-  faulted:   "#dc2626",
-  stopped:   "#6b7280",
-  ok:        "#16a085",
-  warn:      "#eab308",
-  busy:      "#2563eb",
-  down:      "#dc2626",
-};
-const DEFAULT_DOT_COLOR = "#9ca3af";
-
-function dotColor(status: string): string {
-  return STATUS_DOT_COLORS[status] ?? DEFAULT_DOT_COLOR;
-}
 
 function darkenHex(hex: string, amount = 0.25): string {
   const r = Math.round(parseInt(hex.slice(1, 3), 16) * (1 - amount));
@@ -121,14 +103,11 @@ export function TowAgv({
         )}
       </Group>
 
-      {/* Status dot — world-space (not rotated) */}
-      <Circle
+      {/* Status dot — world-space (not rotated), pulsing */}
+      <StatusDot
         x={BODY_W / 2 - DOT_RADIUS}
         y={BODY_H / 2 + 5 + DOT_RADIUS}
-        radius={DOT_RADIUS}
-        fill={dotColor(status)}
-        stroke="rgba(0,0,0,0.35)"
-        strokeWidth={0.8}
+        status={status}
       />
     </>
   );
