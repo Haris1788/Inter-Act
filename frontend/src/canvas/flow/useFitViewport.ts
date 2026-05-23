@@ -7,7 +7,7 @@
 // Returns fitToStage() for toolbar "Fit" button — re-applies the same
 // topology-bounds fit math on demand.
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useActors } from "@/store/selectors";
 import { topologyBounds } from "@/canvas/topologyBounds";
@@ -18,39 +18,45 @@ export function useFitViewport(
   const rf = useReactFlow();
   const actors = useActors();
 
-  const applyFit = useCallback(
-    (w: number, h: number) => {
-      const actorList = Object.values(actors);
-      const bounds = topologyBounds(actorList);
+  // Latest applyFit closure stored in a ref so the mount/resize effect
+  // below stays STABLE (no actor-change dep). Without this, every actor
+  // mutation (move, add, delete, constraint toggle) would re-run the
+  // mount effect and re-fit the viewport — clobbering the user's manual
+  // zoom. User-driven fit happens via the toolbar "Fit" button only.
+  const applyFitRef = useRef<(w: number, h: number) => void>(() => {});
 
-      // Scale to fit bounds in pane with modest padding.
-      const scaleX = w / bounds.width;
-      const scaleY = h / bounds.height;
-      const zoom = Math.max(0.1, Math.min(1.2, Math.min(scaleX, scaleY) * 0.85));
+  applyFitRef.current = (w: number, h: number) => {
+    const actorList = Object.values(actors);
+    const bounds = topologyBounds(actorList);
 
-      // Center the bounds in the pane.
-      const x = w / 2 - (bounds.x + bounds.width / 2) * zoom;
-      const y = h / 2 - (bounds.y + bounds.height / 2) * zoom;
+    // Scale to fit bounds in pane with modest padding.
+    const scaleX = w / bounds.width;
+    const scaleY = h / bounds.height;
+    const zoom = Math.max(0.1, Math.min(1.2, Math.min(scaleX, scaleY) * 0.85));
 
-      rf.setViewport({ x, y, zoom }, { duration: 0 });
-    },
-    [rf, actors],
-  );
+    // Center the bounds in the pane.
+    const x = w / 2 - (bounds.x + bounds.width / 2) * zoom;
+    const y = h / 2 - (bounds.y + bounds.height / 2) * zoom;
 
-  // Fit on mount + container resize.
+    rf.setViewport({ x, y, zoom }, { duration: 0 });
+  };
+
+  // Fit on FIRST MOUNT + container resize ONLY. Effect deps are stable
+  // (no actors / no applyFit closure) so the user's manual zoom survives
+  // any subsequent state change.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
     // Initial fit after one microtask so RF is fully mounted.
     const timer = setTimeout(() => {
-      applyFit(el.offsetWidth, el.offsetHeight);
+      applyFitRef.current(el.offsetWidth, el.offsetHeight);
     }, 0);
 
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
-        applyFit(width, height);
+        applyFitRef.current(width, height);
       }
     });
     ro.observe(el);
@@ -59,13 +65,13 @@ export function useFitViewport(
       clearTimeout(timer);
       ro.disconnect();
     };
-  }, [applyFit, containerRef]);
+  }, [containerRef]);
 
-  // Fit-to-topology callback for toolbar button.
+  // Fit-to-topology callback for toolbar button (uses latest actors).
   const fitToStage = useCallback(() => {
     const el = containerRef.current;
-    if (el) applyFit(el.offsetWidth, el.offsetHeight);
-  }, [applyFit, containerRef]);
+    if (el) applyFitRef.current(el.offsetWidth, el.offsetHeight);
+  }, [containerRef]);
 
   return { fitToStage };
 }

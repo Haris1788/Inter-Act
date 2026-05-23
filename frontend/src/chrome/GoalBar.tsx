@@ -10,7 +10,6 @@ interface GoalBarProps {
 export function GoalBar({ className }: GoalBarProps) {
   const goal = useGoal();
   const setGoalText = useStore((s) => s.setGoalText);
-  const toggleConstraint = useStore((s) => s.toggleConstraint);
   const [negotiating, setNegotiating] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
 
@@ -86,25 +85,10 @@ export function GoalBar({ className }: GoalBarProps) {
         />
       </div>
 
-      {/* Constraints */}
-      <div className="flex shrink-0 items-center gap-[3px] border-l border-line-soft px-2">
-        {Object.entries(goal.constraints).map(([key, on]) => (
-          <button
-            key={key}
-            onClick={() => toggleConstraint(key)}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-full px-[7px] py-[2px]",
-              "font-mono text-10 tracking-[0.02em]",
-              "border transition-colors",
-              on
-                ? "border-cta bg-cta text-[#FAFAF7]"
-                : "border-line-soft bg-bg-sunken text-ink-2",
-            )}
-          >
-            {key}
-          </button>
-        ))}
-      </div>
+      {/* Constraint chips deleted (Phase 5.1): user expresses
+          time/energy/throughput intent directly in the prompt. The
+          decentralised interpreter parses goal text — no per-chip
+          toggles. */}
 
       {/* Negotiate — submits to the decentralised runtime */}
       <button
