@@ -1,42 +1,91 @@
-# Phase 14 — Operational layout coherence + interaction correctness
+# Final Goal alignment — staged plan
 
-Frontend-only (React app `frontend/src`). No backend, no AI, no arch rewrite, preserve RF/Konva + 4-slice.
+Source: user request after Phase 5.1 fix pass. Aligns runtime to `Final Goal.md`:
+visible object lifecycle, arm reach boundary semantics, time-weighted bidding
+(verify), reasoning logs. Preserves decentralized peer-to-peer execution.
 
-## Root causes
+## Decisions (locked)
 
-1. **Inspector header desync**: Inspector uses 3 split subscriptions (`useSelectedActorId`, `useActor`, `useActorRuntime`). Spec mandates ONE authoritative selector → header/body/runtime/actions atomic. Also header icon is a hardcoded AGV glyph (kind-blind).
-2. **Collapse partial**: `LogsPanel` only hides `TabBody`; header stays but dock keeps its grid row. Collapse must shrink the whole dock + give canvas the space, animated, restore height.
-3. **Minimap blocks**: Phase-13 nodeColor returns solid `#18181B`/`#5F8F58` fills → black/green rectangles. Need subtle muted stroke style.
-4. **No hierarchy**: Fleet competes as a tab. Split bottom into left 65% stream + right 35% permanent Fleet sidebar.
-5. **Fleet tab redundant**: remove `fleet` TabId; left tabs = Coordination/Message bus/Validation/Events.
-6. **Minimap float**: anchor bottom-right, above dock, never clip/overlap inspector, subtle elevation.
-7. **Density**: tighter spacing, calmer separators, scroll containment, aligned headers.
+- Payload state = **bus events only** (PAYLOAD_SPAWN/PAYLOAD_TRANSFER). No
+  central registry. Frontend derives.
+- Reasoning log = **inline row under consensus chip** in BusPane.
+- Arm dock = **project zone center onto reach circle** along arm→zone vector.
+- D6 verification = **unit test + one live E2E**.
 
-## Tasks
+## Stages
 
-- [x] `selectors.ts`: `useSelectedActorBundle()` (one `useStoreEq` subscription) → Inspector single source; kind-aware header icon
-- [x] `editorSlice`+`types`: `logsCollapsed`, `logsHeight`, `toggleLogsCollapsed`, `setLogsHeight`; App grid `1fr auto`; animated dock height
-- [x] `LogsPanel`: 65/35 split, remove fleet tab, store-driven collapse, permanent Fleet right sidebar
-- [x] `CanvasViewport` MiniMap: muted stroke palette, anchored, not clipped
-- [x] Density pass across panes
-- [x] Verify (typecheck+build), docs, local commit (no push)
+### Stage A — geometry helper + slot wiring (pure)
+- [ ] `app/core/geometry.py` new module → `dock_point(arm_xy, zone_xy, reach_px)`.
+- [ ] Unit tests: dock on circle, collinear safety, zero-reach edge.
+- [ ] `derive_slots` (where AGV `from_pos`/`to_pos` set) uses `dock_point`
+  with the partner arm's pos + reach.
+- [ ] Verify existing AGV bid still scores `(approach+trip)/speed`.
 
-## Phase 15 (3 remaining regressions)
+### Stage B — reasoning rationale on consensus
+- [ ] `negotiation.public_winner` returns `(winner, rationale)` where
+  rationale = `[{sender, score, eta_s}]` sorted ascending.
+- [ ] `actor_agent` emits CONSENSUS_REACHED with `payload.candidates` +
+  `payload.reason` ("min eta").
+- [ ] Frontend `BusPane`: when message kind=consensus_reached AND payload has
+  candidates, render sub-row "winner X · eta Ys (vs Y' Ys, Y'' Ys)".
+- [ ] No new MessageType — additive payload only.
 
-- [x] Issue 1 Label desync — already fixed `cf93c1b` (controlled, store-backed); verified, no change
-- [x] Issue 3 edit icon — linked graph nodes + pencil, same style
-- [x] Issue 2 — `deploy_bridge.apply_topology` + `POST /deploy/apply`; `deploy.ts` posts payload, ready only on `applied` + per-arm health (no optimism, honest no-fake)
-- [x] 7 bridge tests; 142/142 pytest; typecheck+build clean
-- [ ] Browser/Docker E2E — cannot run here (no live stack); listed in HANDOFF
+### Stage C — payload lifecycle on bus
+- [ ] Add MessageTypes `PAYLOAD_SPAWN`, `PAYLOAD_TRANSFER`.
+- [ ] Coordinator emits PAYLOAD_SPAWN after TASK_ANNOUNCE
+  `{obj_id=task_id+"#0", zone_id=source, pos=source_xy}`.
+- [ ] ArmAgent `signal_load`: emit PAYLOAD_TRANSFER `{obj_id, from=arm.id, to=agv.id}`.
+- [ ] ArmAgent `signal_unload`: emit PAYLOAD_TRANSFER `{obj_id, from=agv.id, to=arm.id}`.
+- [ ] ArmAgent place-leg done: emit PAYLOAD_TRANSFER `{obj_id, from=arm.id, to=sink_zone.id}`.
+
+### Stage D — frontend payload slice + render
+- [ ] `store/payloadSlice.ts` — `payloads: Record<obj_id, {pos, carrier|null}>`.
+- [ ] Bus handler in `socketDriver` cases for new kinds. SPAWN seeds entry.
+  TRANSFER updates carrier; pos follows carrier.
+- [ ] `canvas/konva/PayloadLayer.tsx` — payload dot follows carrier's animated pos.
+- [ ] Wire layer into KonvaCanvas stage between actor + UI layers.
+
+### Stage E — verification
+- [ ] Pytest: `tests/test_constraint_selection.py` — 3 synthetic AGV profiles
+  (speeds 0.5/1/2, varied positions). Drive `derive_slots`+`public_winner`,
+  assert winner = min(eta) and rationale ordering matches.
+- [ ] E2E live: drop 3 AGVs different speeds, submit "fast" task via GoalBar,
+  screenshot canvas + bus log showing rationale + object hop.
+
+### Stage F — docs
+- [ ] Update `CLAUDE.md` "Non-obvious design decisions" with payload bus
+  events, dock projection, rationale payload.
+- [ ] Update `HANDOFF.md` to current state (Phases 4/5/5.1 shipped + this pass).
+
+## Commit policy
+ONE commit at end of Stage F covering all six stages. Per memory rule (no
+per-stage commits).
 
 ## Review
 
-All 7 issues closed, frontend-only, no arch change.
+All six stages completed in one pass, single commit pending.
 
-- **Header desync**: real fix = collapse 3 split subscriptions into one `useStoreEq` bundle (atomic, no tearing) per spec — also fixed a real bug where the header icon was a hardcoded AGV glyph on every actor.
-- **Collapse**: had to lift collapse state to `editorSlice` because App owns the grid; dock animates its own height (`1fr auto`), slim 36px strip retained.
-- **Minimap**: Phase-13 solid `#18181B`/`#5F8F58` fills → muted low-opacity warm-gray fill + visible stroke callbacks. RF MiniMap can't do true stroke-only; this reads as a subtle thumbnail.
-- **Split/Fleet**: `LogsPanel` now left-65 stream / right-35 permanent Fleet; `fleet` TabId removed everywhere; tabs only drive the left.
-- **Density**: aligned the Fleet header to the tab strip (both h-9), enforced `min-h-0 flex-1 overflow-y-auto` containment, dropped LogStream's redundant border.
+- **Stage A** geometry helper + boundary projection: `dock_point` pure helper
+  + `derive_slots_by_actor` now produces antipodal docks on each arm's reach
+  circle (outward = arm reach target, inward = AGV dock). Existing zone-string
+  path untouched. 7/7 geometry tests + 5/5 derive-slot tests pass.
+- **Stage B** rationale payload: `CONSENSUS_REACHED` carries
+  `{rationale, constraint}`. Frontend `BusPane` renders the sub-row showing
+  winner + per-candidate scores. Type-safe; older bus readers ignore the new
+  fields.
+- **Stage C** payload bus events: 2 new MessageTypes (PAYLOAD_SPAWN/TRANSFER).
+  Coordinator + arm hooks emit the 5-step chain (spawn, src-zone→arm,
+  arm→agv, agv→arm, arm→dst-zone). Fire-and-forget; never disrupts physical
+  execution.
+- **Stage D** frontend layer: `payloads` slice + selector + Konva
+  `PayloadLayer` follows carrier kinematics in real time. Zone handoffs
+  snapshot the from-carrier's pos so the dot remains visible at delivery.
+- **Stage E** verification: `test_constraint_selection.py` proves
+  `shortest time` picks fastest effective AGV, not nearest. Live E2E with the
+  TU Clausthal tunnel deferred (logged in HANDOFF).
+- **Stage F** docs: CLAUDE.md decisions table + HANDOFF.md fully refreshed.
 
-Verification: typecheck + build clean. **Browser smoke not run** (no live stack here) — must verify reselect/collapse/minimap/split visually before declaring interaction proven (see HANDOFF.md). Local commit only, no push.
+**Decentralization preserved.** Bus is still the only inter-actor channel.
+Payload events are observational — no consensus impact, no execution gate.
+Boundary projection is pure geometry on the existing slot fields.
+

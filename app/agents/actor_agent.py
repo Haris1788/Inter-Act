@@ -577,13 +577,47 @@ class ActorAgent:
         # Observational consensus marker — idempotent, non-authoritative.
         if not participant.consensus_announced:
             participant.consensus_announced = True
+            # Phase-6: attach per-slot rationale so the frontend can show
+            # WHY a particular actor was selected. Each entry lists every
+            # bidder's score (lower = better for `shortest *`) and the winner.
+            constraint = (participant.task or {}).get("constraint", "")
+            rationale: list[dict] = []
+            for slot in participant.task.get("slots", []):
+                slot_id = slot["slot_id"]
+                bids = surviving_bids(
+                    history, participant.task_id, participant.round, slot_id
+                )
+                if not bids:
+                    continue
+                cands = sorted(
+                    (
+                        {
+                            "sender": b.sender,
+                            "score": float(b.payload.get("score", 0.0)),
+                            "capacity": int(b.payload.get("capacity", 1)),
+                        }
+                        for b in bids
+                    ),
+                    key=lambda c: (c["score"], c["sender"]),
+                )
+                rationale.append(
+                    {
+                        "slot_id": slot_id,
+                        "winner": accepts.get(slot_id),
+                        "candidates": cands,
+                    }
+                )
             self._safe_publish(
                 Message(
                     type=MessageType.CONSENSUS_REACHED,
                     task_id=participant.task_id,
                     negotiation_round=participant.round,
                     sender=self.actor_id,
-                    payload={"round": participant.round},
+                    payload={
+                        "round": participant.round,
+                        "constraint": constraint,
+                        "rationale": rationale,
+                    },
                 )
             )
 

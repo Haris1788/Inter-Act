@@ -2,7 +2,7 @@ import { io, type Socket } from "socket.io-client";
 import type { useStore } from "@/store";
 import type { RuntimeDriver, ActorOpResult } from "./driver";
 import { normalizeConfig, type RawConfig } from "./configNormalizer";
-import type { BusKind } from "@/store/types";
+import type { BusKind, BusMessage } from "@/store/types";
 import {
   armActorId,
   assetActorId,
@@ -620,6 +620,17 @@ export function createSocketDriver(): RuntimeDriver {
               text = pay.transition;
           }
 
+          // Phase-6 rationale capture — only consensus_reached carries this.
+          let rationale: BusMessage["rationale"];
+          let constraint: string | undefined;
+          if (kind === "consensus_reached" && p.payload && typeof p.payload === "object") {
+            const pay = p.payload as Record<string, unknown>;
+            if (Array.isArray(pay.rationale)) {
+              rationale = pay.rationale as BusMessage["rationale"];
+            }
+            if (typeof pay.constraint === "string") constraint = pay.constraint;
+          }
+
           st().pushBusMessage({
             id: `bm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             ts,
@@ -628,6 +639,8 @@ export function createSocketDriver(): RuntimeDriver {
             round: p.negotiation_round,
             task_id: p.task_id,
             text,
+            rationale,
+            constraint,
           });
 
           // Surface fault/task_failed/leg_halted as operational events too.
@@ -654,6 +667,38 @@ export function createSocketDriver(): RuntimeDriver {
           // forward POSITION_UPDATE to the browser as bus_message, so translate
           // that into the same setRuntimePosition + setAgvTarget flow used by
           // the in-process agv_position event.
+          // Phase-6 payload lifecycle — spawn on PAYLOAD_SPAWN, follow carrier
+          // on PAYLOAD_TRANSFER. Pure derived rendering; no consensus impact.
+          if (kind === "payload_spawn" && p.payload) {
+            const pay = p.payload as Record<string, unknown>;
+            const objId = typeof pay.obj_id === "string" ? pay.obj_id : null;
+            const posArr = Array.isArray(pay.pos) ? pay.pos : null;
+            const pos =
+              posArr && posArr.length >= 2
+                ? { x: Number(posArr[0]), y: Number(posArr[1]) }
+                : null;
+            if (objId) st().spawnPayload(objId, pos);
+          }
+          if (kind === "payload_transfer" && p.payload) {
+            const pay = p.payload as Record<string, unknown>;
+            const objId = typeof pay.obj_id === "string" ? pay.obj_id : null;
+            const from = typeof pay.from === "string" ? pay.from : null;
+            const to = typeof pay.to === "string" ? pay.to : null;
+            if (objId) {
+              const s = st();
+              // If handing off TO a zone, snapshot the current carrier's
+              // live pos into payload.pos so PayloadLayer has a coord to draw
+              // at after the actor leaves the carrier slot.
+              if (to && to.startsWith("zone:") && from) {
+                const fromKin = s.agvKinematics[from];
+                const fromActor = s.actors[from];
+                const pos = fromKin?.pos ?? fromActor?.position ?? null;
+                if (pos) s.spawnPayload(objId, pos);
+              }
+              s.transferPayload(objId, to);
+            }
+          }
+
           if (kind === "position_update" && p.sender && p.payload) {
             const pay = p.payload as Record<string, unknown>;
             const x = typeof pay.x === "number" ? pay.x : null;

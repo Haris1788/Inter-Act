@@ -22,6 +22,8 @@ export const KIND_LABELS: Record<BusKind, string> = {
   leg_completed: "leg·done",
   leg_halted: "leg·halt",
   position_update: "pos",
+  payload_spawn: "pkg·spawn",
+  payload_transfer: "pkg·xfer",
 };
 
 // Tailwind class string for the chip background/foreground.
@@ -52,6 +54,9 @@ export function kindChipClass(kind: BusKind): string {
       return "bg-ok-bg text-ok";
     case "position_update":
       return "bg-bg-sunken text-ink-3";
+    case "payload_spawn":
+    case "payload_transfer":
+      return "bg-warn-bg text-warn";
   }
 }
 
@@ -75,4 +80,6 @@ export const KIND_TONE_HEX: Record<BusKind, { fill: string; stroke: string }> =
     leg_completed: { fill: "#E6EBE0", stroke: "#5F8F58" },
     leg_halted: { fill: "#EEDAD1", stroke: "#A4503B" },
     position_update: { fill: "#EEEBE3", stroke: "#6B6B72" },
+    payload_spawn: { fill: "#F0E6D0", stroke: "#B08742" },
+    payload_transfer: { fill: "#F0E6D0", stroke: "#B08742" },
   };

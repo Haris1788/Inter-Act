@@ -194,7 +194,23 @@ export type BusKind =
   | "leg_started"
   | "leg_completed"
   | "leg_halted"
-  | "position_update";
+  | "position_update"
+  | "payload_spawn"
+  | "payload_transfer";
+
+/** One bid candidate as seen in a CONSENSUS_REACHED rationale block. */
+export interface BusRationaleCandidate {
+  sender: string;
+  score: number;
+  capacity?: number;
+}
+
+/** Per-slot rationale captured at consensus time. */
+export interface BusRationaleSlot {
+  slot_id: string;
+  winner: string | null;
+  candidates: BusRationaleCandidate[];
+}
 
 export interface BusMessage {
   id: string;
@@ -206,6 +222,10 @@ export interface BusMessage {
   round?: number;
   task_id?: string;
   text: string;
+  /** Phase-6 rationale: only present on `consensus_reached` messages. */
+  rationale?: BusRationaleSlot[];
+  /** Constraint string carried alongside the rationale. */
+  constraint?: string;
 }
 
 export interface LogLine {
@@ -340,6 +360,15 @@ export interface TablePackage {
   color: string;
 }
 
+/** Phase-6 payload entity tracked from spawn through delivery. */
+export interface PayloadEntity {
+  /** Last-known canvas pixel position. Falls back to carrier's live pos. */
+  pos: Vec2 | null;
+  /** Current holder — actor id (arm/agv), `zone:src@...`/`zone:dst@...`, or null at spawn. */
+  carrier: string | null;
+  color: string;
+}
+
 export interface SpatialSlice {
   agvKinematics: Record<ActorId, AgvKinematics>;
   trajectories: Trajectory[];
@@ -351,6 +380,8 @@ export interface SpatialSlice {
   tablePkgs: Record<string, TablePackage[]>;
   /** Packages currently carried by each AGV. agv_id → package_id | null. */
   agvCargo: Record<string, string | null>;
+  /** Phase-6 payload entities keyed by obj_id. Ephemeral; cleared on hydrate. */
+  payloads: Record<string, PayloadEntity>;
   tick: (dtMs: number) => void;
   // Phase 2 - runtime-driven, ephemeral. Driven by object_update events.
   setAgvKinematics: (id: ActorId, patch: Partial<AgvKinematics>) => void;
@@ -358,6 +389,10 @@ export interface SpatialSlice {
   setArmAngle: (armId: string, angle: number) => void;
   setTablePkgs: (station: string, pkgs: TablePackage[]) => void;
   setAgvCargo: (agvId: string, packageId: string | null) => void;
+  /** Spawn or replace a payload at a position. */
+  spawnPayload: (objId: string, pos: Vec2 | null, color?: string) => void;
+  /** Update the carrier of an existing payload. */
+  transferPayload: (objId: string, carrier: string | null) => void;
   emitTrajectory: (t: Trajectory) => void;
   emitDockGlow: (g: DockGlow) => void;
   clearSpatialRuntime: () => void;

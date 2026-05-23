@@ -63,6 +63,8 @@ export const useAgvKinematics = () => useStore((s) => s.agvKinematics);
 export const useArmAngles = () => useStore((s) => s.armAngles);
 export const useTablePkgs = () => useStore((s) => s.tablePkgs);
 export const useAgvCargo = () => useStore((s) => s.agvCargo);
+/** Phase-6 payload entities. */
+export const usePayloads = () => useStore((s) => s.payloads);
 /** Stage 5 Track B — all actor runtime entries (for runtimePosition). */
 export const useActorRuntimeAll = () => useStore((s) => s.actorRuntime);
 /** Phase 5 Stage 8 Track C — replay scrub flag. */

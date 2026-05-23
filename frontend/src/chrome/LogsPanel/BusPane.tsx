@@ -55,6 +55,32 @@ export function BusPane({ messages }: BusPaneProps) {
               style={{ whiteSpace: "pre-wrap" }}
             >
               {msg.text}
+              {/* Phase-6 rationale: shown only on consensus_reached msgs
+                  carrying the optional rationale payload. Renders one
+                  sub-line per slot listing winner + candidate scores. */}
+              {msg.rationale && msg.rationale.length > 0 ? (
+                <div className="mt-0.5 pl-1 text-10 text-ink-5">
+                  {msg.constraint ? (
+                    <div className="italic">constraint · {msg.constraint || "default"}</div>
+                  ) : null}
+                  {msg.rationale.map((r) => (
+                    <div key={r.slot_id}>
+                      <span className="text-ink-3">{r.slot_id}</span>
+                      {" → "}
+                      <span className="text-ok">{r.winner ?? "—"}</span>
+                      {r.candidates.length > 1 ? (
+                        <span className="ml-1 text-ink-5">
+                          (
+                          {r.candidates
+                            .map((c) => `${c.sender} ${c.score.toFixed(2)}`)
+                            .join(" · ")}
+                          )
+                        </span>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </span>
           </div>
         ))

@@ -35,6 +35,7 @@ import { ReservedCellsLayer } from "./ReservedCellsLayer";
 import { PathPreviewLayer } from "./PathPreviewLayer";
 import { NegotiationHaloLayer } from "./NegotiationHaloLayer";
 import { ZoneMarkerLayer } from "./ZoneMarkerLayer";
+import { PayloadLayer } from "./PayloadLayer";
 
 type Transform = ViewportTransform;
 
@@ -217,8 +218,10 @@ export function KonvaOverlay() {
         <ArmRenderer tx={tx} />
         {/* Phase 5 AGV trail polylines — drawn behind vehicle bodies */}
         <AgvTrailLayer tx={tx} />
-        {/* Phase 5 AGV vehicle tokens — topmost Konva layer */}
+        {/* Phase 5 AGV vehicle tokens */}
         <AgvTokenLayer tx={tx} />
+        {/* Phase-6 payload dot — topmost so the carried object stays visible */}
+        <PayloadLayer tx={tx} />
       </Stage>
     </div>
   );

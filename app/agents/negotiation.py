@@ -42,6 +42,11 @@ class MessageType(str, Enum):
     # Phase 5 Stage 8 — spatial position snapshot for replay (observational only).
     # Emitted by AGVs at 500 ms cadence during _traverse_to; no consensus impact.
     POSITION_UPDATE = "position_update"
+    # Phase 6 — payload lifecycle (observational; no consensus impact).
+    # Coordinator emits PAYLOAD_SPAWN once per task; arms emit PAYLOAD_TRANSFER
+    # at load/unload boundaries. Frontend derives object position from carrier.
+    PAYLOAD_SPAWN = "payload_spawn"
+    PAYLOAD_TRANSFER = "payload_transfer"
 
 
 class RoundStatus(str, Enum):
@@ -313,27 +318,42 @@ def derive_slots_by_actor(
     src_pos = (src.x, src.y)
     dst_pos = (dst.x, dst.y)
 
+    # Phase-6 boundary projection — Final Goal: pickup/place happen on the
+    # arm's reach boundary, not the arm's centre. The arm's "outward" pickup
+    # point faces AWAY from its partner arm (toward the presumed source/sink
+    # zone). The AGV docks on the boundary FACING the partner arm so it sits
+    # between the two arms during transit. The two points on each arm are
+    # therefore antipodal across the arm's reach circle.
+    from app.core.geometry import dock_point
+
+    # Pickup arm: outward-facing dock = boundary AWAY from dst arm.
+    # Compute by projecting toward dst, then reflecting (anchor + (anchor - p)).
+    src_inward = dock_point(src_pos, dst_pos, src.reach_px)   # boundary toward AGV
+    src_outward = (2 * src_pos[0] - src_inward[0], 2 * src_pos[1] - src_inward[1])
+    dst_inward = dock_point(dst_pos, src_pos, dst.reach_px)   # boundary toward AGV
+    dst_outward = (2 * dst_pos[0] - dst_inward[0], 2 * dst_pos[1] - dst_inward[1])
+
     return [
         Slot(
             slot_id="pickup",
             kind="arm",
             zone=src.id,           # backward-compat zone-match pin
             served_by=src.id,
-            target_pos=src_pos,
+            target_pos=src_outward,   # arm reaches toward source-zone side
         ),
         Slot(
             slot_id="transport",
             kind="agv",
             from_zone=src.id,      # backward-compat zone-match pin
             to_zone=dst.id,
-            from_pos=src_pos,
-            to_pos=dst_pos,
+            from_pos=src_inward,      # AGV docks between the arms (src side)
+            to_pos=dst_inward,        # AGV docks between the arms (dst side)
         ),
         Slot(
             slot_id="place",
             kind="arm",
             zone=dst.id,           # backward-compat zone-match pin
             served_by=dst.id,
-            target_pos=dst_pos,
+            target_pos=dst_outward,   # arm reaches toward dest-zone side
         ),
     ]

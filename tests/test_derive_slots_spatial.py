@@ -31,6 +31,14 @@ def _make_topology():
 # ---------------------------------------------------------------------------
 
 def test_derive_slots_by_actor_populates_positions():
+    """Phase-6 boundary projection: arm `target_pos` is the OUTWARD boundary
+    (away from partner) and AGV `from_pos`/`to_pos` are the INWARD boundary
+    (toward partner). For arm-1 at (330,210), arm-2 at (1350,210), reach=120:
+        src_inward  = (450, 210)   # AGV docks here on src side
+        src_outward = (210, 210)   # arm-1 picks here
+        dst_inward  = (1230, 210)  # AGV docks here on dst side
+        dst_outward = (1470, 210)  # arm-2 places here
+    """
     topo = _make_topology()
     slots = derive_slots_by_actor("arm-1", "arm-2", topo)
 
@@ -39,21 +47,21 @@ def test_derive_slots_by_actor_populates_positions():
     pickup = slots[0]
     assert pickup.slot_id == "pickup"
     assert pickup.kind == "arm"
-    assert pickup.target_pos == (330.0, 210.0)
+    assert pickup.target_pos == (210.0, 210.0)
     assert pickup.from_pos is None
     assert pickup.to_pos is None
 
     transport = slots[1]
     assert transport.slot_id == "transport"
     assert transport.kind == "agv"
-    assert transport.from_pos == (330.0, 210.0)
-    assert transport.to_pos == (1350.0, 210.0)
+    assert transport.from_pos == (450.0, 210.0)
+    assert transport.to_pos == (1230.0, 210.0)
     assert transport.target_pos is None
 
     place = slots[2]
     assert place.slot_id == "place"
     assert place.kind == "arm"
-    assert place.target_pos == (1350.0, 210.0)
+    assert place.target_pos == (1470.0, 210.0)
 
 
 # ---------------------------------------------------------------------------

@@ -183,6 +183,33 @@ def negotiate_prompt():
 
         get_bus().publish(announce)
 
+        # Phase 6 — emit PAYLOAD_SPAWN so frontend renders a visible object
+        # at the source zone immediately on task start. Pos is taken from the
+        # AGV `from_pos` of the transport slot (i.e. the arm-1 dock boundary
+        # facing the AGV) so the spawn is in a sensible canvas location even
+        # if frontend has no zone-position data. Frontend may override with
+        # exact zone center when it knows it.
+        try:
+            transport = next((s for s in slot_dicts if s.get("kind") == "agv"), None)
+            spawn_pos = transport.get("from_pos") if transport else None
+            spawn_zone = transport.get("from_zone") if transport else source_zone
+            get_bus().publish(
+                Message(
+                    type=MessageType.PAYLOAD_SPAWN,
+                    task_id=task_id,
+                    negotiation_round=0,
+                    sender="coordinator",
+                    payload={
+                        "obj_id": f"pkg-{task_id}",
+                        "zone_id": spawn_zone,
+                        "pos": spawn_pos,
+                    },
+                )
+            )
+        except Exception:
+            # Spawn is visual-only; never fail negotiation start because of it.
+            pass
+
         _emit_log(
             "info",
             (

@@ -27,7 +27,7 @@ from typing import Optional
 
 from app.agents.actor_agent import ActorAgent
 from app.agents.actuation import PICK, PLACE, REST, sweep_arm
-from app.agents.negotiation import accepted_actors
+from app.agents.negotiation import Message, MessageType, accepted_actors
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,11 @@ class ArmAgent(ActorAgent):
         if not _valid():
             return
 
+        # Phase-6: object transfers from source-zone to this arm at PICK.
+        self._publish_payload_transfer(
+            object_id, task_id, frm=f"zone:src@{task_id}", to=self.actor_id,
+        )
+
         logger.info("ArmAgent %s: pickup — sweep to PICK", self.actor_id)
         ok = sweep_arm(arm_id, PICK, halt_check=_halt_check)
         if not ok:
@@ -172,6 +177,9 @@ class ArmAgent(ActorAgent):
         if not _valid():
             _halt("validity false after REST sweep")
             return
+
+        # Phase-6: object transfers from arm to AGV at handoff.
+        self._publish_payload_transfer(object_id, task_id, frm=self.actor_id, to=agv_id)
 
         # Signal AGV with task_id scope: package is on the AGV, it may proceed.
         logger.info("ArmAgent %s: pickup — signalling load to %s (task=%s)", self.actor_id, agv_id, task_id)
@@ -211,6 +219,10 @@ class ArmAgent(ActorAgent):
             _halt("validity false after unload signal cleared")
             return
 
+        # Phase-6: object transfers from AGV to this arm at PLACE start.
+        object_id = f"pkg-{task_id}"
+        self._publish_payload_transfer(object_id, task_id, frm=agv_id, to=self.actor_id)
+
         logger.info("ArmAgent %s: place — sweep to PLACE", self.actor_id)
         ok = sweep_arm(arm_id, PLACE, halt_check=_halt_check)
         if not ok:
@@ -221,6 +233,11 @@ class ArmAgent(ActorAgent):
             _halt("validity false after PLACE sweep")
             return
 
+        # Phase-6: object delivered into the destination zone.
+        self._publish_payload_transfer(
+            object_id, task_id, frm=self.actor_id, to=f"zone:dst@{task_id}",
+        )
+
         logger.info("ArmAgent %s: place — sweep to REST", self.actor_id)
         ok = sweep_arm(arm_id, REST, halt_check=_halt_check)
         if not ok:
@@ -228,6 +245,25 @@ class ArmAgent(ActorAgent):
             return
 
         logger.info("ArmAgent %s: place leg complete", self.actor_id)
+
+    # Phase-6 helper — fire-and-forget PAYLOAD_TRANSFER on the bus.
+    def _publish_payload_transfer(
+        self, object_id: str, task_id: str, *, frm: str, to: str,
+    ) -> None:
+        """Publish a PAYLOAD_TRANSFER message (observational, never gates execution)."""
+        try:
+            self.bus.publish(
+                Message(
+                    type=MessageType.PAYLOAD_TRANSFER,
+                    task_id=task_id,
+                    negotiation_round=0,
+                    sender=self.actor_id,
+                    payload={"obj_id": object_id, "from": frm, "to": to},
+                )
+            )
+        except Exception:
+            # Visual-only; never disrupt physical leg execution.
+            pass
 
     def _numeric_arm_id(self) -> Optional[int]:
         """Extract the integer arm index from actor_id (e.g. 'arm-1' -> 1)."""
