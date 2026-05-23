@@ -297,7 +297,7 @@ class ActorAgent:
                         task_id="",
                         negotiation_round=0,
                         sender=self.actor_id,
-                        payload={"ts": time.time(), "state": self.state.value},
+                        payload={"ts": time.time(), "state": self.state.value, "heartbeat": True},
                     )
                 )
             except BusUnavailable:

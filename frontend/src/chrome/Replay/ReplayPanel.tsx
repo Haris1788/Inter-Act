@@ -108,6 +108,57 @@ function normalise(raw: RawBusMessage, idx: number): BusMessage {
   };
 }
 
+/**
+ * Dedup repeated AVAILABILITY_UPDATE heartbeats in a message list.
+ * For each actor, consecutive heartbeats with the same payload.state are
+ * collapsed — only the first sighting and state-change events are kept.
+ * The raw backend log is NOT modified; this runs at render time only.
+ */
+function deduplicateHeartbeats(
+  raw: RawBusMessage[],
+  normalised: BusMessage[],
+): BusMessage[] {
+  const lastHeartbeatState = new Map<string, string>();
+  const result: BusMessage[] = [];
+
+  for (let i = 0; i < raw.length; i++) {
+    const r = raw[i];
+    const n = normalised[i];
+    if (!n) continue;
+
+    if (r.type !== "availability_update") {
+      result.push(n);
+      continue;
+    }
+
+    const pay = r.payload as Record<string, unknown> | undefined;
+    const isHeartbeat = pay?.heartbeat === true;
+    const newState = typeof pay?.state === "string" ? pay.state : undefined;
+
+    if (!isHeartbeat || newState === undefined) {
+      // Non-heartbeat availability_update — always show.
+      result.push(n);
+      continue;
+    }
+
+    const sender = r.sender ?? "system";
+    const prevState = lastHeartbeatState.get(sender);
+
+    if (prevState === undefined) {
+      // First sighting.
+      lastHeartbeatState.set(sender, newState);
+      result.push({ ...n, text: `${sender} alive` });
+    } else if (prevState !== newState) {
+      // State transition.
+      lastHeartbeatState.set(sender, newState);
+      result.push({ ...n, text: `${sender}: ${prevState} → ${newState}` });
+    }
+    // else: same state — suppress.
+  }
+
+  return result;
+}
+
 export function ReplayPanel() {
   const [messages, setMessages] = useState<BusMessage[]>([]);
   // Keep the raw backend messages so computeReplayPositions can scan payloads.
@@ -138,7 +189,8 @@ export function ReplayPanel() {
       }
       const data = (await resp.json()) as ReplayResponse;
       const normalised = data.messages.map(normalise);
-      setMessages(normalised);
+      const deduped = deduplicateHeartbeats(data.messages, normalised);
+      setMessages(deduped);
       setRawMessages(data.messages);
       setCursor(0);
       setPlaying(false);

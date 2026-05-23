@@ -1,14 +1,20 @@
 // ArmRenderer — Stage 6 Track A: arm articulation visualisation.
 // Stage 6 Track C: gripper-close gesture + idle breathing pulse (additive).
+// Phase 5.1 Fix #1: reach radius visibility (radial gradient + stronger outline + negotiation pulse).
+// Phase 5.1 Fix #2: arm geometry proportions (stick == reach, pivot/gripper scale with reach).
 //
 // Renders one Konva group per arm actor (kind="arm") in the topology slice.
 // Each group shows:
 //   · Pivot circle (shoulder joint) at the actor's authored canvas position.
 //   · Rotating stick (upper arm) at angle θ from backend `arm_angle_update`.
-//   · Gripper rectangle at the stick tip.
+//   · Gripper rectangle at the stick tip (ON the reach boundary).
 //   · Actor-id label below the pivot.
 //   · [Track C] Idle breathing ring on the pivot (subtle pulse, 2-s period).
 //   · [Track C] Gripper-close animation during pickup/place.
+//   · [Fix #1] Reach radius: radial gradient fill + solid outline, pulse when negotiating.
+//
+// Invariant (Fix #2): pivot_center + stick_length == reach_radius.
+// Gripper tip terminates ON the reach boundary. All geometry scales with reach_px.
 //
 // Angle convention (matches backend actuation.py sweep_arm):
 //   θ=0   → RIGHT  (+x in screen space)
@@ -35,59 +41,37 @@
 // per arm in a ref. Gripper width is computed each frame:
 //   · If the settled target angle is near PICK (≈180°) or PLACE (≈0°)
 //     AND the update was received within GRIPPER_CLOSE_WINDOW_MS → gripper
-//     closes (animate width 8→3 px over GRIPPER_ANIM_MS).
-//   · Otherwise gripper opens (animate width →8 px).
+//     closes (animate width →closed over GRIPPER_ANIM_MS).
+//   · Otherwise gripper opens (animate width →open).
 // "Near" = within ANGLE_SNAP_DEG of the landmark angle (accounts for float
 // rounding in sweep_arm). No bus subscription needed; purely additive.
 //
 // ── Track C: Idle breathing pulse ──────────────────────────────────────────
-// A concentric ring on the pivot oscillates radius 6→7 px and opacity 0.15→0
-// with a 2-second sinusoidal period. Active when no arm_angle_update has
-// arrived for > IDLE_THRESHOLD_MS (arm is presumed idle/resting).
+// A concentric ring on the pivot oscillates radius and opacity with a 2-second
+// sinusoidal period. Active when no arm_angle_update has arrived for >
+// IDLE_THRESHOLD_MS (arm is presumed idle/resting).
 // Breathing reuses the Track A RAF loop — no second requestAnimationFrame.
 // The RAF is kept running at low cost (continuous sin eval) so the pulse
 // stays smooth even when no tween is active. This is the same approach used
 // by AgvTokenLayer's pulsePhase pattern.
 //
-// ── Track B insertion point ──────────────────────────────────────────────────
-// TODO(Stage 6 Track B): add a dashed reach-radius circle per arm.
-//   <Circle
-//     x={0} y={0}
-//     radius={arm.reach_px}
-//     stroke={armColor} strokeWidth={1} dash={[4, 6]} opacity={0.25}
-//     listening={false}
-//   />
-//   Mount it inside the arm Group, before the stick, so it renders below.
+// ── Fix #1: Reach radius visibility ─────────────────────────────────────────
+// Replaces old dashed 12%-alpha circle with:
+//   · Radial gradient fill: actor.color@12% at center → transparent at boundary.
+//   · Solid outline at 35%–60% alpha (35% idle, 50% hover, 60% selected).
+//   · NEGOTIATING state: outline alpha pulses 40%→80% on 1.5 s sine (same RAF).
+//   Visible at 40% zoom because gradient fill survives downscale.
 
 import { useEffect, useRef, useState } from "react";
 import { Layer, Group, Circle, Rect, Line, Text } from "react-konva";
 
 import type { ViewportTransform } from "./useViewportTransform";
-import { useActors, useArmAngles } from "@/store/selectors";
+import { useActors, useArmAngles, useActorRuntimeAll } from "@/store/selectors";
 import { useStore } from "@/store";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Stick length as a fraction of arm.reach_px (40 % of radial work envelope). */
-const STICK_FRACTION = 0.4;
-
-/** Pivot circle radius in canvas pixels. */
-const PIVOT_RADIUS = 6;
-
-/** Pivot inner highlight radius. */
-const PIVOT_INNER_RADIUS = 2.5;
-
-/** Stroke width of the arm stick. */
-const STICK_WIDTH = 3;
-
-/** Gripper rectangle dimensions at the stick tip. */
-const GRIPPER_W = 8;
-const GRIPPER_H = 4;
-
-/** [Track C] Closed gripper width in canvas pixels. */
-const GRIPPER_W_CLOSED = 3;
 
 /** Default color when topology actor has no color field. */
 const DEFAULT_ARM_COLOR = "#c87941";
@@ -98,14 +82,52 @@ const ARM_TWEEN_MS = 300;
 /** Default arm reach when not specified (px). */
 const DEFAULT_REACH_PX = 120;
 
-// ── Phase 5.1 Stage 5 Track A: hover chip constants ──────────────────────────
+// ── Fix #2 — Per-reach dimension functions ────────────────────────────────
+// All arm geometry scales with reach_px so arms feel physically proportional.
+// Invariant: stick_length == reach_px → gripper tip ON the radius boundary.
 
-/** Reach-circle alpha when hovered (from 0.12 → 0.30 or selected's 0.30 → 0.45). */
-const REACH_ALPHA_DEFAULT = 0.12;
-const REACH_ALPHA_HOVER = 0.30;
-const REACH_ALPHA_SELECTED = 0.30;
-const REACH_ALPHA_SELECTED_HOVER = 0.45;
+/** Pivot circle radius: scales with arm size. Floor = 8 px so tiny arms stay visible. */
+function pivotRadius(reach: number): number { return Math.max(8, reach * 0.04); }
 
+/** Pivot inner highlight radius (proportional, min 2.5). */
+function pivotInnerRadius(reach: number): number { return Math.max(2.5, reach * 0.015); }
+
+/** Stick width: substantial enough to read as physical. Floor = 4 px. */
+function stickWidth(reach: number): number { return Math.max(4, reach * 0.025); }
+
+/** Open gripper width: scales with reach. Floor = 10 px. */
+function gripperWOpen(reach: number): number { return Math.max(10, reach * 0.06); }
+
+/** Gripper height: scales with reach. Floor = 5 px. */
+function gripperHVal(reach: number): number { return Math.max(5, reach * 0.03); }
+
+/** Closed gripper width: fraction of open width, at least 3 px. */
+function gripperWClosed(reach: number): number { return Math.max(3, gripperWOpen(reach) * 0.35); }
+
+// ── Fix #1 — Reach radius visibility constants ────────────────────────────
+
+/** Reach outline stroke width (px canvas). 1.5 px → ~0.6 px at 40% zoom, still legible. */
+const REACH_STROKE_WIDTH = 1.5;
+const REACH_STROKE_WIDTH_SELECTED = 2;
+
+/** Outline alpha (stroke at radius edge). */
+const REACH_STROKE_ALPHA_DEFAULT = 0.35;
+const REACH_STROKE_ALPHA_HOVER = 0.50;
+const REACH_STROKE_ALPHA_SELECTED = 0.60;
+const REACH_STROKE_ALPHA_SELECTED_HOVER = 0.75;
+
+/** Gradient fill inner alpha (at pivot center). Fades to 0 at radius boundary. */
+const REACH_GRAD_INNER_ALPHA = 0.12;
+
+/** NEGOTIATING pulse animation: outline alpha oscillates on a 1.5 s sine. */
+const PULSE_PERIOD_MS = 1500;
+const PULSE_ALPHA_MIN = 0.40;
+const PULSE_ALPHA_MAX = 0.80;
+
+/** Negotiation states that trigger the animated pulse ring on the reach circle. */
+const NEGOTIATING_STATES = new Set(["bidding", "won", "executing"]);
+
+// ── Chip constants ──────────────────────────────────────────────────────────
 /** Chip background padding (px). */
 const CHIP_PAD_X = 5;
 const CHIP_PAD_Y = 3;
@@ -132,7 +154,7 @@ const IDLE_THRESHOLD_MS = 1500;
 /** Breathing pulse period (ms). */
 const BREATH_PERIOD_MS = 2000;
 
-/** Breathing pulse outer ring: max radius delta above PIVOT_RADIUS (px). */
+/** Breathing pulse outer ring: max radius delta above pivot radius (px). */
 const BREATH_RADIUS_DELTA = 1;
 
 /** Breathing pulse max opacity. Intentionally very subtle (not distracting). */
@@ -144,7 +166,7 @@ const BREATH_OPACITY_MAX = 0.18;
 
 /** Interpolate angle via the short arc (handles 0↔359 wrap correctly). */
 function lerpAngle(from: number, to: number, t: number): number {
-  let diff = ((to - from + 540) % 360) - 180; // shortest arc in [-180, 180]
+  const diff = ((to - from + 540) % 360) - 180; // shortest arc in [-180, 180]
   return from + diff * t;
 }
 
@@ -169,6 +191,14 @@ function nearAngle(angle: number, landmark: number): boolean {
   return diff <= ANGLE_SNAP_DEG;
 }
 
+/** Convert 0..1 alpha to a two-digit hex byte appended to a hex color string.
+ *  e.g. alphaHex(0.12) → "1f"  (used for gradient color stops). */
+function alphaHex(a: number): string {
+  return Math.round(Math.min(1, Math.max(0, a)) * 255)
+    .toString(16)
+    .padStart(2, "0");
+}
+
 // ---------------------------------------------------------------------------
 // Per-arm tween state (kept outside React so RAF closures read fresh values).
 // ---------------------------------------------------------------------------
@@ -187,7 +217,7 @@ interface ArmTween {
 interface ArmGripperState {
   /** Current displayed width (px, animated). */
   displayWidth: number;
-  /** Target width (GRIPPER_W or GRIPPER_W_CLOSED). */
+  /** Target width (openWidth or closedWidth). */
   targetWidth: number;
   /** Width animation start time. */
   animStart: number | null;
@@ -195,6 +225,10 @@ interface ArmGripperState {
   fromWidth: number;
   /** performance.now() of the last angle update. */
   angleChangedAt: number;
+  /** Per-arm open gripper width (derived from reach_px at init). */
+  openWidth: number;
+  /** Per-arm closed gripper width (derived from reach_px at init). */
+  closedWidth: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +239,8 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
   const actors = useActors();
   const armAngles = useArmAngles();
   const selectedActorId = useStore((s) => s.selectedActorId);
+  // Fix #1: read negotiationState per actor for pulse ring.
+  const actorRuntime = useActorRuntimeAll();
 
   // Per-arm tween state. Keyed by actor id. Stored in a ref so the RAF
   // closure always sees the latest target without triggering re-renders.
@@ -231,6 +267,7 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
 
   // [Track C] Breathing phase accumulator (ms since epoch mod BREATH_PERIOD).
   // Kept as a ref; read each frame inside the RAF without triggering state.
+  // Also drives the Fix #1 negotiation pulse (different period constant).
   const breathPhaseRef = useRef<number>(performance.now() % BREATH_PERIOD_MS);
 
   // Collect arm actors from the topology slice.
@@ -266,16 +303,21 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
 
       // [Track C] Update the angle-change timestamp on ANY update (new or same).
       // Also update the gripper target based on the new angle.
+      const reach = actor.reach_px ?? DEFAULT_REACH_PX;
       const gs = gripperRef.current[actor.id];
       const isPickPlace = nearAngle(target, 180) || nearAngle(target, 0);
-      const newTargetWidth = isPickPlace ? GRIPPER_W_CLOSED : GRIPPER_W;
+      const wOpen = gripperWOpen(reach);
+      const wClosed = gripperWClosed(reach);
+      const newTargetWidth = isPickPlace ? wClosed : wOpen;
       if (!gs) {
         gripperRef.current[actor.id] = {
-          displayWidth: GRIPPER_W,
+          displayWidth: wOpen,
           targetWidth: newTargetWidth,
           animStart: isPickPlace ? now : null,
-          fromWidth: GRIPPER_W,
+          fromWidth: wOpen,
           angleChangedAt: now,
+          openWidth: wOpen,
+          closedWidth: wClosed,
         };
       } else {
         const widthChanged = Math.abs(newTargetWidth - gs.targetWidth) > 0.1;
@@ -285,6 +327,8 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
           targetWidth: newTargetWidth,
           animStart: widthChanged ? now : gs.animStart,
           fromWidth: widthChanged ? gs.displayWidth : gs.fromWidth,
+          openWidth: wOpen,
+          closedWidth: wClosed,
         };
       }
     }
@@ -298,6 +342,7 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
   // RAF loop: advance all active tweens + gripper animations + breathing.
   // Track C extends Track A's loop: the same requestAnimationFrame handles
   // angle tweens, gripper width, and breathing — no second RAF source.
+  // Fix #1: breathPhaseRef.current also drives the negotiation pulse (different period).
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -339,7 +384,9 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
         const isPickPlace = nearAngle(settledAngle, 180) || nearAngle(settledAngle, 0);
         const windowOk = (now - gs.angleChangedAt) < GRIPPER_CLOSE_WINDOW_MS;
         const wantClosed = isPickPlace && windowOk;
-        const wantWidth = wantClosed ? GRIPPER_W_CLOSED : GRIPPER_W;
+        // openWidth/closedWidth stored per-arm in the gripper state from
+        // the useEffect (which has reach_px context). Use them directly.
+        const wantWidth = wantClosed ? gs.closedWidth : gs.openWidth;
 
         // Target changed: restart animation.
         if (Math.abs(wantWidth - gs.targetWidth) > 0.1) {
@@ -369,6 +416,8 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
 
       // ── Breathing phase (Track C) ───────────────────────────────────────
       // Update once per frame; always runs so breathing is continuous.
+      // breathPhaseRef.current is also read for the Fix #1 negotiation pulse
+      // (using PULSE_PERIOD_MS instead of BREATH_PERIOD_MS).
       breathPhaseRef.current = now % BREATH_PERIOD_MS;
 
       // Is any arm in idle/breathing state?
@@ -420,8 +469,12 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
 
   // [Track C] Current breathing phase as a 0→1 value (sin-based, soft).
   const breathT = (Math.sin((breathPhaseRef.current / BREATH_PERIOD_MS) * 2 * Math.PI) + 1) / 2;
-  const breathRadius = PIVOT_RADIUS + breathT * BREATH_RADIUS_DELTA;
   const breathOpacity = breathT * BREATH_OPACITY_MAX;
+
+  // [Fix #1] Negotiation pulse phase: 0→1 on PULSE_PERIOD_MS sine.
+  // Reuses breathPhaseRef (same RAF loop) — offset by π/2 so pulse and breath
+  // are not perfectly in sync, giving a slightly richer feel.
+  const pulseT = (Math.sin((breathPhaseRef.current / PULSE_PERIOD_MS) * 2 * Math.PI + Math.PI / 2) + 1) / 2;
 
   return (
     // Phase 5.1 Stage 5 Track A — hover compromise:
@@ -440,43 +493,57 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
       {armActors.map((actor) => {
         const { x, y } = actor.position;
         const reach = actor.reach_px ?? DEFAULT_REACH_PX;
-        const stickLen = reach * STICK_FRACTION;
+
+        // Fix #2: All geometry scales with reach_px.
+        // Invariant: stickLen == reach → gripper tip terminates ON radius boundary.
+        const stickLen = reach;
+        const pRadius = pivotRadius(reach);
+        const pInnerRadius = pivotInnerRadius(reach);
+        const sWidth = stickWidth(reach);
+        const gH = gripperHVal(reach);
+
         const color = actorColor(actor as unknown as Record<string, unknown>);
         const isSelected = actor.id === selectedActorId;
         const isHovered = actor.id === hoveredId;
 
-        // Reach circle alpha: bumps up on hover.
-        const reachAlpha = isSelected
-          ? isHovered ? REACH_ALPHA_SELECTED_HOVER : REACH_ALPHA_SELECTED
-          : isHovered ? REACH_ALPHA_HOVER : REACH_ALPHA_DEFAULT;
+        // Fix #1: Negotiation state for pulse ring on reach circle.
+        const ns = actorRuntime[actor.id]?.negotiationState ?? "";
+        const isNegotiating = NEGOTIATING_STATES.has(ns);
+
+        // Reach outline stroke alpha: much stronger than old 12%, reads at 40% zoom.
+        const reachStrokeAlpha = isNegotiating
+          ? lerp(PULSE_ALPHA_MIN, PULSE_ALPHA_MAX, pulseT) // animated pulse
+          : isSelected
+            ? (isHovered ? REACH_STROKE_ALPHA_SELECTED_HOVER : REACH_STROKE_ALPHA_SELECTED)
+            : (isHovered ? REACH_STROKE_ALPHA_HOVER : REACH_STROKE_ALPHA_DEFAULT);
+
+        const reachSW = isSelected ? REACH_STROKE_WIDTH_SELECTED : REACH_STROKE_WIDTH;
 
         // Current displayed angle in degrees (screen convention: 0=right, 90=down).
         const angleDeg = displayAngles[actor.id] ?? tweenRef.current[actor.id]?.displayAngle ?? 90;
         const angleRad = (angleDeg * Math.PI) / 180;
 
         // Stick tip coordinates in actor-local space (pivot at origin).
+        // stickLen == reach → tip IS on the reach boundary (invariant).
         const tipX = Math.cos(angleRad) * stickLen;
         const tipY = Math.sin(angleRad) * stickLen;
 
-        // Gripper tip position (in actor-local space, unrotated).
-        // Used for chip placement: position chip near gripper endpoint.
-        const chipX = Math.cos(angleRad) * stickLen + 10;
-        const chipY = Math.sin(angleRad) * stickLen - 10;
-
-        // Gripper is oriented along the stick: we rotate the Group by angleDeg
-        // so the gripper rect aligns with the stick direction automatically.
-        // The gripper rect is placed at (stickLen, 0) in the rotated frame,
-        // centred on the tip.
+        // Chip placement: just beyond the gripper tip.
+        const chipX = Math.cos(angleRad) * (stickLen + 12);
+        const chipY = Math.sin(angleRad) * (stickLen + 12) - 10;
 
         // Stroke color: slightly darkened for contrast.
         const strokeColor = "rgba(0,0,0,0.45)";
 
-        // [Track C] Gripper width: from animated gripper state, or default.
-        const gripperW = gripperRef.current[actor.id]?.displayWidth ?? GRIPPER_W;
+        // [Track C] Gripper width: from animated gripper state, or default open width.
+        const gState = gripperRef.current[actor.id];
+        const gripperDisplayW = gState?.displayWidth ?? gripperWOpen(reach);
 
         // [Track C] Breathing: active when angle hasn't changed for > IDLE_THRESHOLD_MS.
-        const gs = gripperRef.current[actor.id];
-        const isIdle = !gs || (performance.now() - gs.angleChangedAt) > IDLE_THRESHOLD_MS;
+        const isIdle = !gState || (performance.now() - gState.angleChangedAt) > IDLE_THRESHOLD_MS;
+
+        // Breathing ring radius: expands slightly above pivot radius.
+        const breathRadius = pRadius + breathT * BREATH_RADIUS_DELTA;
 
         // Chip label text (e.g. "120px").
         const chipLabel = `${reach}px`;
@@ -484,25 +551,39 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
         const chipW = chipLabel.length * 6 + CHIP_PAD_X * 2;
         const chipH = 10 + CHIP_PAD_Y * 2;
 
+        // Fix #1: Radial gradient color stops for the reach area fill.
+        // Konva fillRadialGradientColorStops: [position, color, position, color, ...]
+        // Inner: actor.color at REACH_GRAD_INNER_ALPHA; outer: fully transparent.
+        const innerColorStop = `${color}${alphaHex(REACH_GRAD_INNER_ALPHA)}`;
+        const outerColorStop = `${color}00`;
+
         return (
           <Group key={actor.id} x={x} y={y}>
-            {/* ── Reach radius circle (Stage 2) ──────────────────────────────
-                Dashed reach envelope. Alpha bumps on hover (Track A). */}
+            {/* ── Fix #1: Reach radius — radial gradient fill + solid outline ──
+                Gradient: soft "operational halo" from actor.color@12% at center
+                to transparent at boundary. Visible at any zoom level.
+                Outline: solid (not dashed) at 35–60% alpha, 1.5–2 px stroke.
+                NEGOTIATING: outline alpha pulses 40→80% on 1.5 s sine (same RAF).
+                SELECTED: outline at 60% alpha, 2 px stroke.
+                Rendered first (below stick/gripper/pivot). */}
             <Circle
               x={0}
               y={0}
               radius={reach}
+              fillRadialGradientStartPoint={{ x: 0, y: 0 }}
+              fillRadialGradientStartRadius={0}
+              fillRadialGradientEndPoint={{ x: 0, y: 0 }}
+              fillRadialGradientEndRadius={reach}
+              fillRadialGradientColorStops={[0, innerColorStop, 1, outerColorStop]}
               stroke={color}
-              strokeWidth={1}
-              dash={[4, 6]}
-              opacity={reachAlpha}
+              strokeWidth={reachSW}
+              opacity={reachStrokeAlpha}
               listening={false}
             />
 
-            {/* [Track C] Idle breathing ring — rendered below everything else.
-                Oscillates radius 6→7 px, opacity 0.15→0, 2-s sinusoidal period.
-                Only visible when the arm has been idle for > IDLE_THRESHOLD_MS.
-                Intentionally subtle: a navigation cue, not a status alert.  */}
+            {/* [Track C] Idle breathing ring on the pivot — subtle pulse.
+                Radius oscillates pRadius → pRadius+1, opacity 0→0.18.
+                Only visible when the arm has been idle for > IDLE_THRESHOLD_MS. */}
             {isIdle && (
               <Circle
                 x={0}
@@ -515,25 +596,25 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
               />
             )}
 
-            {/* Arm stick: line from pivot to tip */}
+            {/* Fix #2: Arm stick — length == reach (tip ON radius boundary).
+                stickWidth scales with reach (floor 4 px). lineCap="round". */}
             <Line
               points={[0, 0, tipX, tipY]}
               stroke={color}
-              strokeWidth={STICK_WIDTH}
+              strokeWidth={sWidth}
               lineCap="round"
               listening={false}
             />
 
-            {/* Gripper rectangle at the tip, oriented along the stick.
-                We use a Group rotated to angleDeg so the rect stays aligned
-                with the stick direction without trigonometry in props.
-                [Track C] Width animates 8→3 px on pickup/place, 3→8 on open. */}
+            {/* Fix #2: Gripper rectangle at the stick TIP (at distance reach from pivot).
+                Width and height scale with reach. Track C animates width open↔closed.
+                Rotated group so gripper aligns with stick direction. */}
             <Group rotation={angleDeg} listening={false}>
               <Rect
-                x={stickLen - gripperW / 2}
-                y={-GRIPPER_H / 2}
-                width={gripperW}
-                height={GRIPPER_H}
+                x={stickLen - gripperDisplayW / 2}
+                y={-gH / 2}
+                width={gripperDisplayW}
+                height={gH}
                 fill={color}
                 stroke={strokeColor}
                 strokeWidth={0.8}
@@ -542,12 +623,12 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
               />
             </Group>
 
-            {/* Shoulder pivot — rendered above the stick so it reads as
-                a joint sitting on top of the arm structure. */}
+            {/* Fix #2: Shoulder pivot — radius scales with arm (floor 8 px).
+                Rendered above the stick so it reads as a joint on the arm structure. */}
             <Circle
               x={0}
               y={0}
-              radius={PIVOT_RADIUS}
+              radius={pRadius}
               fill={color}
               stroke={strokeColor}
               strokeWidth={1.2}
@@ -557,7 +638,7 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
             <Circle
               x={0}
               y={0}
-              radius={PIVOT_INNER_RADIUS}
+              radius={pInnerRadius}
               fill="rgba(255,255,255,0.55)"
               listening={false}
             />
@@ -567,7 +648,7 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
                 label above (which is the primary identity affordance). */}
             <Text
               x={-24}
-              y={PIVOT_RADIUS + 4}
+              y={pRadius + 4}
               width={48}
               align="center"
               text={actor.id}
@@ -586,7 +667,7 @@ export function ArmRenderer({ tx }: { tx: ViewportTransform }) {
             <Circle
               x={0}
               y={0}
-              radius={PIVOT_RADIUS + 6}
+              radius={pRadius + 6}
               fill="transparent"
               listening={true}
               onMouseEnter={(e) => {

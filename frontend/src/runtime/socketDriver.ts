@@ -67,6 +67,11 @@ export function createSocketDriver(): RuntimeDriver {
   // last emitted status per actor - dedup so observability records only real
   // transitions, never per-poll repeats.
   const lastStatus = new Map<string, string>();
+  // Per-actor heartbeat state dedup map — tracks the last negotiation state
+  // seen for each actor from AVAILABILITY_UPDATE heartbeats. When the state
+  // is unchanged, the bus message is suppressed from the UI stream.
+  // "seen" = actor appeared at least once (first-sighting gets one push).
+  const lastHeartbeatState = new Map<string, string>();
   // actorId → downstream actorIds (from /config asset_graph).
   let adjacency: Record<string, string[]> = {};
   // object_id → last owner key, for detecting dock moments.
@@ -191,6 +196,7 @@ export function createSocketDriver(): RuntimeDriver {
         objSeq.clear();
         objOwner.clear();
         lastStatus.clear();
+        lastHeartbeatState.clear();
         void bootstrap();
       });
       socket.on("disconnect", () => {
@@ -543,6 +549,54 @@ export function createSocketDriver(): RuntimeDriver {
               : new Date().toISOString().slice(11, 19);
           const from = p.sender ?? "system";
 
+          // Phase 5.1 Item 4 — heartbeat dedup for AVAILABILITY_UPDATE.
+          // Always update negotiationState (NegotiationHaloLayer relies on it).
+          // Only push to the bus message stream for first-sighting or state changes.
+          if (kind === "availability_update" && p.payload) {
+            const pay = p.payload as Record<string, unknown>;
+            const isHeartbeat = pay.heartbeat === true;
+            const newState = typeof pay.state === "string" ? pay.state : undefined;
+
+            // Always update negotiation halo state regardless of dedup.
+            if (newState !== undefined) {
+              st().setActorRuntime(from, { negotiationState: newState });
+            }
+
+            if (isHeartbeat && newState !== undefined) {
+              const prevState = lastHeartbeatState.get(from);
+
+              if (prevState === undefined) {
+                // First sighting — push a compact "alive" event.
+                lastHeartbeatState.set(from, newState);
+                st().pushBusMessage({
+                  id: `bm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  ts,
+                  kind,
+                  from,
+                  round: p.negotiation_round,
+                  task_id: p.task_id,
+                  text: `${from} alive`,
+                });
+              } else if (prevState !== newState) {
+                // State changed — push a transition event.
+                lastHeartbeatState.set(from, newState);
+                st().pushBusMessage({
+                  id: `bm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  ts,
+                  kind,
+                  from,
+                  round: p.negotiation_round,
+                  task_id: p.task_id,
+                  text: `${from}: ${prevState} → ${newState}`,
+                });
+              }
+              // else: same state, same sender — silently suppress (heartbeat spam).
+              return;
+            }
+            // Non-heartbeat availability_update (manually published) — fall through
+            // to normal pushBusMessage below, after building text.
+          }
+
           // Build a human-readable text summary from payload fields.
           let text = "";
           if (p.task_id) text += p.task_id;
@@ -555,6 +609,10 @@ export function createSocketDriver(): RuntimeDriver {
               text += (text ? " · " : "") + `score ${pay.score.toFixed(2)}`;
             if (typeof pay.reason === "string")
               text += (text ? " · " : "") + pay.reason;
+            // Render transition label for collapsed heartbeat messages
+            // (non-heartbeat availability_update that got a transition text set).
+            if (typeof pay.transition === "string")
+              text = pay.transition;
           }
 
           st().pushBusMessage({
@@ -582,16 +640,6 @@ export function createSocketDriver(): RuntimeDriver {
           // has finished its planned path; the dashed overlay should be cleared.
           if (kind === "leg_completed" && p.slot_id === "transport" && p.sender) {
             st().clearAgvPath(p.sender);
-          }
-
-          // Phase 5.1 Stage 5 Track A — negotiation halo state.
-          // Extract state from availability_update heartbeats so the canvas
-          // can render a pulsing halo around actors currently in play.
-          if (kind === "availability_update" && p.sender && p.payload) {
-            const pay = p.payload as Record<string, unknown>;
-            if (typeof pay.state === "string") {
-              st().setActorRuntime(from, { negotiationState: pay.state });
-            }
           }
         },
       );

@@ -19,9 +19,17 @@
 //     the existing RAF pulsePhase (no extra animation loop).
 //   - Status dot: small circle beside the label with phase-keyed color.
 //
+// Phase 5.1 Fix Pass — AGV drop invisibility fix:
+//   Newly dropped AGVs exist in the topology `actors` slice but have no
+//   kinematics entry (no backend socket events yet). The layer now builds a
+//   merged render list: kinematics entries (live/tween) UNION authored AGV actors
+//   not yet in kinematics (idle at their authored centre). The authored centre
+//   is actor.position + size/2, matching the RF node centroid.
+//   A 300 ms scale-in animation acknowledges the drop immediately.
+//
 // This layer is listening={false}. Drag/select are handled by RF nodes above.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Layer, Group, Rect, Text, Arrow, Circle } from "react-konva";
 
 import { ShuttleAgv } from "./agv/ShuttleAgv";
@@ -127,10 +135,56 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
     };
   }, []);
 
-  // Collect entries: prefer runtimePosition for position when kinematics has
-  // no entry yet (first-sighting fallback to authored). Once agv_position
-  // drives kinematics, the kin.pos is the tweened value to render.
-  const entries = Object.entries(kinematics).filter(([, k]) => k.pos !== null);
+  // --- Phase 5.1 Fix: merge authored AGV actors + kinematics into one list ---
+  //
+  // "entries" is an array of [id, kinematicsOrNull] tuples covering every AGV
+  // that should be rendered:
+  //   1. Kinematics entries (live tweened positions from backend socket events).
+  //   2. Authored actors with kind === "agv" that have NO kinematics yet
+  //      (newly dropped, not yet driven by backend). Their position is the
+  //      authored node centre (position + size/2).
+  //
+  // The merge ensures a drop ALWAYS produces an immediate visible token, even
+  // before the first agv_position event arrives.
+  const entries = useMemo(() => {
+    type KinOrNull = (typeof kinematics)[string] | null;
+    const result: [string, KinOrNull][] = [];
+    const seen = new Set<string>();
+    // 1. Kinematics (live/tween — preferred source for position).
+    for (const [id, k] of Object.entries(kinematics)) {
+      if (k.pos !== null) {
+        result.push([id, k]);
+        seen.add(id);
+      }
+    }
+    // 2. Authored AGV actors without a kinematics entry yet (idle/dropped).
+    for (const [id, actor] of Object.entries(actors)) {
+      if (actor.kind !== "agv" || seen.has(id)) continue;
+      // Centre of the RF node box → Konva world-space position.
+      const cx = actor.position.x + actor.size.w / 2;
+      const cy = actor.position.y + actor.size.h / 2;
+      result.push([id, {
+        pos: { x: cx, y: cy },
+        heading: 0,
+        speed: 220,
+        target: null,
+        origin: null,
+      }]);
+    }
+    return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kinematics, actors]);
+
+  // Track when each AGV id first appeared so we can animate a scale-in.
+  // Keyed by id → timestamp (ms). New ids get the current time; existing ids
+  // keep their original entry so the animation plays only on the first render.
+  const firstSeenRef = useRef<Record<string, number>>({});
+  const nowMs = Date.now();
+  for (const [id] of entries) {
+    if (firstSeenRef.current[id] === undefined) {
+      firstSeenRef.current[id] = nowMs;
+    }
+  }
 
   if (entries.length === 0) return null;
 
@@ -144,7 +198,8 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
   const idleRingRadius = BODY_DIAGONAL * (1 + idleT * 0.15); // diagonal .. diagonal × 1.15
   const idleRingAlpha = 0.05 + idleT * 0.10; // 0.05..0.15
 
-  const now = Date.now();
+  // nowMs used for both idle-pulse staleness check and drop-fade age.
+  const now = nowMs;
 
   return (
     <Layer
@@ -159,10 +214,17 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
         // Priority: replayPositions (highest) > runtimeKinematics > authored.
         // In replay mode, snap to historical position (no tween).
         const replayPos = replayMode ? (replayPositions[id] ?? null) : null;
-        const pos = replayPos !== null ? { x: replayPos.x, y: replayPos.y } : k.pos;
-        const { target } = k;
+        const pos = replayPos !== null ? { x: replayPos.x, y: replayPos.y } : (k?.pos ?? { x: 0, y: 0 });
+        const target = k?.target ?? null;
         // In replay mode there is no live target; suppress transit halo.
         const inTransit = replayPos === null && target !== null;
+
+        // Phase 5.1 Fix: scale-in fade for newly dropped tokens (300 ms).
+        // Existing AGVs (first seen > 300 ms ago) render at full opacity.
+        const ageMs = nowMs - (firstSeenRef.current[id] ?? nowMs);
+        const FADE_MS = 300;
+        const dropOpacity = Math.min(1, ageMs / FADE_MS);
+        const dropScale = 0.5 + 0.5 * Math.min(1, ageMs / FADE_MS);
 
         // Heading: replay > runtimePosition.theta > kinematics heading.
         const rtp = actorRuntime[id]?.runtimePosition;
@@ -171,7 +233,7 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
             ? replayPos.theta
             : rtp != null
               ? rtp.theta
-              : k.heading;
+              : (k?.heading ?? 0);
         const headingDeg = (theta * 180) / Math.PI;
 
         const actor = actors[id];
@@ -202,7 +264,7 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
           rtpAge > STALE_THRESHOLD_MS;
 
         return (
-          <Group key={id} x={pos.x} y={pos.y}>
+          <Group key={id} x={pos.x} y={pos.y} opacity={dropOpacity} scaleX={dropScale} scaleY={dropScale}>
 
             {/* ── Track C: Return path arrow ──────────────────────────────────
                 Rendered first (lowest z) so it's behind everything else.
