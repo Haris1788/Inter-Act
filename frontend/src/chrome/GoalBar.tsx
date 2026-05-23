@@ -30,32 +30,18 @@ export function GoalBar({ className }: GoalBarProps) {
     if (!negotiating) return;
     // Phase A: capture the task_id of the just-published announce.
     if (!activeTaskId) {
-      const click = pendingSinceRef.current ?? 0;
-      const announce = busMessages.find(
-        (m) =>
-          m.kind === "task_announce" &&
-          m.task_id &&
-          // BusMessage.ts is rendered HH:MM:SS — we can't diff with ms,
-          // so accept the first announce that appeared AFTER the click
-          // by adopting the most recent one. Earlier announces from the
-          // session are filtered out by adopting only when we see a new
-          // one show up in the list-by-id check below.
-          true,
-      );
       // Adopt the most recent task_announce (last entry in chronological
       // bus order). The buffer grows monotonically so this lands the new
-      // announce as soon as the backend publishes it.
+      // announce as soon as the backend publishes it. We can't reliably
+      // diff bus ts with the click timestamp (HH:MM:SS resolution), so we
+      // rely on "most recent" — if the user submits twice in <1s only the
+      // second task gets the loader (acceptable).
       const announces = busMessages.filter(
         (m) => m.kind === "task_announce" && m.task_id,
       );
       const latest = announces[announces.length - 1];
       if (latest && latest.task_id) {
-        // Only adopt if the announce's task_id is NOT one we've already
-        // seen complete (defensive against stale buffer).
         setActiveTaskId(latest.task_id);
-        void click; // placeholder — ts diff would be ideal once backend
-                    // ts threading is reliable.
-        // First adoption sets the feedback.
         if (!feedback?.startsWith("Negotiating")) {
           setFeedback("Negotiating — watching bus for completion…");
         }
