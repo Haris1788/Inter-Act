@@ -1,8 +1,9 @@
-// StatusDot — shared pulsing status indicator for all AGV silhouette components.
-// Replaces the inline static <Circle> in ShuttleAgv, ForkliftAgv, TowAgv.
+// useStatusPulse — shared hook for the inline AGV status dot animation.
+//
+// Returns { radius, opacity } that animate by pulse group (same profiles as
+// the old StatusDot component). Call per-frame via RAF driven by state.
 
 import { useEffect, useRef, useState } from "react";
-import { Circle } from "react-konva";
 
 // ── Color map (single canonical copy) ───────────────────────────────────────
 
@@ -25,12 +26,7 @@ export function dotColor(status: string): string {
   return STATUS_DOT_COLORS[status] ?? DEFAULT_DOT_COLOR;
 }
 
-// ── Pulse profile per status group ──────────────────────────────────────────
-
-// "stopped" → no pulse (static).
-// "idle" / "ok" → slow, subtle (2 s period, radius 4→5, alpha 0.7→1.0).
-// "moving" / "returning" / "loading" / "unloading" / "busy" → fast (0.8 s, radius 4→6, alpha 0.7→1.0).
-// "faulted" / "down" → urgent (0.5 s, radius 4→7, alpha 0.7→1.0).
+// ── Pulse profiles ───────────────────────────────────────────────────────────
 
 type PulseGroup = "none" | "slow" | "fast" | "urgent";
 
@@ -63,35 +59,34 @@ interface PulseParams {
   alphaMax: number;
 }
 
+const BASE_RADIUS = 4;
+
 const PULSE_PARAMS: Record<PulseGroup, PulseParams> = {
-  none:   { periodMs: 2000, rMin: 4, rMax: 4,   alphaMin: 1.0, alphaMax: 1.0 },
-  slow:   { periodMs: 2000, rMin: 4, rMax: 5,   alphaMin: 0.7, alphaMax: 1.0 },
-  fast:   { periodMs:  800, rMin: 4, rMax: 6,   alphaMin: 0.7, alphaMax: 1.0 },
-  urgent: { periodMs:  500, rMin: 4, rMax: 7,   alphaMin: 0.7, alphaMax: 1.0 },
+  none:   { periodMs: 2000, rMin: BASE_RADIUS, rMax: BASE_RADIUS,     alphaMin: 1.0, alphaMax: 1.0 },
+  slow:   { periodMs: 2000, rMin: BASE_RADIUS, rMax: BASE_RADIUS + 1, alphaMin: 0.7, alphaMax: 1.0 },
+  fast:   { periodMs:  800, rMin: BASE_RADIUS, rMax: BASE_RADIUS + 2, alphaMin: 0.7, alphaMax: 1.0 },
+  urgent: { periodMs:  500, rMin: BASE_RADIUS, rMax: BASE_RADIUS + 3, alphaMin: 0.7, alphaMax: 1.0 },
 };
 
-// ── Component ────────────────────────────────────────────────────────────────
+// ── Hook ─────────────────────────────────────────────────────────────────────
 
-interface StatusDotProps {
-  x: number;
-  y: number;
-  status: string;
+export interface StatusPulse {
+  radius: number;
+  opacity: number;
+  fill: string;
 }
 
-export function StatusDot({ x, y, status }: StatusDotProps) {
+export function useStatusPulse(status: string): StatusPulse {
   const group = pulseGroup(status);
   const params = PULSE_PARAMS[group];
-  const fill = dotColor(status);
 
-  // Animated phase — only ticks when group !== "none"
   const phaseRef = useRef(0);
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef<number | null>(null);
-  const [tick, setTick] = useState(0);
+  const [, setTick] = useState(0);
 
   useEffect(() => {
     if (group === "none") {
-      // Cancel any running RAF and stay static
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
@@ -126,25 +121,14 @@ export function StatusDot({ x, y, status }: StatusDotProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [group]);
 
-  // Suppress unused-variable lint for tick — it's only used to trigger re-render
-  void tick;
+  const t =
+    group === "none"
+      ? 0
+      : (Math.sin((phaseRef.current / params.periodMs) * 2 * Math.PI) + 1) / 2;
 
-  const t = group === "none"
-    ? 0
-    : (Math.sin((phaseRef.current / params.periodMs) * 2 * Math.PI) + 1) / 2;
-
-  const radius = params.rMin + t * (params.rMax - params.rMin);
-  const opacity = params.alphaMin + t * (params.alphaMax - params.alphaMin);
-
-  return (
-    <Circle
-      x={x}
-      y={y}
-      radius={radius}
-      fill={fill}
-      stroke="rgba(0,0,0,0.35)"
-      strokeWidth={0.8}
-      opacity={opacity}
-    />
-  );
+  return {
+    radius:  params.rMin + t * (params.rMax - params.rMin),
+    opacity: params.alphaMin + t * (params.alphaMax - params.alphaMin),
+    fill:    dotColor(status),
+  };
 }

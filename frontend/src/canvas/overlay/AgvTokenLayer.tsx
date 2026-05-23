@@ -30,7 +30,7 @@
 // This layer is listening={false}. Drag/select are handled by RF nodes above.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Layer, Group, Rect, Text, Arrow, Circle } from "react-konva";
+import { Layer, Group, Rect, Arrow, Circle } from "react-konva";
 
 import { ShuttleAgv } from "./agv/ShuttleAgv";
 import { ForkliftAgv } from "./agv/ForkliftAgv";
@@ -245,9 +245,6 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
         const trailOpacity = inTransit ? pulse * TRAIL_OPACITY_IN_TRANSIT : 0;
         const cargo = agvCargo[id] ?? null;
 
-        // Label text: full actor id (e.g. "agv-1").
-        const labelText = id;
-
         // --- Track C: phase-based status for dot + return arrow + idle pulse ---
         const rt = actorRuntime[id];
         // `phase` holds the raw backend status string ("returning", "moving", etc.)
@@ -318,9 +315,9 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
             )}
 
             {/* ── Per-kind silhouette dispatch ─────────────────────────────────
-                Each component renders its own body + status dot in the group's
-                local coordinate space (centred at 0,0). The label stays here
-                so it's always legible regardless of heading. */}
+                Each component renders its own body + inline dot+label in the
+                group's local coordinate space (centred at 0,0). Label always
+                legible regardless of heading (world-space, not rotated). */}
             {(() => {
               const subtype = actor?.subtype ?? "shuttle";
               const silhouetteProps = {
@@ -331,6 +328,7 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
                 isSelected,
                 carried: cargo !== null,
                 status: phase,
+                actorId: id,
               };
               if (subtype === "forklift") {
                 return <ForkliftAgv {...silhouetteProps} />;
@@ -341,20 +339,6 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
               // Default: "shuttle"
               return <ShuttleAgv {...silhouetteProps} />;
             })()}
-
-            {/* Actor id label — rendered in world space (not rotated with vehicle)
-                so it's always legible regardless of heading direction.
-                Black for legibility against the light canvas background. */}
-            <Text
-              x={-BODY_W / 2}
-              y={BODY_H / 2 + 5}
-              width={BODY_W}
-              align="center"
-              text={labelText}
-              fontSize={9}
-              fill="rgba(0,0,0,0.85)"
-              fontStyle="600"
-            />
           </Group>
         );
       })}

@@ -22,7 +22,7 @@ import { useEffect, useRef, useState } from "react";
 import { Layer, Circle } from "react-konva";
 
 import type { ViewportTransform } from "./useViewportTransform";
-import { useActors, useActorRuntimeAll, useAgvKinematics } from "@/store/selectors";
+import { useActors, useActorRuntimeAll } from "@/store/selectors";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -38,9 +38,8 @@ const HALO_PERIOD_MS = 2000;
 const HALO_SW_MIN = 1.5;
 const HALO_SW_MAX = 3.0;
 
-/** Halo radius offset above the body's visual radius (px). */
+/** Halo radius offset above the arm's visual radius (px). */
 const HALO_RADIUS_ARM_OFFSET = 14; // beyond PIVOT_RADIUS (6px)
-const HALO_RADIUS_AGV_OFFSET = 24; // beyond AGV body half-diagonal
 
 /** Halo stroke opacity (fixed — strokeWidth carries the pulse energy). */
 const HALO_STROKE_ALPHA = 0.30;
@@ -72,7 +71,6 @@ function actorColorOf(
 export function NegotiationHaloLayer({ tx }: { tx: ViewportTransform }) {
   const actors = useActors();
   const actorRuntime = useActorRuntimeAll();
-  const agvKinematics = useAgvKinematics();
 
   // Sine-based phase (0..1) driving strokeWidth oscillation.
   const [phase, setPhase] = useState(0);
@@ -91,9 +89,11 @@ export function NegotiationHaloLayer({ tx }: { tx: ViewportTransform }) {
     };
   }, []);
 
-  // Collect actors with active negotiation state.
+  // Collect actors with active negotiation state — arms only.
+  // AGVs convey state via the inline pulsing dot in their label; no halo needed.
   const actorList = Object.values(actors);
   const halos = actorList.filter((a) => {
+    if (a.kind !== "arm") return false;
     const ns = actorRuntime[a.id]?.negotiationState;
     return ns !== undefined && ACTIVE_STATES.has(ns);
   });
@@ -113,22 +113,10 @@ export function NegotiationHaloLayer({ tx }: { tx: ViewportTransform }) {
       {halos.map((actor) => {
         const color = actorColorOf(actor as unknown as Record<string, unknown>, "#c87941");
 
-        // Position: AGVs follow live kinematics; arms use authored position.
-        let px: number;
-        let py: number;
-        if (actor.kind === "agv") {
-          const kin = agvKinematics[actor.id];
-          px = kin?.pos?.x ?? actor.position.x;
-          py = kin?.pos?.y ?? actor.position.y;
-        } else {
-          px = actor.position.x;
-          py = actor.position.y;
-        }
-
-        const radius =
-          actor.kind === "agv"
-            ? HALO_RADIUS_AGV_OFFSET
-            : (actor.reach_px ?? 120) * 0.15 + HALO_RADIUS_ARM_OFFSET;
+        // Arms use authored position (fixed mount point).
+        const px = actor.position.x;
+        const py = actor.position.y;
+        const radius = (actor.reach_px ?? 120) * 0.15 + HALO_RADIUS_ARM_OFFSET;
 
         return (
           <Circle

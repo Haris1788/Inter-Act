@@ -13,4 +13,6 @@ export interface AgvSilhouetteProps {
   carried: boolean;
   /** Raw backend phase/status string — used for status dot colour. */
   status: string;
+  /** Actor id string, e.g. "agv-1" — rendered inline next to the status dot. */
+  actorId: string;
 }

@@ -62,30 +62,6 @@ const MobileTow = (
   </svg>
 );
 
-// ── Brains ───────────────────────────────────────────────────────────────────
-
-const BrainScripted = (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <polyline points="6 9 12 15 18 9" />
-    <polyline points="6 3 12 9 18 3" />
-  </svg>
-);
-
-const BrainScheduler = (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <rect x="3" y="4" width="18" height="16" rx="2" />
-    <line x1="3" y1="10" x2="21" y2="10" />
-    <line x1="9" y1="4" x2="9" y2="20" />
-  </svg>
-);
-
-const BrainLLM = (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <circle cx="12" cy="12" r="3" />
-    <path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" />
-  </svg>
-);
-
 // ── Zones ────────────────────────────────────────────────────────────────────
 
 const ZoneSource = (
@@ -99,12 +75,6 @@ const ZoneSink = (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
     <polyline points="19 12 12 19 5 12" />
     <line x1="12" y1="4" x2="12" y2="19" />
-  </svg>
-);
-
-const ZoneCharging = (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
   </svg>
 );
 
@@ -156,7 +126,6 @@ const PALETTE: PaletteSection[] = [
     items: [
       { kind: "chip", name: "Source feed",    sub: "input · inbound",  paletteKey: "zone-source", icon: ZoneSource },
       { kind: "chip", name: "Sink / outflow", sub: "output · outbound", paletteKey: "zone-sink",   icon: ZoneSink },
-      { kind: "row",  name: "Charging dock",  meta: "⚡",                                           icon: ZoneCharging },
     ],
   },
   {
@@ -187,14 +156,6 @@ const PALETTE: PaletteSection[] = [
       { kind: "cap", name: "transit", count: "3 agents",   filled: true },
       { kind: "cap", name: "weigh",   count: "0 actors",   filled: false },
       { kind: "cap", name: "inspect", count: "0 actors",   filled: false },
-    ],
-  },
-  {
-    label: "Control",
-    items: [
-      { kind: "row", name: "Scripted",            meta: "default", icon: BrainScripted },
-      { kind: "row", name: "Scheduler · FIFO",    meta: "FIFO",    icon: BrainScheduler },
-      { kind: "row", name: "LLM assist · qwen2.5", meta: "qwen",  icon: BrainLLM },
     ],
   },
 ];

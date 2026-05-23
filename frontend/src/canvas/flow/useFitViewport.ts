@@ -26,7 +26,7 @@ export function useFitViewport(
       // Scale to fit bounds in pane with modest padding.
       const scaleX = w / bounds.width;
       const scaleY = h / bounds.height;
-      const zoom = Math.max(0.4, Math.min(1.2, Math.min(scaleX, scaleY) * 0.85));
+      const zoom = Math.max(0.1, Math.min(1.2, Math.min(scaleX, scaleY) * 0.85));
 
       // Center the bounds in the pane.
       const x = w / 2 - (bounds.x + bounds.width / 2) * zoom;

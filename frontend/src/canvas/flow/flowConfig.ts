@@ -16,7 +16,7 @@ export const flowDefaults = {
   // Disable RF default node styling (background, border, padding).
   nodeOrigin: [0, 0] as [number, number],
   // Viewport constraints.
-  minZoom: 0.4,
+  minZoom: 0.1,
   maxZoom: 2,
   translateExtent: [
     [-EXTENT_PAD, -EXTENT_PAD],

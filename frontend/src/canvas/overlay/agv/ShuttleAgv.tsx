@@ -1,15 +1,19 @@
 // ShuttleAgv — low-profile body (50×30 px).
-// This is the existing rounded-rect vehicle promoted to its own component.
-// No visual change from the original AgvTokenLayer body render.
+// Status indicator: pulsing colored dot + actor id text rendered inline below chassis.
 
-import { Group, Rect, RegularPolygon, Line } from "react-konva";
+import { Group, Rect, RegularPolygon, Line, Circle, Text } from "react-konva";
 import type { AgvSilhouetteProps } from "./types";
-import { StatusDot } from "./StatusDot";
+import { useStatusPulse } from "./useStatusPulse";
 
 const BODY_W = 50;
 const BODY_H = 30;
 const POINTER_SIZE = 10;
-const DOT_RADIUS = 4;
+
+// Inline label geometry
+const DOT_GAP = 4;          // px gap between dot right edge and text left edge
+const FONT_SIZE = 9;
+const LABEL_Y_OFFSET = 6;   // px below bottom edge of chassis
+const CHARS_PER_PX = 5.5;   // rough char width estimate at font-size 9
 
 function darkenHex(hex: string, amount = 0.25): string {
   const r = Math.round(parseInt(hex.slice(1, 3), 16) * (1 - amount));
@@ -24,10 +28,23 @@ export function ShuttleAgv({
   isSelected,
   carried,
   status,
+  actorId,
 }: AgvSilhouetteProps) {
   const headingDeg = (theta * 180) / Math.PI;
   const strokeColor = isSelected ? color : darkenHex(color, 0.30);
   const strokeWidth = isSelected ? 2.5 : 1.5;
+
+  // Inline pulsing dot
+  const pulse = useStatusPulse(status);
+  const dotR = pulse.radius;
+
+  // Center the [dot + gap + text] line horizontally under chassis
+  const textWidth = actorId.length * CHARS_PER_PX;
+  const totalW = dotR * 2 + DOT_GAP + textWidth;
+  const lineStartX = -totalW / 2;
+  const dotCX = lineStartX + dotR;
+  const textX = lineStartX + dotR * 2 + DOT_GAP;
+  const labelY = BODY_H / 2 + LABEL_Y_OFFSET;
 
   return (
     <>
@@ -89,11 +106,23 @@ export function ShuttleAgv({
         )}
       </Group>
 
-      {/* Status dot — world-space (not rotated), pulsing */}
-      <StatusDot
-        x={BODY_W / 2 - DOT_RADIUS}
-        y={BODY_H / 2 + 5 + DOT_RADIUS}
-        status={status}
+      {/* Inline label: [pulsing dot] [actor id text] — world-space (not rotated) */}
+      <Circle
+        x={dotCX}
+        y={labelY + FONT_SIZE / 2}
+        radius={dotR}
+        fill={pulse.fill}
+        stroke="rgba(0,0,0,0.35)"
+        strokeWidth={0.8}
+        opacity={pulse.opacity}
+      />
+      <Text
+        x={textX}
+        y={labelY}
+        text={actorId}
+        fontSize={FONT_SIZE}
+        fill="rgba(0,0,0,0.85)"
+        fontStyle="600"
       />
     </>
   );
