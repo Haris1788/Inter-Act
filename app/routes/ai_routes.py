@@ -157,15 +157,31 @@ def plan_task():
             # tactical qwen14b calls during execution are allowed (the one
             # qwq:32b->qwen14b swap happens here and stays resident).
             try:
-                from app.services.plan_executor import dispatch_plan
-                exec_res = dispatch_plan(plan_result["plan"])
-                plan_result["execution"] = exec_res
-                _emit_log(
-                    "info",
-                    f"Plan handed to agents: {len(exec_res.get('dispatched', []))} "
-                    f"AGV(s) executing",
-                    "planner",
-                )
+                import os as _os
+                mode = _os.environ.get("COORDINATION_MODE", "centralized").lower()
+                if mode == "decentralized":
+                    # Phase 2: master announces each package to the bus and
+                    # lets AGVs bid. The announcer publishes the winning claim
+                    # and then triggers the same /assign + arm choreography.
+                    from app.agents.master_announcer import get_announcer
+                    exec_res = get_announcer().announce_plan(plan_result["plan"])
+                    plan_result["execution"] = exec_res
+                    _emit_log(
+                        "info",
+                        f"Plan announced (contract-net): "
+                        f"{len(exec_res.get('announced', []))} task_announce events",
+                        "planner",
+                    )
+                else:
+                    from app.services.plan_executor import dispatch_plan
+                    exec_res = dispatch_plan(plan_result["plan"])
+                    plan_result["execution"] = exec_res
+                    _emit_log(
+                        "info",
+                        f"Plan handed to agents: {len(exec_res.get('dispatched', []))} "
+                        f"AGV(s) executing",
+                        "planner",
+                    )
             except Exception as exc:  # noqa: BLE001
                 _emit_log("error", f"Plan dispatch failed: {exc}", "planner")
         else:
@@ -223,10 +239,17 @@ def tactical_decision():
         # Surface the parsed "script" key (if qwen14b returned {"script":"..."})
         # alongside the full result so the brain can pick whichever field exists.
         script = result.get("script") or result.get("value") or ""
+        # Surface ALL parsed JSON keys (bid/score/rationale/eta_s etc.) so
+        # decentralized brains can read structured fields directly.
+        extras = {k: v for k, v in result.items()
+                  if k not in ("script", "value", "status", "_model", "error", "raw")}
         return jsonify({
             "status": result.get("status", "success"),
             "script": script,
             "result": script,
+            "raw": result.get("raw", ""),
+            "error": result.get("error", ""),
+            "parsed": extras,
             "_model": result.get("_model"),
         })
     except Exception as exc:
