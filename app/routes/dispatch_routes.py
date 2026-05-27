@@ -57,45 +57,96 @@ def _emit_table(station: str, packages: list) -> None:
     socketio.emit("table_update", {"station": station, "packages": packages})
 
 
-def _arm_ai_confirm(arm_id: int, agv_id: str, action: str) -> bool:
+def _arm_ai_confirm(arm_id: int, agv_id: str, action: str) -> str:
     """The arm's tactical brain (qwen2.5:14b) decides whether to perform the
     load/unload NOW, coordinating with the AGV's live status.
 
-    This is the arm<->AGV AI handshake. Returns True to proceed. Deterministic
-    fallback (planner running / AI error / unknown reply) -> proceed, so the
-    choreography never hangs on the model.
+    This is the arm<->AGV AI handshake. Returns one of:
+        "go"   - AI explicitly answered go
+        "wait" - AI explicitly answered wait
+        "fallback" - planner running / AI error / unknown reply (proceed deterministically)
+    The action prompt is framed action-specifically so the model isn't
+    confused by the AGV's status field (status='loading' previously read as
+    'busy', producing constant 'wait' answers).
     """
     try:
         from app.services.llm_service import get_llm, planning_active
         if planning_active():
-            return True  # qwq:32b planning — don't stall the arm
+            return "fallback"  # qwq:32b planning — don't stall the arm
         rec = agv_state.get(agv_id) or {}
+        cell = rec.get("cell")
+        carried = rec.get("carried_object") or "nothing"
+
+        if action == "load":
+            situation = (
+                f"AGV {agv_id} has arrived EMPTY at the input arm's dock "
+                f"(its current cell is {cell}, carrying {carried}). The input "
+                f"arm-{arm_id} needs to pick the next package from its table "
+                f"and place it on the AGV. The AGV is parked and waiting."
+            )
+        elif action == "unload":
+            situation = (
+                f"AGV {agv_id} has arrived at the output arm's dock CARRYING "
+                f"package {carried} (its current cell is {cell}). The output "
+                f"arm-{arm_id} needs to take the package off the AGV and "
+                f"place it on the output table. The AGV is parked and waiting."
+            )
+        else:
+            situation = (
+                f"AGV {agv_id} is at {cell}, carrying {carried}. "
+                f"Arm-{arm_id} is requested to {action}."
+            )
+
         system = (
-            f"You are the tactical brain of arm-{arm_id}, the {action} arm. "
-            f"Respond with ONLY JSON {{\"script\":\"<name>\"}} where <name> is "
-            f'"go" (perform the {action} now — the AGV is docked and ready) '
-            f'or "wait" (not safe yet).'
+            f"You are the tactical brain of robotic arm-{arm_id}. An AGV is "
+            f"docked at this arm's dock cell and is waiting for service. "
+            f"Decide whether the arm should perform the operation NOW. "
+            f'Respond with ONLY JSON {{"script":"<name>"}} where <name> is '
+            f'exactly one of: '
+            f'"go" - the AGV is at the dock ready for service, proceed now; '
+            f'"wait" - only when there is a clear safety conflict (the AGV '
+            f'is NOT yet at the correct dock cell, or the arm is already '
+            f'mid-operation). Default to "go" if no conflict.'
         )
-        user = (
-            f"AGV {agv_id}: status={rec.get('status')} "
-            f"cell={rec.get('cell')} carrying={rec.get('carried_object')}. "
-            f"Should arm-{arm_id} {action} now?"
-        )
+        user = f"{situation} Should arm-{arm_id} {action} now?"
+
         res = get_llm().tactical(system, user, num_predict=24)
         choice = (res.get("script") or res.get("value") or "").strip().lower()
-        return choice != "wait"  # 'go' / unknown / error -> proceed
+        if choice == "go":
+            return "go"
+        if choice == "wait":
+            return "wait"
+        return "fallback"  # unknown / invalid reply -> proceed deterministically
     except Exception:
-        return True
+        return "fallback"
 
 
 def _arm_ai_gate(arm_id: int, agv_id: str, action: str, tries: int = 6) -> None:
-    """Poll the arm tactical AI a few times; proceed on 'go' or after the
-    bounded wait (deterministic fallback — never deadlock the demo)."""
+    """Poll the arm tactical AI a few times. Proceed on 'go' or after the
+    bounded wait (deterministic fallback — never deadlock the demo).
+
+    Logs every decision symmetrically with the AGV brain so the audience
+    can see the arm AI participating: GO / HOLD / fallback are all visible.
+    """
     for _ in range(tries):
-        if _arm_ai_confirm(arm_id, agv_id, action):
+        choice = _arm_ai_confirm(arm_id, agv_id, action)
+        if choice == "go":
+            _log(f"{action}-arm",
+                 f"arm-{arm_id} AI decision: GO {action} for {agv_id}")
             return
-        _log(f"{action}-arm", f"arm-{arm_id} AI: holding {action} for {agv_id}")
+        if choice == "fallback":
+            _log(f"{action}-arm",
+                 f"arm-{arm_id} AI unavailable - proceeding deterministically "
+                 f"({action} for {agv_id})")
+            return
+        # choice == "wait"
+        _log(f"{action}-arm",
+             f"arm-{arm_id} AI decision: HOLD {action} for {agv_id}")
         time.sleep(2.5)
+    # Cap reached — explicit deterministic proceed so the demo never hangs
+    _log(f"{action}-arm",
+         f"arm-{arm_id} AI gate cap reached after {tries} HOLDs - "
+         f"proceeding deterministically ({action} for {agv_id})")
 
 
 def _parse_package_count(text: str) -> int:
@@ -206,6 +257,16 @@ def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c") 
     except Exception:
         pass
 
+    # Phase 3 bus signal — arm tells the swarm it loaded an AGV (the peer
+    # AGVs use this to know when the input dock will free up next).
+    try:
+        from app.routes.bus_routes import publish_local
+        publish_local("arm_ready", from_=in_arm_id, task_id=package_id,
+                      payload={"arm_station": "input_arm", "for_agv": agv_id,
+                               "action": "loaded"})
+    except Exception:
+        pass
+
     # ── Wait for AGV to arrive at output station ─────────────────────────────
     deadline2 = time.time() + 180
     while time.time() < deadline2:
@@ -229,6 +290,15 @@ def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c") 
     try:
         requests.post(f"{backend}/agv/{agv_id}/unload_ready", json={}, timeout=5)
         _log("output-arm", f"unload_ready: {package_id} cleared from {agv_id}")
+    except Exception:
+        pass
+
+    # Phase 3 bus signal — arm tells the swarm it took the package off the AGV.
+    try:
+        from app.routes.bus_routes import publish_local
+        publish_local("arm_ready", from_=out_arm_id, task_id=package_id,
+                      payload={"arm_station": "output_arm", "for_agv": agv_id,
+                               "action": "unloaded"})
     except Exception:
         pass
 
