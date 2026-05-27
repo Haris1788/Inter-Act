@@ -79,6 +79,8 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
     llm_base_url = ai_cfg.get("llm_base_url", ollama_base_url)
     model_planner = ai_cfg.get("model_planner", "qwq:32b-q4_K_M")
     model_tactical = ai_cfg.get("model_tactical", "qwen2.5:14b-instruct-q4_K_M")
+    # Phase 1+ feature flag: 'centralized' (legacy) vs 'decentralized' (contract-net)
+    coordination_mode = ai_cfg.get("coordination_mode", "centralized")
 
     services = {
         "ollama": {
@@ -105,6 +107,7 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
                 f"LLM_BASE_URL={llm_base_url}",
                 f"OLLAMA_MODEL_PLANNER={model_planner}",
                 f"OLLAMA_MODEL_TACTICAL={model_tactical}",
+                f"COORDINATION_MODE={coordination_mode}",
                 "PIPELINE_CONFIG=/config/pipeline.yaml",
                 "FLASK_ENV=production",
                 "FLASK_DEBUG=0",
@@ -181,6 +184,7 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
                 f"AGV_ID={agv_id}",
                 "SERVER_HOST=http://backend:5000",
                 f"OLLAMA_BASE_URL={ollama_base_url}",
+                f"COORDINATION_MODE={coordination_mode}",
                 "PYTHONUNBUFFERED=1",
             ],
             "depends_on": {"backend": {"condition": "service_healthy"}},

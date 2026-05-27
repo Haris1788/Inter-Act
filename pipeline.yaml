@@ -75,3 +75,7 @@ ai:
   llm_base_url: http://host.docker.internal:11500
   model_planner: qwq:32b-q4_K_M
   model_tactical: qwen2.5:14b-instruct-q4_K_M
+  # COORDINATION_MODE: how AGVs coordinate.
+  #   centralized   — original path (central_brain.reassign + plan_executor /assign)
+  #   decentralized — contract-net via /bus/* (Phase 1+: agents bid + claim)
+  coordination_mode: decentralized

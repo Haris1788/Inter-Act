@@ -28,6 +28,7 @@ services:
     - LLM_BASE_URL=http://host.docker.internal:11500
     - OLLAMA_MODEL_PLANNER=qwq:32b-q4_K_M
     - OLLAMA_MODEL_TACTICAL=qwen2.5:14b-instruct-q4_K_M
+    - COORDINATION_MODE=decentralized
     - PIPELINE_CONFIG=/config/pipeline.yaml
     - FLASK_ENV=production
     - FLASK_DEBUG=0
@@ -100,6 +101,7 @@ services:
     - AGV_ID=agv-1
     - SERVER_HOST=http://backend:5000
     - OLLAMA_BASE_URL=http://ollama:11434
+    - COORDINATION_MODE=decentralized
     - PYTHONUNBUFFERED=1
     depends_on:
       backend:
@@ -115,6 +117,7 @@ services:
     - AGV_ID=agv-2
     - SERVER_HOST=http://backend:5000
     - OLLAMA_BASE_URL=http://ollama:11434
+    - COORDINATION_MODE=decentralized
     - PYTHONUNBUFFERED=1
     depends_on:
       backend:
@@ -130,6 +133,7 @@ services:
     - AGV_ID=agv-3
     - SERVER_HOST=http://backend:5000
     - OLLAMA_BASE_URL=http://ollama:11434
+    - COORDINATION_MODE=decentralized
     - PYTHONUNBUFFERED=1
     depends_on:
       backend:

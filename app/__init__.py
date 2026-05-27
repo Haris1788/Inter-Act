@@ -38,12 +38,14 @@ def create_app(config_class=None):
     from app.routes.agv_routes import agv_bp
     from app.routes.ai_routes import ai_bp
     from app.routes.dispatch_routes import dispatch_bp
+    from app.routes.bus_routes import bus_bp
 
     app.register_blueprint(page_bp)
     app.register_blueprint(arm_bp)
     app.register_blueprint(agv_bp)
     app.register_blueprint(ai_bp)
     app.register_blueprint(dispatch_bp)
+    app.register_blueprint(bus_bp)
 
     # Import SocketIO event handlers so they register with the socketio instance
     from app.sockets import events  # noqa: F401
@@ -68,12 +70,19 @@ def create_app(config_class=None):
         print(f"[startup] AGV pre-register skipped: {exc}")
 
     # Init AI planning pipeline: MessageBus + CentralBrain singletons.
+    # COORDINATION_MODE selects between:
+    #   centralized   — central_brain handles fault reassignment (legacy)
+    #   decentralized — agents handle it themselves via /bus/* (contract-net)
+    import os as _os
+    coordination_mode = _os.environ.get("COORDINATION_MODE", "centralized").lower()
+    app.extensions["coordination_mode"] = coordination_mode
+    print(f"[startup] COORDINATION_MODE={coordination_mode}")
     try:
         from app.agents.message_bus import SocketIOBus
         from app.agents.central_brain import CentralBrain
 
-        bus = SocketIOBus(socketio)
-        brain = CentralBrain(bus)
+        bus = SocketIOBus()
+        brain = CentralBrain(bus, coordination_mode=coordination_mode)
         app.extensions["central_brain"] = brain
         app.extensions["message_bus"] = bus
     except Exception as exc:

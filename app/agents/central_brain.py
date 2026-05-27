@@ -53,11 +53,22 @@ Rules:
 class CentralBrain:
     """Master AI coordinator. Created once in create_app(), used as a singleton."""
 
-    def __init__(self, bus=None) -> None:
+    def __init__(self, bus=None, coordination_mode: str = "centralized") -> None:
+        """Args:
+            bus: in-process MessageBus (or None for tests).
+            coordination_mode: 'centralized' binds _on_agv_fault to the bus.
+                'decentralized' does not bind it — fault handling is done by
+                peer AGVs via the contract-net protocol in agv_bus.py.
+        """
+        import os as _os
         self._lock = threading.Lock()
         self._current_plan: Optional[dict] = None
         self._bus = bus
-        if bus is not None:
+        self._coordination_mode = (coordination_mode or "centralized").lower()
+        # Phase 1 brief: only bind the fault subscriber when running the
+        # legacy centralized path. In decentralized mode, _on_agv_fault must
+        # not fire — peers handle it via the bus.
+        if bus is not None and self._coordination_mode == "centralized":
             bus.subscribe("agv_fault", self._on_agv_fault)
 
     # ── planning ──────────────────────────────────────────────────────────────
