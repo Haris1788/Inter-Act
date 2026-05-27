@@ -23,6 +23,7 @@ import agv_brain as _brain
 from utils import send_agv_health, DEFAULT_HOST
 
 AGV_ID: str = os.environ.get("AGV_ID", "agv-1")
+COORDINATION_MODE: str = os.environ.get("COORDINATION_MODE", "centralized").lower()
 
 app = Flask(__name__)
 
@@ -103,6 +104,57 @@ def assign():
     }), 202
 
 
+# ── Decentralized coordination hooks (used by agv_bus.BusListener) ───────────
+def _is_busy() -> bool:
+    """True if this AGV is currently executing a task. The bus listener uses
+    this to decide whether to bid on incoming task_orphan / task_announce."""
+    with _task_lock:
+        return _task_status == "running"
+
+
+def _current_state() -> dict:
+    """Return a snapshot of (status, task_id, assignment) for heartbeat use.
+
+    Once a task ends (status != running), task_id is reported as None and the
+    assignment cleared — otherwise peers' fault detector would see the stale
+    'running pkg-X' heartbeat and orphan a completed task.
+    """
+    with _task_lock:
+        if _task_status == "running":
+            return {
+                "status": "running",
+                "task_id": (_current_task or {}).get("package_id"),
+                "assignment": dict(_current_task) if _current_task else {},
+            }
+        return {"status": _task_status, "task_id": None, "assignment": {}}
+
+
+def _take_task(assignment: dict) -> None:
+    """Called by the BusListener when this AGV has WON a claim (bid accepted).
+    Behaves exactly like POST /assign internally — same code path."""
+    global _current_task, _task_status
+    with _task_lock:
+        if _task_status == "running":
+            print(f"[{AGV_ID}] _take_task ignored: already running", flush=True)
+            return
+        _current_task = dict(assignment)
+        _task_status = "running"
+
+    def _run() -> None:
+        global _task_status
+        try:
+            ok = _brain.run_task(assignment)
+            with _task_lock:
+                _task_status = "done" if ok else "faulted"
+        except Exception as exc:
+            print(f"[{AGV_ID}] takeover exception: {exc}", file=sys.stderr)
+            with _task_lock:
+                _task_status = "faulted"
+            send_agv_health(DEFAULT_HOST, AGV_ID, "faulted", str(exc))
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _handle_shutdown(signum, frame) -> None:
     """On SIGTERM/SIGINT: notify backend immediately, then exit.
 
@@ -129,4 +181,22 @@ if __name__ == "__main__":
 
     print(f"AGV {AGV_ID} microservice starting on port {args.port}", flush=True)
     print(f"Backend: {DEFAULT_HOST}", flush=True)
+    print(f"COORDINATION_MODE: {COORDINATION_MODE}", flush=True)
+
+    # Start the decentralized bus listener (Phase 1 contract-net). In
+    # 'centralized' mode the listener simply isn't started — fault handling
+    # then falls back to central_brain.reassign on the backend.
+    if COORDINATION_MODE == "decentralized":
+        try:
+            from agv_bus import BusListener
+            BusListener(
+                is_busy_fn=_is_busy,
+                take_task_fn=_take_task,
+                current_state_fn=_current_state,
+            ).start()
+            print(f"[{AGV_ID}] decentralized BusListener started", flush=True)
+        except Exception as exc:
+            print(f"[{AGV_ID}] BusListener failed to start: {exc}",
+                  file=sys.stderr)
+
     app.run(host="0.0.0.0", port=args.port)

@@ -23,6 +23,7 @@ import requests
 
 AGV_ID: str = os.environ.get("AGV_ID", "agv-1")
 DEFAULT_HOST: str = os.environ.get("SERVER_HOST", "http://localhost:5000")
+COORDINATION_MODE: str = os.environ.get("COORDINATION_MODE", "centralized").lower()
 
 MOVE_STEP_SLEEP: float = 0.5    # cadence between cell hops; tuned so the
                                 # frontend's eased motion never catches up and
@@ -64,12 +65,63 @@ def _log(msg: str) -> None:
     _post("/log", {"source": AGV_ID, "message": msg})
 
 
+# ── Phase 3: peer signals (no-op in centralized mode) ───────────────────────
+def _bus_intent(task_id: Optional[str], action: str, detail: str = "") -> None:
+    if COORDINATION_MODE != "decentralized":
+        return
+    try:
+        from agv_bus import publish_intent
+        publish_intent(task_id, action, detail)
+    except Exception:
+        pass
+
+
+def _bus_arm_approach(task_id: Optional[str], arm_station: str,
+                       eta_s: float = 0.0) -> None:
+    if COORDINATION_MODE != "decentralized":
+        return
+    try:
+        from agv_bus import publish_arm_approach
+        publish_arm_approach(task_id, arm_station, eta_s)
+    except Exception:
+        pass
+
+
+def _bus_yield(task_id: Optional[str], reason: str,
+                waiting_for: str = "") -> None:
+    if COORDINATION_MODE != "decentralized":
+        return
+    try:
+        from agv_bus import publish_yield
+        publish_yield(task_id, reason, waiting_for)
+    except Exception:
+        pass
+
+
+def _bus_help(task_id: Optional[str], reason: str, blocked_at: str = "") -> None:
+    if COORDINATION_MODE != "decentralized":
+        return
+    try:
+        from agv_bus import publish_help_request
+        publish_help_request(task_id, reason, blocked_at)
+    except Exception:
+        pass
+
+
 # ── Script registry ────────────────────────────────────────────────────────────
 # qwen2.5:14b picks a name from SCRIPT_REGISTRY on anomaly; the state machine
 # executes the function. Each returns True on success, False on fault/failure.
 
 def _script_move_to_input(ctx: dict) -> bool:
-    for cell in ctx["route_to_input"]:
+    pid = ctx.get("package_id")
+    route = ctx["route_to_input"]
+    _bus_intent(pid, "move_to_input",
+                f"heading to input arm via {len(route)} cells")
+    for idx, cell in enumerate(route):
+        # One cell out: announce arm approach so the arm + peers can react.
+        if idx == len(route) - 1:
+            _bus_arm_approach(pid, "input_arm",
+                              eta_s=MOVE_STEP_SLEEP)
         res = _post(f"/agv/{AGV_ID}/move", {"cell": cell, "status": "moving"})
         if res is None:
             return False
@@ -108,12 +160,17 @@ def _script_release_output_station(ctx: dict) -> bool:
 
 
 def _script_acquire_lane(ctx: dict) -> bool:
+    pid = ctx.get("package_id")
+    _bus_intent(pid, "acquire_lane", "requesting shared travel lane")
     res = _post(
         "/agv/lane/acquire",
         {"agv_id": AGV_ID, "timeout": LANE_ACQUIRE_TIMEOUT},
         timeout=LANE_ACQUIRE_TIMEOUT + 5.0,
     )
-    return res is not None and res.get("status") == "acquired"
+    ok = res is not None and res.get("status") == "acquired"
+    if not ok:
+        _bus_yield(pid, "lane busy", waiting_for="travel_lane")
+    return ok
 
 
 def _script_traverse_lane(ctx: dict) -> bool:
@@ -139,7 +196,13 @@ def _script_load_package(ctx: dict) -> bool:
 
 
 def _script_move_to_output(ctx: dict) -> bool:
-    for cell in ctx["route_to_output"]:
+    pid = ctx.get("package_id")
+    route = ctx["route_to_output"]
+    _bus_intent(pid, "move_to_output",
+                f"heading to output arm via {len(route)} cells")
+    for idx, cell in enumerate(route):
+        if idx == len(route) - 1:
+            _bus_arm_approach(pid, "output_arm", eta_s=MOVE_STEP_SLEEP)
         res = _post(f"/agv/{AGV_ID}/move", {"cell": cell, "status": "moving"})
         if res is None:
             return False
@@ -182,6 +245,22 @@ def _script_hold(ctx: dict) -> bool:
 
 def _script_fault(ctx: dict) -> bool:
     error = ctx.get("fault_reason", "brain declared fault")
+    # In decentralized mode, BROADCAST first so peers can pick up the work
+    # immediately; THEN update local /health so cell/lane locks are released.
+    if COORDINATION_MODE == "decentralized":
+        try:
+            from agv_bus import publish_task_orphan
+            assignment = ctx.get("assignment", {}) or {}
+            task_id = assignment.get("task_id") or assignment.get("package_id") or ctx.get("package_id")
+            if task_id:
+                publish_task_orphan(
+                    task_id=task_id,
+                    package_id=assignment.get("package_id", task_id),
+                    reason=error,
+                    assignment={**assignment, "original_agv": AGV_ID},
+                )
+        except Exception as exc:
+            print(f"[{AGV_ID}] task_orphan publish failed: {exc}", file=sys.stderr)
     _post(f"/agv/{AGV_ID}/health", {"health": "faulted", "error": error})
     return False
 
@@ -363,6 +442,16 @@ def run_task(assignment: dict, route_ctx: Optional[dict] = None) -> bool:
 
     _log(f"task start: pkg={ctx['package_id']} label={assignment.get('label', '')}")
 
+    # In decentralized mode, broadcast our current task so peers know what
+    # task to orphan if we go down. agent_status is the heartbeat-with-task.
+    if COORDINATION_MODE == "decentralized":
+        try:
+            from agv_bus import publish_agent_status
+            tid = assignment.get("task_id") or assignment.get("package_id") or ctx["package_id"]
+            publish_agent_status(status="running", task_id=tid, assignment=assignment)
+        except Exception:
+            pass
+
     completed: list = []
     iterations = 0
     while iterations < MAX_DECISION_ITERS:
@@ -407,6 +496,13 @@ def run_task(assignment: dict, route_ctx: Optional[dict] = None) -> bool:
 
     _log(f"task complete: pkg={ctx['package_id']}")
     _post(f"/agv/{AGV_ID}/health", {"health": "alive"})
+    # Tell peers we're idle again
+    if COORDINATION_MODE == "decentralized":
+        try:
+            from agv_bus import publish_agent_status
+            publish_agent_status(status="done", task_id=None, assignment={})
+        except Exception:
+            pass
     return True
 
 
@@ -439,7 +535,10 @@ def _fetch_route_ctx() -> Optional[dict]:
         "route_to_input": _straight_path(bay, input_dock),
         "lane_cells": lane_cells or _straight_path(input_dock, output_dock),
         "route_to_output": [output_dock],
-        "route_to_bay": _straight_path(output_dock, bay),
+        # Return goes UP the output-dock column first, then sidesteps into
+        # the bay column at the AGV's own row — avoids crossing other AGVs'
+        # bays when bays are stacked on the same column.
+        "route_to_bay": _bay_return_path(output_dock, bay),
     }
 
 
@@ -458,3 +557,33 @@ def _straight_path(start: list, end: list) -> list:
         path.append([ec, r])
 
     return path if path else [list(end)]
+
+
+def _bay_return_path(output_dock: list, bay: list) -> list:
+    """Return-to-bay routed up the OUTPUT-DOCK column first, then sidestep
+    horizontally into the bay column at the AGV's own row.
+
+    Why this instead of _straight_path: when bays are stacked on the same
+    column (e.g. agv-1=[10,3], agv-2=[10,5], agv-3=[10,7]) the naive
+    cols-then-rows path walks straight through other AGVs' parked bays.
+    Routing up the output-dock column first turns it into a real
+    "service aisle" — each AGV sidesteps into the bay column only at its
+    own row.
+    """
+    od_c, od_r = int(output_dock[0]), int(output_dock[1])
+    by_c, by_r = int(bay[0]),         int(bay[1])
+    path: list = []
+
+    # 1. Up the output-dock column to the bay's row
+    if by_r != od_r:
+        rstep = 1 if by_r > od_r else -1
+        for r in range(od_r + rstep, by_r + rstep, rstep):
+            path.append([od_c, r])
+
+    # 2. Sidestep horizontally to the bay column
+    if by_c != od_c:
+        cstep = 1 if by_c > od_c else -1
+        for c in range(od_c + cstep, by_c + cstep, cstep):
+            path.append([c, by_r])
+
+    return path or [list(bay)]
