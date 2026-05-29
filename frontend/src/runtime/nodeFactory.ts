@@ -63,7 +63,7 @@ export const PALETTE: Record<string, PaletteDescriptor> = {
   },
   "zone-source": {
     kind: "zone",
-    type: "Source feed",
+    type: "Input Zone",
     capabilities: [],
     brain: "—",
     spec: "input · inbound",
@@ -71,7 +71,7 @@ export const PALETTE: Record<string, PaletteDescriptor> = {
   },
   "zone-sink": {
     kind: "zone",
-    type: "Sink / outflow",
+    type: "Output Zone",
     capabilities: [],
     brain: "—",
     spec: "output · outbound",

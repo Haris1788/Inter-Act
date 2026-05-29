@@ -5,10 +5,10 @@ import { CapRow } from "./CapRow";
 import { LeftFoot } from "./LeftFoot";
 import { LibChip } from "./LibChip";
 import { LibRow } from "./LibRow";
-import { LibSection } from "./LibSection";
+import { LibSection, LibGroupHeader } from "./LibSection";
 import { SearchBox } from "./SearchBox";
 
-// ── Capability Stations ──────────────────────────────────────────────────────
+// ── Stationary Actors ───────────────────────────────────────────────────────
 
 const CapStationArm6DoF = (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -34,7 +34,7 @@ const CapStationArmDelta = (
   </svg>
 );
 
-// ── Mobile Agents ────────────────────────────────────────────────────────────
+// ── Mobile Actors ───────────────────────────────────────────────────────────
 
 const MobileShuttle = (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -117,19 +117,17 @@ interface PaletteSection {
   grid?: boolean;
   listClassName?: string;
   items: PaletteItem[];
+  /** Group header rendered once before first section in group */
+  group?: string;
+  /** Render as subsection (smaller indented header) */
+  sub?: boolean;
 }
 
 const PALETTE: PaletteSection[] = [
   {
-    label: "Zones",
-    grid: true,
-    items: [
-      { kind: "chip", name: "Source feed",    sub: "input · inbound",  paletteKey: "zone-source", icon: ZoneSource },
-      { kind: "chip", name: "Sink / outflow", sub: "output · outbound", paletteKey: "zone-sink",   icon: ZoneSink },
-    ],
-  },
-  {
-    label: "Capability Stations",
+    label: "Stationary Actors",
+    group: "Actors",
+    sub: true,
     grid: true,
     items: [
       { kind: "chip", name: "Arm · 6DoF", sub: "pick · place · dock", paletteKey: "arm-6dof", icon: CapStationArm6DoF },
@@ -138,7 +136,9 @@ const PALETTE: PaletteSection[] = [
     ],
   },
   {
-    label: "Mobile Agents",
+    label: "Mobile Actors",
+    group: "Actors",
+    sub: true,
     grid: true,
     items: [
       { kind: "chip", name: "Shuttle AGV", sub: "fast · cap 1", paletteKey: "agv-shuttle", icon: MobileShuttle },
@@ -147,15 +147,23 @@ const PALETTE: PaletteSection[] = [
     ],
   },
   {
+    label: "Zones",
+    grid: true,
+    items: [
+      { kind: "chip", name: "Input Zone",  sub: "input · inbound",    paletteKey: "zone-source", icon: ZoneSource },
+      { kind: "chip", name: "Output Zone",  sub: "output · outbound", paletteKey: "zone-sink",   icon: ZoneSink },
+    ],
+  },
+  {
     label: "Capabilities",
     listClassName: "gap-0",
     items: [
-      { kind: "cap", name: "pick",    count: "2 stations", filled: true },
-      { kind: "cap", name: "place",   count: "2 stations", filled: true },
-      { kind: "cap", name: "dock",    count: "5 actors",   filled: true },
-      { kind: "cap", name: "transit", count: "3 agents",   filled: true },
-      { kind: "cap", name: "weigh",   count: "0 actors",   filled: false },
-      { kind: "cap", name: "inspect", count: "0 actors",   filled: false },
+      { kind: "cap", name: "pick",    count: "2 actors",  filled: true },
+      { kind: "cap", name: "place",   count: "2 actors",  filled: true },
+      { kind: "cap", name: "dock",    count: "5 actors",  filled: true },
+      { kind: "cap", name: "transit", count: "3 actors",  filled: true },
+      { kind: "cap", name: "weigh",   count: "0 actors",  filled: false },
+      { kind: "cap", name: "inspect", count: "0 actors",  filled: false },
     ],
   },
 ];
@@ -232,14 +240,19 @@ export function LeftRegistry() {
         )}
 
         {/* ── Palette sections ── */}
-        {filteredSections.map((section) => (
-          <LibSection
-            key={section.label}
-            label={section.label}
-            count={section.items.length}
-            grid={section.grid}
-            listClassName={section.listClassName}
-          >
+        {filteredSections.map((section, i) => {
+          const prevGroup = i > 0 ? filteredSections[i - 1].group : undefined;
+          const showGroupHeader = section.group && section.group !== prevGroup;
+          return (
+            <div key={section.label}>
+              {showGroupHeader && <LibGroupHeader label={section.group!} />}
+              <LibSection
+                label={section.label}
+                count={section.items.length}
+                grid={section.grid}
+                listClassName={section.listClassName}
+                sub={section.sub}
+              >
             {section.items.map((item) => {
               if (item.kind === "chip") {
                 return (
@@ -272,8 +285,10 @@ export function LeftRegistry() {
                 />
               );
             })}
-          </LibSection>
-        ))}
+              </LibSection>
+            </div>
+          );
+        })}
 
       </div>
 

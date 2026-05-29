@@ -6,14 +6,16 @@ interface LibSectionProps {
   grid?: boolean;
   /** Extra className on the inner list/grid wrapper */
   listClassName?: string;
+  /** Render as a subsection with smaller, indented header */
+  sub?: boolean;
 }
 
-export function LibSection({ label, count, children, grid, listClassName }: LibSectionProps) {
+export function LibSection({ label, count, children, grid, listClassName, sub }: LibSectionProps) {
   return (
-    <div className="mt-1">
+    <div className={sub ? "mt-0" : "mt-1"}>
       {/* .lib-head */}
-      <div className="flex items-center justify-between px-2 pb-[6px] pt-[10px]">
-        <span className="text-10.5 font-semibold uppercase tracking-[0.08em] text-ink-3">
+      <div className={`flex items-center justify-between pb-[6px] ${sub ? "pl-3 pr-2 pt-[6px]" : "px-2 pt-[10px]"}`}>
+        <span className={`font-semibold uppercase tracking-[0.08em] ${sub ? "text-[9.5px] text-ink-4" : "text-10.5 text-ink-3"}`}>
           {label}
         </span>
         <span className="font-mono text-10.5 text-ink-5">{count}</span>
@@ -32,6 +34,16 @@ export function LibSection({ label, count, children, grid, listClassName }: LibS
           {children}
         </div>
       )}
+    </div>
+  );
+}
+
+export function LibGroupHeader({ label }: { label: string }) {
+  return (
+    <div className="px-2 pb-[2px] pt-[12px]">
+      <span className="text-10.5 font-semibold uppercase tracking-[0.08em] text-ink-3">
+        {label}
+      </span>
     </div>
   );
 }
