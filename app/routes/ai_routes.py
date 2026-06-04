@@ -159,16 +159,18 @@ def plan_task():
             try:
                 import os as _os
                 mode = _os.environ.get("COORDINATION_MODE", "centralized").lower()
-                if mode == "decentralized":
-                    # Phase 2: master announces each package to the bus and
-                    # lets AGVs bid. The announcer publishes the winning claim
-                    # and then triggers the same /assign + arm choreography.
+                if mode in ("decentralized", "smart"):
+                    # US 32 ('decentralized') + US 34 ('smart' superset): master
+                    # announces each package to the bus and lets AGVs bid. The
+                    # announcer publishes the winning claim and then triggers
+                    # the same /assign + arm choreography.
                     from app.agents.master_announcer import get_announcer
                     exec_res = get_announcer().announce_plan(plan_result["plan"])
                     plan_result["execution"] = exec_res
+                    mode_tag = "smart" if mode == "smart" else "decentralized"
                     _emit_log(
                         "info",
-                        f"Plan announced (contract-net): "
+                        f"Plan announced ({mode_tag} contract-net): "
                         f"{len(exec_res.get('announced', []))} task_announce events",
                         "planner",
                     )

@@ -88,6 +88,47 @@ _lock = threading.RLock()
 _occupancy: Dict[str, Cell] = {}          # agv_id -> (col,row)
 _lane_lock = LaneLock()
 
+# US 34 Phase 6: manual cell blockers (for testing the A* obstacle path).
+# A blocker is "no AGV may path through this cell". Set/cleared via
+# POST /grid/obstacles by an operator or test fixture.
+_blockers: set = set()
+
+
+def add_blocker(cell):
+    """Mark a cell as blocked. Idempotent."""
+    if not cell or len(cell) < 2:
+        return
+    with _lock:
+        _blockers.add((int(cell[0]), int(cell[1])))
+
+
+def remove_blocker(cell):
+    """Unblock a cell. Idempotent."""
+    if not cell or len(cell) < 2:
+        return
+    with _lock:
+        _blockers.discard((int(cell[0]), int(cell[1])))
+
+
+def clear_blockers():
+    """Reset the blocker set."""
+    with _lock:
+        _blockers.clear()
+
+
+def is_blocked(cell):
+    """True if a cell has been marked as a manual blocker."""
+    if not cell or len(cell) < 2:
+        return False
+    with _lock:
+        return (int(cell[0]), int(cell[1])) in _blockers
+
+
+def blocked_cells():
+    """Snapshot the current blocker set as a list of [col,row]."""
+    with _lock:
+        return [[c, r] for (c, r) in _blockers]
+
 # ── Per-station arm docking locks (same semantics as LaneLock) ───────────────
 # Only one AGV may be at the input or output arm station at once.
 _station_locks: Dict[str, LaneLock] = {
@@ -145,4 +186,9 @@ def snapshot() -> dict:
     """Serializable view for `/grid` and the `grid_update` socket event."""
     with _lock:
         occ = {k: list(v) for k, v in _occupancy.items()}
-    return {"occupancy": occ, "lane_holder": _lane_lock.holder()}
+        blockers = [[c, r] for (c, r) in _blockers]
+    return {
+        "occupancy": occ,
+        "lane_holder": _lane_lock.holder(),
+        "blockers": blockers,
+    }

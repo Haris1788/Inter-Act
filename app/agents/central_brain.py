@@ -87,7 +87,13 @@ class CentralBrain:
             f"  ordering:      {spec.get('ordering')}\n"
             f"  constraints:   {spec.get('constraints')}\n"
             f"  agv_ids:       {spec.get('agv_ids')}\n"
-            f"  description:   {spec.get('description')}\n\n"
+            f"  description:   {spec.get('description')}\n"
+            # US 34.1: per-package colour + weight from the interpreter.
+            # Each package can only be picked up by the AGV whose
+            # allowed_labels contains the colour and whose weight_max_kg
+            # is at least the weight. Use the assignments[].label field
+            # to mirror the colour for each package_id.
+            f"  packages:      {spec.get('packages')}\n\n"
             f"Produce the execution plan JSON."
         )
 
@@ -100,6 +106,15 @@ class CentralBrain:
 
         plan, val_err = _validate_plan(raw, spec)
         if plan:
+            # US 34 (M4): propagate enforce_sequence from spec into the plan
+            # so master_announcer can read it without re-routing through spec.
+            if spec.get("enforce_sequence"):
+                plan["enforce_sequence"] = True
+            # US 34.1: carry the spec.packages[] list (label + weight_kg per
+            # package) into the plan so the announcer can attach weight to
+            # each task_announce payload. Index-aligned with assignment order.
+            if spec.get("packages"):
+                plan["packages"] = list(spec.get("packages") or [])
             self._store(plan)
             return {"status": "success", "plan": plan, "_model": raw.get("_model")}
 
@@ -117,6 +132,10 @@ class CentralBrain:
 
         plan2, val_err2 = _validate_plan(raw2, spec)
         if plan2:
+            if spec.get("enforce_sequence"):
+                plan2["enforce_sequence"] = True
+            if spec.get("packages"):
+                plan2["packages"] = list(spec.get("packages") or [])
             self._store(plan2)
             return {"status": "success", "plan": plan2, "_model": raw2.get("_model")}
 

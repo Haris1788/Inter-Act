@@ -36,6 +36,48 @@ import requests
 AGV_ID = os.environ.get("AGV_ID", "agv-1")
 BACKEND = os.environ.get("SERVER_HOST", "http://backend:5000")
 
+# ── US 34: this AGV's own capabilities (mirror of agv_server.CAPABILITIES) ───
+# Re-read here because scripts/ cannot import from app/; agv_server and agv_bus
+# both parse the same env vars independently. Source of truth is pipeline.yaml.
+_COORDINATION_MODE = os.environ.get("COORDINATION_MODE", "centralized").lower()
+
+
+def _parse_labels_csv(raw):
+    if not raw:
+        return ["any"]
+    parts = [p.strip().lower() for p in str(raw).split(",") if p.strip()]
+    return parts or ["any"]
+
+
+def _coerce_float(raw, fallback):
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return fallback
+
+
+MY_CAPABILITIES = {
+    "agv_id": AGV_ID,
+    "kind": os.environ.get("AGV_KIND", "shuttle"),
+    "weight_max_kg": _coerce_float(os.environ.get("AGV_WEIGHT_MAX_KG"), 50.0),
+    "allowed_labels": _parse_labels_csv(os.environ.get("AGV_ALLOWED_LABELS")),
+    "speed_factor": _coerce_float(os.environ.get("AGV_SPEED_FACTOR"), 1.0),
+}
+
+
+def _mode_is_smart() -> bool:
+    return _COORDINATION_MODE == "smart"
+
+
+def _accepts_label(allowed_labels, label):
+    """Does this AGV's allowed_labels accept the given package label?"""
+    if not label:
+        return True
+    labels = [str(l).lower() for l in (allowed_labels or [])]
+    if "any" in labels:
+        return True
+    return str(label).lower() in labels
+
 # Polling cadence — brief specified 250ms but that overloads single-threaded
 # Flask with 3 AGVs × 2 threads polling. 1s is responsive enough; fault
 # detection deadline (3s) is still satisfied easily.
@@ -146,11 +188,25 @@ def publish_task_orphan(task_id: str, package_id: str, reason: str,
 
 
 # ── Phase 3: peer signals during execution ───────────────────────────────────
-def publish_intent(task_id: Optional[str], action: str, detail: str = "") -> None:
+def publish_intent(task_id: Optional[str], action: str, detail: str = "",
+                   path_cells: Optional[list] = None) -> None:
     """Announce what we're about to do — peers see this ≥1 cell before the
-    action so they can yield if there's a conflict."""
-    publish("intent", {"action": action, "detail": detail,
-                       "agv_id": AGV_ID}, task_id=task_id)
+    action so they can yield if there's a conflict.
+
+    US 34.1: path_cells (optional) is the computed cell sequence the AGV will
+    walk for this leg. Carried verbatim into the payload so the frontend can
+    render the polyline on the canvas. Empty/omitted on legs that don't move
+    (acquire_lane, etc.).
+    """
+    payload = {"action": action, "detail": detail, "agv_id": AGV_ID}
+    if path_cells:
+        # Coerce to plain lists of two ints — bus payloads are JSON.
+        try:
+            payload["path_cells"] = [[int(c[0]), int(c[1])] for c in path_cells
+                                      if c and len(c) >= 2]
+        except (TypeError, ValueError, IndexError):
+            pass
+    publish("intent", payload, task_id=task_id)
 
 
 def publish_arm_approach(task_id: Optional[str], arm_station: str,
@@ -175,14 +231,68 @@ def publish_help_request(task_id: Optional[str], reason: str,
                               "agv_id": AGV_ID}, task_id=task_id)
 
 
-# ── qwen14b prompt for bid decision ──────────────────────────────────────────
-def _ask_for_bid(task_id: str, announce_type: str, payload: dict,
-                 my_state: dict, others: dict) -> tuple[bool, float, str, float]:
-    """Consult qwen14b. Returns (should_bid, score, rationale, eta_s).
+# ── US 34: deterministic composite score helpers ─────────────────────────────
+def _manhattan(a, b):
+    """Manhattan distance between two grid cells; safe on None / short lists."""
+    if not a or not b or len(a) < 2 or len(b) < 2:
+        return 0
+    return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))
 
-    Brief: score is the AGV's tactical brain's weighted assessment of
-    distance, current load, and proximity to the package. Higher = better fit.
+
+def _compute_deterministic_score(
+    my_cell, package_origin, package_label, current_load_kg, meta
+):
+    """US 34: composite bid score from real warehouse facts.
+
+        score = w_distance * (1 - dist / diameter)
+              + w_capability * capability_match
+              + w_load       * (1 - current_load_fraction)
+
+    Returns (score_0_100, breakdown_dict).
     """
+    weights = (meta or {}).get("bid_weights") or {
+        "distance": 0.6, "capability": 0.3, "load": 0.1
+    }
+    grid = (meta or {}).get("grid") or {}
+    diameter = max(1, int(grid.get("diameter", 22)))
+
+    dist = _manhattan(my_cell, package_origin)
+    dist_norm = max(0.0, 1.0 - (dist / diameter))
+
+    cap_match = 1.0 if _accepts_label(MY_CAPABILITIES["allowed_labels"],
+                                       package_label) else 0.0
+
+    wmax = max(0.001, MY_CAPABILITIES["weight_max_kg"])
+    load_frac = min(1.0, max(0.0, float(current_load_kg) / wmax))
+    load_norm = 1.0 - load_frac
+
+    composite = (
+        float(weights.get("distance", 0.6)) * dist_norm
+        + float(weights.get("capability", 0.3)) * cap_match
+        + float(weights.get("load", 0.1)) * load_norm
+    )
+    score = round(max(0.0, min(1.0, composite)) * 100.0, 2)
+    breakdown = {
+        "distance_cells": dist,
+        "grid_diameter": diameter,
+        "distance_norm": round(dist_norm, 3),
+        "capability_match": bool(cap_match),
+        "load_norm": round(load_norm, 3),
+        "weights": dict(weights),
+        "composite": score,
+    }
+    return score, breakdown
+
+
+def _eta_seconds_from_distance(my_cell, package_origin):
+    """Rough ETA in seconds, assuming MOVE_STEP_SLEEP=0.5s per cell + 10s for load."""
+    dist = _manhattan(my_cell, package_origin)
+    speed = max(0.1, float(MY_CAPABILITIES["speed_factor"]))
+    return round(dist * (0.5 / speed) + 10.0, 1)
+
+
+def _legacy_us32_ask_for_bid(task_id, announce_type, payload, my_state, others):
+    """US 32 flat-AI bid path. Kept verbatim as the fallback when smart mode is OFF."""
     package_id = payload.get("package_id", task_id)
     original = payload.get("original_agv", "?")
     reason = payload.get("reason", "")
@@ -193,7 +303,7 @@ def _ask_for_bid(task_id: str, announce_type: str, payload: dict,
             f"(package {package_id}). Reason: {reason}. "
             f"Other healthy AGVs may bid to take it over."
         )
-    else:  # task_announce
+    else:
         situation = (
             f"New task announced: {task_id} (package {package_id}). "
             f"All available AGVs may bid for it."
@@ -215,7 +325,11 @@ def _ask_for_bid(task_id: str, announce_type: str, payload: dict,
         f"carrying={my_state.get('carried_object')}\n"
         f"Other AGVs right now: {json.dumps(others)}"
     )
+    return _send_to_tactical(system, user)
 
+
+def _send_to_tactical(system: str, user: str) -> tuple[bool, float, str, float]:
+    """Shared HTTP call to /ai/tactical with the legacy parse logic."""
     try:
         r = requests.post(
             TACTICAL_ENDPOINT,
@@ -228,22 +342,17 @@ def _ask_for_bid(task_id: str, announce_type: str, payload: dict,
     except Exception as exc:
         return False, 0.0, f"AI error: {exc}", 0.0
 
-    # /ai/tactical packs the LLM JSON variously; try several shapes
     parsed: dict = {}
-    # 1. New 'parsed' field — backend already json.loads()'d the model output
     if isinstance(body.get("parsed"), dict) and body["parsed"]:
         parsed = dict(body["parsed"])
-    # 2. Fall back to raw text
     if not parsed:
         raw = body.get("result") or body.get("script") or body.get("raw") or ""
         if isinstance(raw, str):
             txt = raw.strip()
-            # strip ```json fences if present
             if txt.startswith("```"):
                 txt = txt.split("```", 2)[-1].lstrip("json").strip()
                 if txt.endswith("```"):
                     txt = txt[:-3].strip()
-            # find first {...} block
             if "{" in txt and "}" in txt:
                 start = txt.find("{")
                 end = txt.rfind("}") + 1
@@ -251,18 +360,21 @@ def _ask_for_bid(task_id: str, announce_type: str, payload: dict,
                     parsed = json.loads(txt[start:end])
                 except json.JSONDecodeError:
                     parsed = {}
-    # 3. Maybe the body itself has the fields (legacy)
     if not parsed:
         for k in ("bid", "score", "rationale", "eta_s"):
             if k in body:
                 parsed[k] = body[k]
-    # 4. If we got a successful response but no parseable fields, treat AI
-    # silence as "bid yes with a heuristic score" — peers are guaranteed at
-    # least one bidder per orphan, which is the protocol's whole point.
     if not parsed and body.get("status") == "success":
         parsed = {"bid": True, "score": 50.0,
                   "rationale": "AI unparseable; heuristic accept",
                   "eta_s": 30.0}
+
+    # US 34 judge schema alias: `accept` ↔ `bid`, `adjusted_score` ↔ `score`.
+    # Lets the same parser handle US 32 ("bid") and US 34 ("accept") responses.
+    if "bid" not in parsed and "accept" in parsed:
+        parsed["bid"] = parsed["accept"]
+    if "score" not in parsed and "adjusted_score" in parsed:
+        parsed["score"] = parsed["adjusted_score"]
 
     bid = bool(parsed.get("bid", False))
     try:
@@ -275,6 +387,151 @@ def _ask_for_bid(task_id: str, announce_type: str, payload: dict,
     except (TypeError, ValueError):
         eta_s = 0.0
     return bid, score, rationale, eta_s
+
+
+# ── qwen14b prompt for bid decision ──────────────────────────────────────────
+def _ask_for_bid(task_id: str, announce_type: str, payload: dict,
+                 my_state: dict, others: dict) -> tuple[bool, float, str, float]:
+    """Consult qwen14b. Returns (should_bid, score, rationale, eta_s).
+
+    US 34 SMART MODE: compute deterministic composite score from real grid
+    distance + capability match + load, then call qwen14b as a JUDGE that can
+    accept/reject and adjust the score within ±10. The AI does NOT invent the
+    score; it only reasons about the deterministic input.
+
+    US 32 FALLBACK: under any non-smart mode, delegate to the unchanged
+    legacy flat-AI path.
+    """
+    # US 32 fallback path — leave intact for the flag-off case.
+    if not _mode_is_smart():
+        return _legacy_us32_ask_for_bid(task_id, announce_type, payload,
+                                         my_state, others)
+
+    # US 34 smart path — deterministic composite score.
+    package_id = payload.get("package_id", task_id)
+    package_label = payload.get("label") or payload.get("package_label")
+
+    # Pull live meta from /coord/snapshot (cached by the caller via my_state
+    # fetch; we re-fetch here because the meta block is small).
+    snap = _get("/coord/snapshot") or {}
+    meta = snap.get("meta") or {}
+
+    # Package origin: pre-pickup, this is the input arm cell.
+    stations = (meta.get("stations") or {})
+    package_origin = (stations.get("input_arm") or {}).get("cell") or [1, 1]
+
+    # Quick filter: if my capabilities don't accept this label, decline up
+    # front so the master capability filter (Phase 3) doesn't even need to
+    # see it. Honest behaviour: "I cannot do this, so I don't bid."
+    if not _accepts_label(MY_CAPABILITIES["allowed_labels"], package_label):
+        return (False, 0.0,
+                f"declined: my allowed_labels={MY_CAPABILITIES['allowed_labels']}"
+                f" does not include '{package_label}'",
+                0.0)
+
+    # US 34.1: early weight gate. The interpreter parses weight_kg from the
+    # prompt (or infers it from the colour band); if the announce carries a
+    # number above my carrying capacity, decline up front. Missing/None weight
+    # means "unknown" — fall through to bid normally.
+    package_weight = payload.get("weight_kg")
+    if package_weight is not None:
+        try:
+            w = float(package_weight)
+        except (TypeError, ValueError):
+            w = None
+        if w is not None and w > float(MY_CAPABILITIES["weight_max_kg"]):
+            return (False, 0.0,
+                    f"declined: package weight {w} kg > my "
+                    f"weight_max_kg={MY_CAPABILITIES['weight_max_kg']}",
+                    0.0)
+
+    # Current load — derive from carried_object presence; full weight model is
+    # future work (this AGV carries 1 package at a time, so 0 or wmax/2 is fine).
+    current_load_kg = (
+        MY_CAPABILITIES["weight_max_kg"] / 2.0
+        if my_state.get("carried_object") else 0.0
+    )
+
+    deterministic_score, breakdown = _compute_deterministic_score(
+        my_cell=my_state.get("cell"),
+        package_origin=package_origin,
+        package_label=package_label,
+        current_load_kg=current_load_kg,
+        meta=meta,
+    )
+    eta_s_estimate = _eta_seconds_from_distance(my_state.get("cell"),
+                                                 package_origin)
+
+    # Hand the deterministic facts to qwen14b as a JUDGE.
+    original = payload.get("original_agv", "?")
+    if announce_type == "task_orphan":
+        situation = (
+            f"AGV {original} faulted and dropped task {task_id} "
+            f"(package {package_id}). Reason: {payload.get('reason', '')}. "
+            "Surviving AGVs may take it over."
+        )
+    else:
+        situation = f"New task announced: {task_id} (package {package_id})."
+
+    system = (
+        "You are the JUDGE for AGV "
+        f"{AGV_ID} bidding on a warehouse task. A deterministic composite score "
+        "has ALREADY been computed from real grid distance, capability match, "
+        "and current load. You may NOT invent the score — you may only ACCEPT "
+        "it, or ADJUST it within ±10 points based on context the formula does "
+        "not see (e.g. recent fault, planned maintenance, traffic risk). Reply "
+        "with ONLY JSON: "
+        '{"accept": true|false, "adjusted_score": <float 0-100>, '
+        '"rationale": "<one short sentence>"}. '
+        "If accept=false, the bid is dropped entirely. Stay close to the "
+        "deterministic score — drifting more than ±10 is a protocol violation."
+    )
+    user = (
+        f"{situation}\n"
+        f"Deterministic composite score: {deterministic_score} (0-100).\n"
+        f"Breakdown: {json.dumps(breakdown)}\n"
+        f"My capabilities: {json.dumps(MY_CAPABILITIES)}\n"
+        f"My state: cell={my_state.get('cell')} "
+        f"status={my_state.get('status')} "
+        f"carrying={my_state.get('carried_object')}\n"
+        f"Other AGVs right now: {json.dumps(others)}\n"
+        f"Estimated ETA seconds: {eta_s_estimate}"
+    )
+
+    bid, judge_score, judge_rationale, judge_eta = _send_to_tactical(system, user)
+
+    # Tactical responded with the legacy schema (bid/score/rationale/eta_s).
+    # Map "accept" / "adjusted_score" to that shape when present, else fall
+    # back to the deterministic score on AI silence.
+    final_score = deterministic_score
+    final_rationale = (
+        f"composite={deterministic_score} (dist={breakdown['distance_cells']}/"
+        f"{breakdown['grid_diameter']}, cap={'+' if breakdown['capability_match'] else '-'}, "
+        f"load_norm={breakdown['load_norm']})"
+    )
+    final_eta = eta_s_estimate
+
+    if bid:
+        # qwen14b accepted — clamp adjustment within ±10 of the deterministic score.
+        if judge_score > 0:
+            clamped = max(deterministic_score - 10.0,
+                          min(deterministic_score + 10.0, judge_score))
+            final_score = round(clamped, 2)
+        if judge_rationale and judge_rationale != "(no reason)":
+            final_rationale = f"{final_rationale}; judge: {judge_rationale}"
+        if judge_eta > 0:
+            final_eta = judge_eta
+        return True, final_score, final_rationale, final_eta
+    else:
+        # qwen14b returned bid=false — but the deterministic score is sound.
+        # If the AI was simply unreachable (rationale starts with "AI error" /
+        # "planner busy"), we still want to participate — fall back to
+        # deterministic. If qwen14b deliberately rejected, honour that.
+        AI_DOWN_PREFIXES = ("AI error", "planner busy")
+        if any(judge_rationale.startswith(p) for p in AI_DOWN_PREFIXES):
+            final_rationale = f"{final_rationale} (judge unavailable: {judge_rationale})"
+            return True, final_score, final_rationale, final_eta
+        return False, 0.0, f"judge rejected: {judge_rationale}", 0.0
 
 
 # ── BusListener ──────────────────────────────────────────────────────────────

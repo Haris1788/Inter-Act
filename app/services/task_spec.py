@@ -24,6 +24,19 @@ class TaskSpec:
     agv_ids: List[str] = field(default_factory=list)
     description: str = ""
     raw_prompt: str = ""
+    # US 34 (M4): when True, master holds back announce N+1 until announce N
+    # has reached `arm_ready loaded`. Auto-set by the interpreter when the
+    # prompt implies ordering ("sort by", "in order", "sequentially",
+    # explicit sequence terms). Off by default — concurrency stays the demo's
+    # main feature.
+    enforce_sequence: bool = False
+    # US 34.1: per-package colour + weight, parsed from the prompt by the
+    # interpreter or inferred from colour using `ai.weight_bands` in
+    # pipeline.yaml. One entry per package, indices align with `ordering` /
+    # planner sequence. Each entry: {"label": "<color>", "weight_kg": <float>}.
+    # Empty when the prompt didn't mention either; the planner then falls
+    # back to colour-only allocation (US 34 behaviour).
+    packages: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -34,6 +47,8 @@ class TaskSpec:
             "agv_ids": self.agv_ids,
             "description": self.description,
             "raw_prompt": self.raw_prompt,
+            "enforce_sequence": self.enforce_sequence,
+            "packages": self.packages,
         }
 
 
@@ -92,6 +107,28 @@ def validate(
     # description
     description = str(raw.get("description", ""))
 
+    # US 34 (M4): enforce_sequence — read from raw if present, else infer
+    # from the prompt (heuristic: ordering implied by sort/order/sequence words).
+    raw_enforce = raw.get("enforce_sequence")
+    if isinstance(raw_enforce, bool):
+        enforce_sequence = raw_enforce
+    else:
+        prompt_lower = (raw_prompt or "").lower()
+        sequence_signals = (
+            "sort by", "in order", "sequentially", "one after another",
+            "one at a time", "in sequence", "rainbow order", "follow the order",
+        )
+        enforce_sequence = any(sig in prompt_lower for sig in sequence_signals)
+
+    # US 34.1: packages[] — list of {label, weight_kg} per package. Read from
+    # raw if the model gave it, else fall back to a colour-keyword scan of
+    # the prompt with weight inferred from `ai.weight_bands` (midpoint).
+    raw_packages = raw.get("packages")
+    if isinstance(raw_packages, list) and raw_packages:
+        packages = [_normalize_package(p) for p in raw_packages]
+    else:
+        packages = _infer_packages_from_prompt(raw_prompt, pkg)
+
     if errors:
         return None, "; ".join(errors)
 
@@ -104,6 +141,67 @@ def validate(
             agv_ids=list(agv_ids),
             description=description,
             raw_prompt=raw_prompt,
+            enforce_sequence=enforce_sequence,
+            packages=packages,
         ),
         None,
     )
+
+
+def _normalize_package(raw: Any) -> Dict[str, Any]:
+    """Coerce one raw package dict into {label: str, weight_kg: float|None}."""
+    if not isinstance(raw, dict):
+        return {"label": "", "weight_kg": None}
+    label = str(raw.get("label") or raw.get("color") or "").strip().lower()
+    weight = raw.get("weight_kg")
+    if weight is None:
+        weight = raw.get("weight")
+    try:
+        weight_kg = float(weight) if weight is not None else None
+    except (TypeError, ValueError):
+        weight_kg = None
+    return {"label": label, "weight_kg": weight_kg}
+
+
+def _infer_packages_from_prompt(prompt: str, count: int) -> List[Dict[str, Any]]:
+    """Heuristic fallback: scan the prompt for colour words + weight numbers.
+
+    Used when the LLM didn't return a structured `packages` list. Walks the
+    prompt left-to-right looking for blue/green/yellow keywords; for each
+    occurrence picks up the nearest weight number (\"30kg\", \"25 kilos\", etc.)
+    if present, else falls back to the midpoint of the colour's band from
+    `ai.weight_bands` in pipeline.yaml. Returns up to `count` entries; pads
+    with empty packages so the planner can still iterate.
+    """
+    import re
+    from app.models import pipeline_config
+
+    text = (prompt or "").lower()
+    bands = pipeline_config.get_weight_bands()
+
+    # First pass: pull every colour word in order, with the weight number
+    # that immediately surrounds it (looks both ±20 chars).
+    colour_re = re.compile(r"\b(blue|green|yellow)\b")
+    weight_re = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*(?:kg|kilo|kilos|kilogram|kilograms)\b")
+
+    found: List[Dict[str, Any]] = []
+    for m in colour_re.finditer(text):
+        colour = m.group(1)
+        window = text[max(0, m.start() - 25): m.end() + 25]
+        wm = weight_re.search(window)
+        if wm:
+            try:
+                weight_kg = float(wm.group(1))
+            except ValueError:
+                weight_kg = None
+        else:
+            band = bands.get(colour) or {}
+            lo = band.get("min")
+            hi = band.get("max")
+            weight_kg = (float(lo) + float(hi)) / 2.0 if (lo is not None and hi is not None) else None
+        found.append({"label": colour, "weight_kg": weight_kg})
+
+    # Pad / truncate to count
+    while len(found) < count:
+        found.append({"label": "", "weight_kg": None})
+    return found[:count]

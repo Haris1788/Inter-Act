@@ -36,9 +36,24 @@ def build_interpreter_prompt() -> str:
 
     # ── AGV static config ────────────────────────────────────────────────────
     agvs_cfg = pipeline_config.get_agvs()
-    agv_cfg_lines = [
-        f"  {a['id']}: {a.get('label', a['id'])}  bay={a.get('bay')}  color={a.get('color')}"
-        for a in agvs_cfg
+    # US 34.1: surface each AGV's colour speciality + weight ceiling so the
+    # interpreter can match prompt colours/weights to the right vehicle.
+    agv_cfg_lines = []
+    for a in agvs_cfg:
+        caps = (a.get("capabilities") or {})
+        labels = caps.get("allowed_labels") or ["any"]
+        wmax = caps.get("weight_max_kg")
+        speed = caps.get("speed_factor")
+        agv_cfg_lines.append(
+            f"  {a['id']}: {a.get('label', a['id'])}  bay={a.get('bay')}  "
+            f"colours={labels}  weight_max={wmax}kg  speed_factor={speed}"
+        )
+
+    # ── weight bands (US 34.1) ──────────────────────────────────────────────
+    bands = pipeline_config.get_weight_bands()
+    band_lines = [
+        f"  {colour}: {band.get('min')}–{band.get('max')} kg"
+        for colour, band in bands.items()
     ]
 
     # ── live AGV state ────────────────────────────────────────────────────────
@@ -64,6 +79,9 @@ Robotic arms in the pipeline:
 AGVs (Automated Guided Vehicles):
 {chr(10).join(agv_cfg_lines) or "  (none configured)"}
 
+Weight bands per colour (US 34.1):
+{chr(10).join(band_lines) or "  (no bands configured)"}
+
 Shared travel lane: only ONE AGV may traverse the lane at a time.
 
 ## CURRENT LIVE STATE
@@ -84,7 +102,11 @@ markdown, no explanation, no code fences, JSON only:
   "ordering":      ["<label1>", "<label2>", ...],
   "constraints":   ["<constraint1>", ...],
   "agv_ids":       ["<agv-id>", ...],
-  "description":   "<one-sentence plain-English summary>"
+  "description":   "<one-sentence plain-English summary>",
+  "packages":      [
+    {{"label": "<blue|green|yellow>", "weight_kg": <number or null>}},
+    ...
+  ]
 }}
 
 Rules:
@@ -94,5 +116,11 @@ Rules:
 - constraints  : any special requirements the user mentioned (empty list if none)
 - agv_ids      : choose from idle AGVs {idle_ids} — use the minimum needed
 - description  : one sentence, plain English
+- packages     : one entry PER package, in the same order they appear in the prompt.
+                 label MUST be one of the configured colours (see weight bands above).
+                 weight_kg: take the number the user gave if any (e.g. "30 kg" → 30).
+                 If the user only named a colour, pick a value INSIDE that colour's
+                 band (the midpoint is fine). If colour is also missing, set
+                 label="" and weight_kg=null. Never invent a weight outside the band.
 
 Return ONLY the JSON object."""
