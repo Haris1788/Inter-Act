@@ -5,7 +5,7 @@ import { CapRow } from "./CapRow";
 import { LeftFoot } from "./LeftFoot";
 import { LibChip } from "./LibChip";
 import { LibRow } from "./LibRow";
-import { LibSection } from "./LibSection";
+import { LibSection, LibGroupHeader } from "./LibSection";
 import { SearchBox } from "./SearchBox";
 
 // ── Capability Stations ──────────────────────────────────────────────────────
@@ -15,22 +15,6 @@ const CapStationArm6DoF = (
     <circle cx="6" cy="18" r="2" />
     <path d="M6 16V9l6-3v5l5 1v6" />
     <circle cx="17" cy="17" r="2" />
-  </svg>
-);
-
-const CapStationArmSCARA = (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <rect x="4" y="14" width="16" height="3" rx="1" />
-    <path d="M9 14V8h6v6" />
-    <path d="M12 8V4" />
-  </svg>
-);
-
-const CapStationArmDelta = (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <path d="M4 6h16" />
-    <path d="M6 6l6 12 6-12" />
-    <circle cx="12" cy="18" r="1.5" />
   </svg>
 );
 
@@ -45,48 +29,11 @@ const MobileShuttle = (
   </svg>
 );
 
-const MobileForklift = (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <path d="M3 17h11V7h4l3 4v6h-2" />
-    <circle cx="7" cy="19" r="1.5" />
-    <circle cx="17" cy="19" r="1.5" />
-  </svg>
-);
-
-const MobileTow = (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <rect x="3" y="11" width="11" height="5" rx="1" />
-    <path d="M14 13h4l3 3" />
-    <circle cx="7" cy="18" r="1.4" />
-    <circle cx="18" cy="18" r="1.4" />
-  </svg>
-);
-
-// ── Brains ───────────────────────────────────────────────────────────────────
-
-const BrainScripted = (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <polyline points="6 9 12 15 18 9" />
-    <polyline points="6 3 12 9 18 3" />
-  </svg>
-);
-
-const BrainScheduler = (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <rect x="3" y="4" width="18" height="16" rx="2" />
-    <line x1="3" y1="10" x2="21" y2="10" />
-    <line x1="9" y1="4" x2="9" y2="20" />
-  </svg>
-);
-
-const BrainLLM = (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <circle cx="12" cy="12" r="3" />
-    <path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" />
-  </svg>
-);
-
 // ── Zones ────────────────────────────────────────────────────────────────────
+// US 34.1 (Sneh-port 5c23991, c228768): Control section deleted entirely
+// (Scripted / Scheduler FIFO / LLM assist were never wired); Charging dock
+// zone removed (no charging behaviour in the warehouse demo). Zone glyphs
+// are now the only "row" items in the sidebar.
 
 const ZoneSource = (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -99,12 +46,6 @@ const ZoneSink = (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
     <polyline points="19 12 12 19 5 12" />
     <line x1="12" y1="4" x2="12" y2="19" />
-  </svg>
-);
-
-const ZoneCharging = (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
   </svg>
 );
 
@@ -147,53 +88,61 @@ interface PaletteSection {
   grid?: boolean;
   listClassName?: string;
   items: PaletteItem[];
+  /** US 34.1 (Sneh-port f8569c9): when set, a group header with this label
+   *  is rendered once before the first section that carries the same group
+   *  string. Sibling sections sharing the same group cluster under it. */
+  group?: string;
+  /** When true, the section header renders as a smaller indented subsection. */
+  sub?: boolean;
 }
 
+// Sidebar now reflects ONLY what the live system actually has:
+//   · Input Zone + Output Zone (real chips in the warehouse)
+//   · Input Arm + Output Arm (the two actual fixed actors)
+//   · AGV-1 / AGV-2 / AGV-3 (the three real fleet members)
+//   · Capabilities table (real)
+// Removed: SCARA/Delta arm variants, Shuttle/Forklift/Tow AGV variants —
+// these were palette decoration from the prototype and never represented
+// real actors. Drag-drop of "new actor types" is also disabled at runtime,
+// so showing variants the user can't deploy was actively misleading.
 const PALETTE: PaletteSection[] = [
   {
-    label: "Capability Stations",
+    label: "Zones",
     grid: true,
     items: [
-      { kind: "chip", name: "Arm · 6DoF", sub: "pick · place · dock", paletteKey: "arm-6dof", icon: CapStationArm6DoF },
-      { kind: "chip", name: "Arm · SCARA", sub: "fast cycle", paletteKey: "arm-scara", icon: CapStationArmSCARA },
-      { kind: "chip", name: "Arm · Delta", sub: "high-speed", paletteKey: "arm-delta", icon: CapStationArmDelta },
+      { kind: "chip", name: "Input Zone",  sub: "input · inbound",   paletteKey: "zone-source", icon: ZoneSource },
+      { kind: "chip", name: "Output Zone", sub: "output · outbound", paletteKey: "zone-sink",   icon: ZoneSink },
     ],
   },
   {
-    label: "Mobile Agents",
+    label: "Stationary Actors",
+    group: "Actors",
+    sub: true,
     grid: true,
     items: [
-      { kind: "chip", name: "Shuttle AGV", sub: "fast · cap 1", paletteKey: "agv-shuttle", icon: MobileShuttle },
-      { kind: "chip", name: "Forklift AGV", sub: "heavy · pallet", paletteKey: "agv-forklift", icon: MobileForklift },
-      { kind: "chip", name: "Tow AGV", sub: "balanced", paletteKey: "agv-tow", icon: MobileTow },
+      { kind: "chip", name: "Input Arm",  sub: "loads AGVs",   paletteKey: "arm-input",  icon: CapStationArm6DoF },
+      { kind: "chip", name: "Output Arm", sub: "unloads AGVs", paletteKey: "arm-output", icon: CapStationArm6DoF },
+    ],
+  },
+  {
+    label: "Mobile Actors",
+    group: "Actors",
+    sub: true,
+    grid: true,
+    items: [
+      { kind: "chip", name: "AGV 1", sub: "blue · 10–20 kg",   paletteKey: "agv-1", icon: MobileShuttle },
+      { kind: "chip", name: "AGV 2", sub: "green · 20–50 kg",  paletteKey: "agv-2", icon: MobileShuttle },
+      { kind: "chip", name: "AGV 3", sub: "yellow · 50–80 kg", paletteKey: "agv-3", icon: MobileShuttle },
     ],
   },
   {
     label: "Capabilities",
     listClassName: "gap-0",
     items: [
-      { kind: "cap", name: "pick",    count: "2 stations", filled: true },
-      { kind: "cap", name: "place",   count: "2 stations", filled: true },
-      { kind: "cap", name: "dock",    count: "5 actors",   filled: true },
-      { kind: "cap", name: "transit", count: "3 agents",   filled: true },
-      { kind: "cap", name: "weigh",   count: "0 actors",   filled: false },
-      { kind: "cap", name: "inspect", count: "0 actors",   filled: false },
-    ],
-  },
-  {
-    label: "Control",
-    items: [
-      { kind: "row", name: "Scripted",            meta: "default", icon: BrainScripted },
-      { kind: "row", name: "Scheduler · FIFO",    meta: "FIFO",    icon: BrainScheduler },
-      { kind: "row", name: "LLM assist · qwen2.5", meta: "qwen",  icon: BrainLLM },
-    ],
-  },
-  {
-    label: "Zones",
-    items: [
-      { kind: "row", name: "Source feed",   meta: "I",  icon: ZoneSource },
-      { kind: "row", name: "Sink / outflow", meta: "O", icon: ZoneSink },
-      { kind: "row", name: "Charging dock", meta: "⚡", icon: ZoneCharging },
+      { kind: "cap", name: "load",    count: "1 arm",   filled: true },
+      { kind: "cap", name: "unload",  count: "1 arm",   filled: true },
+      { kind: "cap", name: "transit", count: "3 AGVs",  filled: true },
+      { kind: "cap", name: "colour gate", count: "3 weight bands", filled: true },
     ],
   },
 ];
@@ -269,49 +218,66 @@ export function LeftRegistry() {
           </div>
         )}
 
-        {/* ── Palette sections ── */}
-        {filteredSections.map((section) => (
-          <LibSection
-            key={section.label}
-            label={section.label}
-            count={section.items.length}
-            grid={section.grid}
-            listClassName={section.listClassName}
-          >
-            {section.items.map((item) => {
-              if (item.kind === "chip") {
-                return (
-                  <LibChip
-                    key={item.paletteKey}
-                    icon={item.icon}
-                    name={item.name}
-                    sub={item.sub}
-                    paletteKey={item.paletteKey}
-                  />
-                );
-              }
-              if (item.kind === "row") {
-                return (
-                  <LibRow
-                    key={item.name}
-                    icon={item.icon}
-                    name={item.name}
-                    meta={item.meta}
-                  />
-                );
-              }
-              // cap
-              return (
-                <CapRow
-                  key={item.name}
-                  name={item.name}
-                  count={item.count}
-                  filled={item.filled}
-                />
+        {/* ── Palette sections (US 34.1: emit a LibGroupHeader once per
+            unique `group` string, immediately before the first section that
+            carries that group). ── */}
+        {(() => {
+          const rendered: React.ReactNode[] = [];
+          let lastGroup: string | undefined;
+          filteredSections.forEach((section) => {
+            if (section.group && section.group !== lastGroup) {
+              rendered.push(
+                <LibGroupHeader key={`grp-${section.group}`} label={section.group} />,
               );
-            })}
-          </LibSection>
-        ))}
+              lastGroup = section.group;
+            }
+            if (!section.group) lastGroup = undefined;
+            rendered.push(
+              <LibSection
+                key={section.label}
+                label={section.label}
+                count={section.items.length}
+                grid={section.grid}
+                listClassName={section.listClassName}
+                sub={section.sub}
+              >
+                {section.items.map((item) => {
+                  if (item.kind === "chip") {
+                    return (
+                      <LibChip
+                        key={item.paletteKey}
+                        icon={item.icon}
+                        name={item.name}
+                        sub={item.sub}
+                        paletteKey={item.paletteKey}
+                      />
+                    );
+                  }
+                  if (item.kind === "row") {
+                    return (
+                      <LibRow
+                        key={item.name}
+                        icon={item.icon}
+                        name={item.name}
+                        meta={item.meta}
+                      />
+                    );
+                  }
+                  // cap
+                  return (
+                    <CapRow
+                      key={item.name}
+                      name={item.name}
+                      count={item.count}
+                      filled={item.filled}
+                    />
+                  );
+                })}
+              </LibSection>,
+            );
+          });
+          return rendered;
+        })()}
 
       </div>
 

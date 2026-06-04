@@ -16,7 +16,7 @@
 // in INTER.act v2.html) so e.g. arm-1 halo is Circle x=285 y=240 r=170.
 
 import { useEffect, useRef, useState } from "react";
-import { Stage, Layer, Circle, Path, Line, Group, Rect } from "react-konva";
+import { Stage, Layer, Circle, Path, Line, Group, Rect, Text } from "react-konva";
 
 import { useViewportTransform } from "./useViewportTransform";
 import type { ViewportTransform } from "./useViewportTransform";
@@ -27,6 +27,8 @@ import {
   useArmAngles,
   useTablePkgs,
 } from "@/store/selectors";
+import { PayloadLayer } from "./PayloadLayer";
+import { useStore } from "@/store";
 import { tokens } from "@/lib/tokens";
 import { AgvTokenLayer } from "./AgvTokenLayer";
 import { WarehouseGridLayer } from "./WarehouseGridLayer";
@@ -355,24 +357,27 @@ function ArmLayer({ tx }: { tx: Transform }) {
         const zoneW = cp * 0.78;
         const zoneH = cp * 0.42;
 
-        const pkgs = (tablePkgs[stn.name] ?? []) as {
-          id: string;
-          color: string;
-        }[];
+        // Sneh-port: package render moved to PayloadLayer. We keep tablePkgs
+        // available (it's still used for log/status), but render no per-table
+        // packages here — that would duplicate what PayloadLayer draws.
+        const pkgs: { id: string; color: string }[] = [];
+        void tablePkgs;
         const PKG = cp * 0.12;
         const PKG_GAP = cp * 0.05;
 
         return (
           <Group key={stn.name}>
-            {/* Table surface (packages stage here) */}
+            {/* Table surface — soft, minimal. The actual package render
+                lives in PayloadLayer so the table is just a hint. */}
             <Rect
               x={tableCX - zoneW / 2}
               y={tableCY - zoneH / 2}
               width={zoneW}
               height={zoneH}
-              fill="rgba(55,60,85,0.6)"
+              fill="rgba(0,0,0,0.04)"
               stroke={stn.color}
-              strokeWidth={1.5}
+              strokeWidth={1}
+              opacity={0.7}
               cornerRadius={4}
             />
             {/* Packages waiting on the table */}
@@ -439,8 +444,183 @@ function ArmLayer({ tx }: { tx: Transform }) {
               stroke="rgba(0,0,0,0.3)"
               strokeWidth={1}
             />
+            {/* Sneh-port: gripper-carry package render moved to PayloadLayer.
+                That layer resolves arm-carrier payloads to (tipX,tipY) using
+                the same station + angle math, so the package follows the
+                gripper exactly — no duplicate render with the on-AGV crate. */}
+            {/* US 34.1 (Sneh-port c228768 + 119cd01): actor-id label below
+                the assembly. Placed below the outer reach halo so it's
+                always visible regardless of which way the stick is pointing,
+                and black with weight 600 for legibility on the light canvas. */}
+            <Text
+              x={stn.x - cp * 0.8}
+              y={stn.y + reach + 14}
+              width={cp * 1.6}
+              align="center"
+              text={stn.armKey || stn.name}
+              fontSize={11}
+              fill="rgba(0,0,0,0.85)"
+              fontStyle="600"
+            />
           </Group>
         );
+      })}
+    </Layer>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AgvRouteLayer (US 34.1) — polyline of each AGV's currently announced route.
+// Driven by `agvRoutes` in the runtime slice, populated by the socketDriver
+// from `intent` bus events whose payload carries `path_cells`. The cell
+// sequence is the OUTPUT of the AGV's A* / smart-path planner (US 34 Phase
+// 6), so what the operator sees here is exactly the route the AGV will
+// walk — not a heuristic guess by the UI.
+// ---------------------------------------------------------------------------
+
+interface GridGeo {
+  cellPx: number;
+  ox: number;
+  oy: number;
+}
+
+function AgvRouteLayer({ tx }: { tx: Transform }) {
+  const agvRoutes = useStore((s) => s.agvRoutes);
+  const [geo, setGeo] = useState<GridGeo | null>(null);
+  const [dashOffset, setDashOffset] = useState(0);
+  const rafRef = useRef<number | null>(null);
+  const lastTsRef = useRef<number | null>(null);
+  const offsetRef = useRef(0);
+
+  useEffect(() => {
+    fetch("/config")
+      .then((r) => r.json())
+      .then((cfg) => {
+        const wh = cfg.warehouse;
+        if (!wh?.grid?.cell_px) return;
+        // BUG WAS HERE: origin is inside wh.grid (not wh.origin which is {}).
+        // That made ox/oy undefined → polyline coords became NaN → route
+        // never rendered. THIS is why "I can't see any colored route".
+        const origin = wh.grid.origin ?? wh.origin ?? { x: 0, y: 0 };
+        setGeo({
+          cellPx: wh.grid.cell_px,
+          ox: origin.x ?? 0,
+          oy: origin.y ?? 0,
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  // Marching ants — same cadence as DynamicLayer phantoms so the eye reads
+  // "route preview" not "static dashed line".
+  useEffect(() => {
+    function tick(ts: number) {
+      const dt = lastTsRef.current === null ? 0 : ts - lastTsRef.current;
+      lastTsRef.current = ts;
+      offsetRef.current = (offsetRef.current - (dt / 1000) * 14) % -32;
+      setDashOffset(offsetRef.current);
+      rafRef.current = requestAnimationFrame(tick);
+    }
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
+  if (!geo) return null;
+  const cp = geo.cellPx;
+  const cx = (c: number) => geo.ox + c * cp + cp / 2;
+  const cy = (r: number) => geo.oy + r * cp + cp / 2;
+
+  const routes = Object.values(agvRoutes);
+
+  return (
+    <Layer
+      listening={false}
+      x={tx.x}
+      y={tx.y}
+      scaleX={tx.zoom}
+      scaleY={tx.zoom}
+    >
+      {/* Bundle marker — a tiny purple square at canvas origin (0,0). If you
+          can see this, the NEW frontend bundle is loaded. Remove later. */}
+      <Rect x={2} y={2} width={10} height={10} fill="#9b59b6" />
+      {routes.flatMap((route) => {
+        if (!route.cells || route.cells.length < 2) return [];
+        const pts: number[] = [];
+        for (const [c, r] of route.cells) {
+          pts.push(cx(c), cy(r));
+        }
+        const lastCell = route.cells[route.cells.length - 1];
+        return [
+          // Highlighted cells along the chosen route — semi-transparent
+          // squares so the operator can READ which cells the AGV will visit.
+          ...route.cells.map(([c, r], i) => (
+            <Rect
+              key={`route-cell-${route.agvId}-${i}`}
+              x={cx(c) - cp / 2}
+              y={cy(r) - cp / 2}
+              width={cp}
+              height={cp}
+              fill={route.color}
+              opacity={0.10}
+              stroke={route.color}
+              strokeWidth={1}
+              cornerRadius={2}
+            />
+          )),
+          // Solid underlay — strong corridor band.
+          <Line
+            key={`route-fill-${route.agvId}`}
+            points={pts}
+            stroke={route.color}
+            strokeWidth={cp * 0.30}
+            lineCap="round"
+            lineJoin="round"
+            opacity={0.35}
+          />,
+          // Marching-ants top stroke — animated. Thick + opaque so it pops.
+          <Line
+            key={`route-ants-${route.agvId}`}
+            points={pts}
+            stroke={route.color}
+            strokeWidth={cp * 0.12}
+            dash={[12, 8]}
+            dashOffset={dashOffset}
+            lineCap="round"
+            lineJoin="round"
+            opacity={1}
+            shadowColor="rgba(0,0,0,0.4)"
+            shadowBlur={3}
+          />,
+          // Dot at each waypoint cell.
+          ...route.cells.map(([c, r], i) => (
+            <Circle
+              key={`route-dot-${route.agvId}-${i}`}
+              x={cx(c)}
+              y={cy(r)}
+              radius={cp * 0.07}
+              fill={route.color}
+              stroke="white"
+              strokeWidth={1.2}
+              opacity={0.9}
+            />
+          )),
+          // DESTINATION marker — bold ring at the AGV's final cell so the
+          // operator knows where it's headed even before it arrives.
+          <Circle
+            key={`route-dest-${route.agvId}`}
+            x={cx(lastCell[0])}
+            y={cy(lastCell[1])}
+            radius={cp * 0.36}
+            stroke={route.color}
+            strokeWidth={cp * 0.06}
+            opacity={0.85}
+            shadowColor={route.color}
+            shadowBlur={cp * 0.25}
+            shadowOpacity={0.6}
+          />,
+        ];
       })}
     </Layer>
   );
@@ -482,8 +662,15 @@ export function KonvaOverlay() {
           trajectories={trajectories}
           dockGlows={dockGlows}
         />
+        {/* US 34.1: live A* route polyline per AGV, below the arms so the
+            arm bodies still draw over a route that crosses a station. */}
+        <AgvRouteLayer tx={tx} />
         <ArmLayer tx={tx} />
         <AgvTokenLayer tx={tx} />
+        {/* Sneh-port unified package render: ONE entity per package whose
+            position is driven by its carrier (zone/arm/AGV). Sits above the
+            arm + AGV layers so packages are always visible on top of them. */}
+        <PayloadLayer tx={tx} />
       </Stage>
     </div>
   );

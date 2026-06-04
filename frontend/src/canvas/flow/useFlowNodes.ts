@@ -52,21 +52,11 @@ export function useFlowNodes(): Node[] {
       });
     }
 
-    // ── Pool label node (centered) ────────────────────────────────────────
-    // Prototype: left:660px; top:410px with translate(-50%, -50%)
-    // → center at (660, 410)
-    nodes.push({
-      id: "pool-label",
-      type: "poolLabelNode",
-      position: { x: 660, y: 410 },
-      data: { pool },
-      width: 240,
-      height: 64,
-      style: { ...nodeStyle },
-      origin: [0.5, 0.5],
-      draggable: false,
-      selectable: false,
-    });
+    // Pool-label node REMOVED — the "Mobile Transport Pool · N agents"
+    // label was a leftover from the early prototype and added nothing to
+    // the live runtime (AGV cards/tokens already carry identity). Kept
+    // `pool` in the dep list silently for future use.
+    void pool;
 
     return nodes;
   }, [actors, zones, pool]);

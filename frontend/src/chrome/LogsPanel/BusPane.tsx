@@ -2,23 +2,57 @@ import { useMemo } from "react";
 import { cn } from "@/lib/cn";
 import type { BusKind, BusMessage } from "@/store/types";
 
+// US 34.1: labels cover the full backend bus envelope (was only
+// announce/bid/accept/dock heuristic). Each maps to a one-word chip so the
+// panel stays scannable.
 const KIND_LABELS: Record<BusKind, string> = {
   announce: "announce",
   bid: "bid",
   accept: "accept",
   dock: "dock",
+  task_announce: "announce",
+  task_orphan: "orphan",
+  claim: "claim",
+  agent_status: "status",
+  intent: "intent",
+  arm_approach: "approach",
+  arm_ready: "arm",
+  arm_busy: "busy",
+  yield: "yield",
+  help_request: "help",
+  plan: "plan",
+  task_spec: "spec",
+  reassignment: "reassign",
+  system: "system",
 };
 
 function kindChipClass(kind: BusKind): string {
   switch (kind) {
     case "announce":
+    case "task_announce":
+    case "plan":
+    case "task_spec":
       return "bg-info-bg text-info";
     case "bid":
       return "bg-warn-bg text-warn";
     case "accept":
-      return "bg-ok-bg text-ok";
+    case "arm_ready":
     case "dock":
       return "bg-ok-bg text-ok";
+    case "claim":
+      return "bg-ok-bg text-ok";
+    case "task_orphan":
+    case "help_request":
+      return "bg-warn-bg text-warn";
+    case "intent":
+    case "arm_approach":
+    case "agent_status":
+    case "yield":
+    case "arm_busy":
+    case "reassignment":
+    case "system":
+    default:
+      return "bg-bg-sunken text-ink-3";
   }
 }
 

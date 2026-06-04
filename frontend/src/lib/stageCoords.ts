@@ -17,7 +17,9 @@ export const PAD = { L: 24, R: 24, T: 120, B: 64 } as const;
 export function computeFit(paneW: number, paneH: number) {
   const cw = paneW - PAD.L - PAD.R;
   const ch = paneH - PAD.T - PAD.B;
-  const zoom = Math.max(0.4, Math.min(cw / STAGE_W, ch / STAGE_H));
+  // US 34.1: clamp lowered from 0.4 → 0.1 (Sneh-port) so a small pane on a
+  // big topology still produces a usable fit instead of clipping silently.
+  const zoom = Math.max(0.1, Math.min(cw / STAGE_W, ch / STAGE_H));
   const x = PAD.L + (cw - STAGE_W * zoom) / 2;
   const y = PAD.T + (ch - STAGE_H * zoom) / 2;
   return { x, y, zoom };

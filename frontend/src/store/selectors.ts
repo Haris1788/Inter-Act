@@ -65,3 +65,5 @@ export const useAgvKinematics = () => useStore((s) => s.agvKinematics);
 export const useArmAngles = () => useStore((s) => s.armAngles);
 export const useTablePkgs = () => useStore((s) => s.tablePkgs);
 export const useAgvCargo = () => useStore((s) => s.agvCargo);
+export const useArmCargo = () => useStore((s) => s.armCargo);
+export const usePayloads = () => useStore((s) => s.payloads);

@@ -1,9 +1,23 @@
 import type { StateCreator } from "zustand";
-import type { RootStore, RuntimeSlice } from "./types";
+import type { ActiveAi, AgvRoute, RootStore, RuntimeSlice } from "./types";
 
-const BUS_CAP = 40;
-const LOG_CAP = 200;
+// US 34.1: caps raised so the live coordination view is useful for longer
+// sessions. Bus panel previously stopped scrolling at 40 messages; log panel
+// at 200. Operator complaint: "messages disappear before we read them" and
+// "bus doesn't show all messages the backend bus emits".
+const BUS_CAP = 300;
+const LOG_CAP = 300;
 const EVENT_CAP = 300; // bounded - long-session memory safety
+
+// Default active-AI badge. Replaced as bus events arrive (intent → tactical,
+// task_announce → planner, etc.) so the left-foot label always reflects what
+// the system is doing RIGHT NOW.
+const DEFAULT_ACTIVE_AI: ActiveAi = {
+  model: "qwen2.5:0.5b",
+  role: "idle",
+  source: "system",
+  tsMs: 0,
+};
 
 // Exported so schema-driven surfaces (Inspector) can render consistent
 // controls for any actor that has no live runtime entry yet (e.g. just
@@ -33,6 +47,8 @@ export const createRuntimeSlice: StateCreator<
   dataSource: "mock",
   linkStatus: "connecting",
   events: [],
+  agvRoutes: {},
+  activeAi: DEFAULT_ACTIVE_AI,
 
   pushBusMessage: (m) =>
     set((s) => ({ busMessages: [...s.busMessages, m].slice(-BUS_CAP) })),
@@ -70,6 +86,20 @@ export const createRuntimeSlice: StateCreator<
 
   setConnection: (source, status) =>
     set(() => ({ dataSource: source, linkStatus: status })),
+
+  setAgvRoute: (route: AgvRoute) =>
+    set((s) => ({ agvRoutes: { ...s.agvRoutes, [route.agvId]: route } })),
+
+  clearAgvRoute: (agvId: string) =>
+    set((s) => {
+      if (!s.agvRoutes[agvId]) return {};
+      const next = { ...s.agvRoutes };
+      delete next[agvId];
+      return { agvRoutes: next };
+    }),
+
+  setActiveAi: (patch) =>
+    set((s) => ({ activeAi: { ...s.activeAi, ...patch } })),
 
   hydrateRuntime: (patch) => set(() => ({ ...patch })),
 });

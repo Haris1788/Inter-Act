@@ -157,7 +157,30 @@ export interface ActorRuntime {
   }[];
 }
 
-export type BusKind = "announce" | "bid" | "accept" | "dock";
+// US 34.1: BusKind covers every event type the backend bus emits, so the
+// live BusPane is a faithful mirror of what the master/AGV/arm agents say
+// to one another. "system" is the fallback for log-derived rows that don't
+// carry a real bus envelope.
+export type BusKind =
+  | "announce"
+  | "bid"
+  | "accept"
+  | "dock"
+  | "task_announce"
+  | "task_orphan"
+  | "claim"
+  | "agent_status"
+  | "intent"
+  | "arm_approach"
+  | "arm_ready"
+  | "arm_busy"
+  | "yield"
+  | "help_request"
+  | "plan"
+  | "task_spec"
+  | "reassignment"
+  | "system";
+
 export interface BusMessage {
   id: string;
   ts: string;
@@ -165,6 +188,20 @@ export interface BusMessage {
   from: string;
   to?: string;
   text: string;
+  /** US 34.1: raw bus task_id when present (e.g. "pkg-2"). */
+  taskId?: string;
+  /** US 34.1: monotonic seq number from the backend ring buffer. */
+  seq?: number;
+}
+
+// US 34.1: route polyline broadcast by an AGV's intent event. Cells are
+// (col, row) integers in the warehouse grid. Color matches the AGV.
+export interface AgvRoute {
+  agvId: string;
+  color: string;
+  cells: [number, number][];
+  action: string; // "move_to_input" | "traverse_lane" | "move_to_output" | "return_to_bay"
+  ts: number; // performance.now() at receipt — used by the layer to fade old routes
 }
 
 export interface LogLine {
@@ -200,6 +237,17 @@ export interface OperationalEvent {
   tone: "ok" | "warn" | "err" | "info";
 }
 
+// US 34.1: which AI tier is currently doing work. Surfaced in the left-panel
+// foot so the operator sees "qwq:32b · planning" while the planner is hot,
+// "qwen2.5:14b · tactical" while AGVs/arms are evaluating, etc. Derived from
+// bus events, not from an explicit backend signal.
+export interface ActiveAi {
+  model: string; // e.g. "qwq:32b", "qwen2.5:14b", "qwen2.5:0.5b"
+  role: string;  // e.g. "planner", "tactical", "judge", "idle"
+  source: string; // who last fired ("master", "agv-2", "arm-1", ...)
+  tsMs: number;   // performance.now() at last update
+}
+
 export interface RuntimeSlice {
   actorRuntime: Record<ActorId, ActorRuntime>;
   busMessages: BusMessage[];
@@ -212,11 +260,20 @@ export interface RuntimeSlice {
   linkStatus: LinkStatus;
   /** Phase 8 - bounded operational event timeline (observability). */
   events: OperationalEvent[];
+  /** US 34.1 - per-AGV last announced route, for the canvas polyline. */
+  agvRoutes: Record<string, AgvRoute>;
+  /** US 34.1 - which AI is currently driving the system. */
+  activeAi: ActiveAi;
   pushBusMessage: (m: BusMessage) => void;
   pushLogLine: (l: LogLine) => void;
   pushEvent: (e: Omit<OperationalEvent, "id" | "ts"> & { ts?: string }) => void;
   setActorRuntime: (id: ActorId, patch: Partial<ActorRuntime>) => void;
   setConnection: (source: DataSource, status: LinkStatus) => void;
+  /** US 34.1 - replace/clear a per-AGV route polyline. */
+  setAgvRoute: (route: AgvRoute) => void;
+  clearAgvRoute: (agvId: string) => void;
+  /** US 34.1 - update the active-AI label. */
+  setActiveAi: (patch: Partial<ActiveAi>) => void;
   hydrateRuntime: (
     patch: Partial<
       Pick<
@@ -264,6 +321,17 @@ export interface TablePackage {
   color: string;
 }
 
+/** Sneh-port: unified payload model. One entry per package, carrier resolves
+ * to a position. Eliminates the table/arm/AGV triple-render race. */
+export interface Payload {
+  id: string;
+  color: string;
+  /** "agv-N" | "arm-N" | "zone:input_arm" | "zone:output_arm" | null */
+  carrier: string | null;
+  /** Last-known pixel position — used when carrier is a zone or null. */
+  lastPos?: Vec2;
+}
+
 export interface SpatialSlice {
   agvKinematics: Record<ActorId, AgvKinematics>;
   trajectories: Trajectory[];
@@ -275,6 +343,10 @@ export interface SpatialSlice {
   tablePkgs: Record<string, TablePackage[]>;
   /** Packages currently carried by each AGV. agv_id → package_id | null. */
   agvCargo: Record<string, string | null>;
+  /** Packages currently held by each arm (mid-sweep). arm_key → package_id | null. */
+  armCargo: Record<string, string | null>;
+  /** Sneh-port: unified payload registry, carrier-driven. */
+  payloads: Record<string, Payload>;
   tick: (dtMs: number) => void;
   // Phase 2 - runtime-driven, ephemeral. Driven by object_update events.
   setAgvKinematics: (id: ActorId, patch: Partial<AgvKinematics>) => void;
@@ -282,6 +354,10 @@ export interface SpatialSlice {
   setArmAngle: (armId: string, angle: number) => void;
   setTablePkgs: (station: string, pkgs: TablePackage[]) => void;
   setAgvCargo: (agvId: string, packageId: string | null) => void;
+  setArmCargo: (armKey: string, packageId: string | null) => void;
+  /** Sneh-port: upsert a payload and move it to a new carrier (or null). */
+  setPayloadCarrier: (id: string, color: string, carrier: string | null, lastPos?: Vec2) => void;
+  clearPayload: (id: string) => void;
   emitTrajectory: (t: Trajectory) => void;
   emitDockGlow: (g: DockGlow) => void;
   clearSpatialRuntime: () => void;

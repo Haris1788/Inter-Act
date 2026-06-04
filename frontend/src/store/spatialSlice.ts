@@ -24,6 +24,8 @@ export const createSpatialSlice: StateCreator<
   armAngles: {},
   tablePkgs: {},
   agvCargo: {},
+  armCargo: {},
+  payloads: {},
 
   tick: (dtMs) =>
     set((s) => {
@@ -146,6 +148,33 @@ export const createSpatialSlice: StateCreator<
   setAgvCargo: (agvId, packageId) =>
     set((s) => ({ agvCargo: { ...s.agvCargo, [agvId]: packageId } })),
 
+  setArmCargo: (armKey, packageId) =>
+    set((s) => ({ armCargo: { ...s.armCargo, [armKey]: packageId } })),
+
+  setPayloadCarrier: (id, color, carrier, lastPos) =>
+    set((s) => {
+      const prev = s.payloads[id];
+      return {
+        payloads: {
+          ...s.payloads,
+          [id]: {
+            id,
+            color: color || prev?.color || "#888",
+            carrier,
+            lastPos: lastPos ?? prev?.lastPos,
+          },
+        },
+      };
+    }),
+
+  clearPayload: (id) =>
+    set((s) => {
+      if (!s.payloads[id]) return {};
+      const next = { ...s.payloads };
+      delete next[id];
+      return { payloads: next };
+    }),
+
   emitTrajectory: (t) =>
     set((s) => ({
       trajectories: [...s.trajectories.filter((x) => x.id !== t.id), t].slice(
@@ -166,6 +195,8 @@ export const createSpatialSlice: StateCreator<
       armAngles: {},
       tablePkgs: {},
       agvCargo: {},
+      armCargo: {},
+      payloads: {},
     })),
 
   hydrateSpatial: (patch) => set(() => ({ ...patch })),

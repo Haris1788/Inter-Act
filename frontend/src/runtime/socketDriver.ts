@@ -9,7 +9,6 @@ import {
   armHealthToStatus,
   assetStatusToStatus,
   toLogLine,
-  classifyBus,
   resolveOwnerPosition,
 } from "@/lib/contract";
 
@@ -56,6 +55,102 @@ function armNumber(actorId: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+// US 34.1: render a one-line summary of a bus event for the BusPane. Keeps
+// the panel readable instead of dumping the whole JSON payload.
+function busEventToText(
+  type: string,
+  payload: Record<string, unknown>,
+  taskId?: string | null,
+): string {
+  const pkg = (payload.package_id as string) ?? taskId ?? "?";
+  switch (type) {
+    case "task_announce":
+      return `announce ${pkg} (${payload.label ?? "no-label"}${
+        payload.weight_kg != null ? ` · ${payload.weight_kg}kg` : ""
+      })`;
+    case "task_orphan":
+      return `orphan ${pkg} — ${payload.reason ?? "fault"}`;
+    case "bid": {
+      const score = payload.score as number | undefined;
+      const why = payload.rationale as string | undefined;
+      return `bid ${pkg} score=${score?.toFixed?.(1) ?? score ?? "?"} ${why ?? ""}`;
+    }
+    case "claim":
+      return `claim ${pkg} → ${payload.winner ?? "?"} (score=${
+        payload.winning_score ?? "?"
+      })`;
+    case "agent_status":
+      return `status=${payload.status ?? "?"}${
+        payload.current_task ? ` task=${payload.current_task}` : ""
+      }`;
+    case "intent": {
+      const path = Array.isArray(payload.path_cells)
+        ? ` (${(payload.path_cells as unknown[]).length} cells)`
+        : "";
+      return `intent ${payload.action ?? "?"}${path}${
+        payload.detail ? ` — ${payload.detail}` : ""
+      }`;
+    }
+    case "arm_approach":
+      return `approach ${payload.arm_station ?? "?"} eta=${payload.eta_s ?? "?"}s`;
+    case "arm_ready":
+      return `arm ${payload.action ?? "?"} for ${payload.for_agv ?? "?"}`;
+    case "arm_busy":
+      return `arm busy ${payload.arm_station ?? "?"}`;
+    case "yield":
+      return `yield: ${payload.reason ?? "?"}${
+        payload.waiting_for ? ` (waiting ${payload.waiting_for})` : ""
+      }`;
+    case "help_request":
+      return `help: ${payload.reason ?? "?"}`;
+    default:
+      // Unknown type — show the JSON so nothing is silently swallowed.
+      try {
+        return `${type} ${JSON.stringify(payload).slice(0, 140)}`;
+      } catch {
+        return type;
+      }
+  }
+}
+
+// US 34.1: map a bus event to which AI tier is currently "speaking". Returns
+// null when the event is not associated with an AI action (e.g. yield is
+// pure script). Mirrors §4 of Work flow(12 June 2026).md.
+function inferActiveAi(
+  type: string,
+  source: string,
+): { model: string; role: string; source: string } | null {
+  switch (type) {
+    case "task_spec":
+    case "plan":
+    case "task_announce":
+      return { model: "qwq:32b", role: "planner", source: "master" };
+    case "bid":
+      return {
+        model: "qwen2.5:14b",
+        role: "judge",
+        source: source || "agv",
+      };
+    case "intent":
+      return {
+        model: "qwen2.5:14b",
+        role: "tactical",
+        source: source || "agv",
+      };
+    case "arm_ready":
+    case "arm_approach":
+      return {
+        model: "qwen2.5:14b",
+        role: "arm-gate",
+        source: source || "arm",
+      };
+    case "claim":
+      return { model: "qwq:32b", role: "planner", source: "master" };
+    default:
+      return null;
+  }
+}
+
 export function createSocketDriver(): RuntimeDriver {
   let socket: Socket | null = null;
   let raf = 0;
@@ -76,6 +171,15 @@ export function createSocketDriver(): RuntimeDriver {
   // Captured at start() so the Phase 13 operational controls can reconcile
   // store state from the backend without holding a separate store ref.
   let storeRef: typeof useStore | null = null;
+  // US 34.1: per-AGV color lookup (from /config.warehouse.agvs[]), populated
+  // at bootstrap. Used to colour route polylines and bus messages by AGV.
+  // Empty until /config returns — polylines fall back to a neutral colour
+  // while the lookup is cold.
+  let agvColors: Record<string, string> = {};
+  // US 34.1: bus dedup by (seq, type, task_id). The backend rebroadcasts the
+  // same envelope twice (room + default broadcast); without this the
+  // BusPane shows every event twice.
+  const seenBus = new Set<string>();
 
   // Re-derive truthful actor runtime from the backend container snapshot.
   // Used on reconnect and after every operational action so the UI never
@@ -114,6 +218,17 @@ export function createSocketDriver(): RuntimeDriver {
         if (cfg) {
           const { actors, zones, adjacency: adj } = normalizeConfig(cfg);
           adjacency = adj;
+          // US 34.1: capture per-AGV color so the bus handler can paint route
+          // polylines + bus rows in each AGV's signature colour.
+          const whAgvs = (cfg as unknown as {
+            warehouse?: { agvs?: { id: string; color?: string }[] };
+          }).warehouse?.agvs;
+          if (Array.isArray(whAgvs)) {
+            const next: Record<string, string> = {};
+            for (const a of whAgvs)
+              if (a?.id) next[a.id] = a.color ?? "#888";
+            agvColors = next;
+          }
           // The authored topology (positions/labels) is the USER's document
           // and is restored from local storage by useAutosave. Backend
           // /config must NOT overwrite it on every (re)connect, or saved
@@ -220,6 +335,116 @@ export function createSocketDriver(): RuntimeDriver {
         },
       );
 
+      // ────────────────────────────────────────────────────────────────────
+      // US 34.1: live bus mirror — backend's publish_local() emits to the
+      // SocketIO event name "bus" (also into the "coord-bus" room). Every
+      // task_announce / bid / claim / agent_status / intent / arm_ready /
+      // task_orphan / yield etc. flows through here. Three things happen
+      // per event:
+      //   (1) Pushed verbatim into busMessages so BusPane shows the full
+      //       coordination conversation (was log-derived heuristic before).
+      //   (2) intent events carrying `path_cells` populate agvRoutes for the
+      //       Konva polyline overlay (item 4).
+      //   (3) The activeAi label is derived from event type/source so the
+      //       left-foot badge tells the operator which model tier is doing
+      //       work right now (item 5).
+      // ────────────────────────────────────────────────────────────────────
+      socket.on(
+        "bus",
+        (ev: {
+          type: string;
+          from?: string;
+          to?: string;
+          task_id?: string | null;
+          payload?: Record<string, unknown>;
+          seq?: number;
+          ts?: string;
+        }) => {
+          // Dedup: the backend emits each event twice (room + default
+          // broadcast). Identical seq+type+task_id collapses to one row.
+          const dedupKey = `${ev.seq ?? "x"}|${ev.type}|${ev.task_id ?? ""}`;
+          if (seenBus.has(dedupKey)) return;
+          seenBus.add(dedupKey);
+          if (seenBus.size > 2000) {
+            // Trim oldest 500 to keep the set bounded. Iteration order is
+            // insertion order in Set, so .keys().next() is the oldest.
+            let n = 500;
+            for (const k of seenBus) {
+              seenBus.delete(k);
+              if (--n <= 0) break;
+            }
+          }
+
+          const s = st();
+          const kind = (ev.type ?? "system") as
+            | "task_announce" | "task_orphan" | "bid" | "claim"
+            | "agent_status" | "intent" | "arm_approach" | "arm_ready"
+            | "arm_busy" | "yield" | "help_request" | "system";
+          const text = busEventToText(ev.type, ev.payload ?? {}, ev.task_id);
+          const ts = ev.ts && /^\d{2}:\d{2}:\d{2}$/.test(ev.ts)
+            ? ev.ts
+            : new Date().toISOString().slice(11, 19);
+          s.pushBusMessage({
+            id: `bus-${ev.seq ?? Date.now()}-${ev.type}`,
+            ts,
+            kind,
+            from: ev.from ?? "?",
+            to: ev.to,
+            text,
+            taskId: ev.task_id ?? undefined,
+            seq: ev.seq,
+          });
+
+          // (2) intent.path_cells → polyline
+          if (ev.type === "intent") {
+            const payload = ev.payload ?? {};
+            const cells = Array.isArray(payload.path_cells)
+              ? (payload.path_cells as [number, number][]).filter(
+                  (c) => Array.isArray(c) && c.length >= 2,
+                )
+              : null;
+            const agvId = (payload.agv_id as string) || ev.from || "";
+            // Fallback colour matches AGV id when /config hasn't returned yet.
+            // Without this the route was invisible against the grey bay fill.
+            const FALLBACK_COLORS: Record<string, string> = {
+              "agv-1": "#2563eb",   // blue
+              "agv-2": "#16a34a",   // green
+              "agv-3": "#eab308",   // yellow
+            };
+            const routeColor =
+              agvColors[agvId] ??
+              FALLBACK_COLORS[agvId] ??
+              "#ff00aa";  // hot pink so a missed mapping is unmissable, not invisible
+            if (agvId && cells && cells.length > 0) {
+              // Build helps debugging: log every published route so DevTools
+              // shows exactly what the canvas should draw.
+              console.log("[route]", agvId, "→", cells.length, "cells:", cells);
+              s.setAgvRoute({
+                agvId,
+                color: routeColor,
+                cells,
+                action: String(payload.action ?? ""),
+                ts: performance.now(),
+              });
+            }
+            // The return_to_bay intent ends the leg — clear the polyline a
+            // few seconds after the AGV reports it (timer fires below in the
+            // same handler so we don't need a new rAF). Keeps the canvas
+            // from accumulating dead routes after a run.
+            if ((payload.action as string) === "return_to_bay" && agvId) {
+              window.setTimeout(() => st().clearAgvRoute(agvId), 8000);
+            }
+          }
+
+          // (3) Derive active-AI from the event. The mapping mirrors
+          // PROJECT_FLOWCHART: task_announce / claim / plan → master qwq:32b;
+          // bid / intent → tactical qwen14b on the AGV; arm_ready → arm
+          // qwen14b. agent_status alone doesn't move the badge.
+          const ai = inferActiveAi(ev.type, ev.from ?? "system");
+          if (ai) s.setActiveAi({ ...ai, tsMs: performance.now() });
+        },
+      );
+
       socket.on(
         "arm_health",
         (p: { arm_id: number; health: string; error?: string | null }) => {
@@ -275,6 +500,7 @@ export function createSocketDriver(): RuntimeDriver {
           owner_id: string;
           carrier_asset?: string | null;
           carrier_arm?: number | null;
+          color?: string | null;
           event_seq?: number;
         }) => {
           // stale-drop (mirror backend ledger semantics)
@@ -286,6 +512,27 @@ export function createSocketDriver(): RuntimeDriver {
           const prevKey = objOwner.get(p.object_id);
           const ownerKey = `${p.owner_type}:${p.owner_id}`;
           objOwner.set(p.object_id, ownerKey);
+
+          // Arm-cargo tracking (legacy, kept for ArmLayer fallback).
+          if (p.owner_type === "arm") {
+            s.setArmCargo(p.owner_id, p.object_id);
+          } else if (prevKey && prevKey.startsWith("arm:")) {
+            const prevArm = prevKey.slice(4);
+            s.setArmCargo(prevArm, null);
+          }
+
+          // Sneh-port: unified payload model. ONE entry per package, the
+          // carrier string fully determines the render position. This is
+          // what kills the "package on table AND on AGV" duplicate render.
+          //   arm   → carrier = "arm-N"          (PayloadLayer reads arm tip)
+          //   asset → carrier = "agv-N"          (PayloadLayer reads AGV pos)
+          //   zone  → carrier = "zone:<station>" (PayloadLayer reads table pos)
+          let carrier: string | null = null;
+          if (p.owner_type === "arm") carrier = p.owner_id;
+          else if (p.owner_type === "asset") carrier = p.owner_id;
+          else if (p.owner_type === "zone") carrier = `zone:${p.owner_id}`;
+          else if (p.owner_type === "transfer_point") carrier = `zone:${p.owner_id}`;
+          s.setPayloadCarrier(p.object_id, p.color ?? "#888", carrier);
 
           // FIFO evict oldest tracked objects (Map keeps insertion order).
           while (objSeq.size > OBJ_CAP) {
@@ -378,12 +625,13 @@ export function createSocketDriver(): RuntimeDriver {
           } else if (dest) {
             // Subsequent updates: set the new cell as a TARGET and let the
             // spatial tick() ease the body there — continuous vehicle motion
-            // instead of cell-to-cell snapping. Speed is tuned ABOVE the
-            // backend cell cadence (120px / 0.5s = 240px/s) so the visual
-            // token tracks the AGV's logical cell instead of lagging behind
-            // it; otherwise arm/load choreography (which keys off the logical
-            // cell) fires while the token is still mid-path.
-            s.setAgvTarget(p.id, { x: dest.x, y: dest.y }, 260);
+            // instead of cell-to-cell snapping. Speed MUST exceed the backend
+            // cell cadence: AGV-1 at speed_factor 1.6 steps cells every 310ms
+            // (cell_px 120 / 0.31s = 387 px/s minimum), so 260 px/s caused
+            // the canvas token to lag and cut corners — looking like "AGV
+            // ignores its own path". 600 px/s keeps the visual token snapped
+            // to the AGV's logical cell even for the fastest AGV.
+            s.setAgvTarget(p.id, { x: dest.x, y: dest.y }, 600);
           }
           const status =
             p.status === "faulted" || p.status === "stopped" ? "down"
@@ -422,21 +670,15 @@ export function createSocketDriver(): RuntimeDriver {
           message?: string;
           level?: string | null;
         }) => {
+          // US 34.1: log lines go to the log panel only. The bus panel is now
+          // fed by the canonical `bus` SocketIO event (see the handler above)
+          // — the old heuristic classifyBus pass over log messages caused
+          // duplicates AND missed events that never made it to the log stream.
           const s = st();
           s.pushLogLine(toLogLine(p));
           const now = performance.now();
           busWindow = busWindow.filter((t) => now - t < 1000);
           busWindow.push(now);
-          const bus = classifyBus(p.source ?? "system", p.message ?? "");
-          if (bus) {
-            s.pushBusMessage({
-              id: `b-${now.toFixed(0)}-${Math.random().toString(36).slice(2, 6)}`,
-              ts: p.timestamp ?? "",
-              kind: bus.kind,
-              from: bus.from,
-              text: bus.text,
-            });
-          }
           // Throttle busRate to ~1 Hz so a high-frequency log stream doesn't
           // re-render bus-rate subscribers on every message.
           const sec = Math.floor(now / 1000);

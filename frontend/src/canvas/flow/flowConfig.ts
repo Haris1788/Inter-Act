@@ -15,8 +15,9 @@ export const flowDefaults = {
   selectionOnDrag: false as const,
   // Disable RF default node styling (background, border, padding).
   nodeOrigin: [0, 0] as [number, number],
-  // Viewport constraints.
-  minZoom: 0.4,
+  // Viewport constraints. US 34.1: minZoom 0.4 → 0.1 (Sneh-port) so the
+  // operator can scroll out to see a large topology in one frame.
+  minZoom: 0.1,
   maxZoom: 2,
   translateExtent: [
     [-EXTENT_PAD, -EXTENT_PAD],
