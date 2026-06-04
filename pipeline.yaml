@@ -54,18 +54,41 @@ warehouse:
     - [10, 1]
     - [11, 1]
   agvs:
+  # US 34.1: per-AGV differentiation — colour, weight class, speed.
+  # AGV-1 = BLUE = light packages (10-20 kg), fast carrier.
+  # AGV-2 = GREEN = medium packages (20-50 kg), normal speed.
+  # AGV-3 = YELLOW = heavy packages (50-80 kg), slow because of load.
+  # weight_max_kg per AGV is the upper bound of its band; the bid filter
+  # rejects packages above it. allowed_labels remains the single source for
+  # colour-routing (still gated at both the AGV self-decline and the master
+  # capability filter).
   - id: agv-1
     label: AGV 1
-    color: '#16a085'
+    color: '#2980b9'        # blue — matches the carried colour
     bay: [10, 3]
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 20.0   # blue band ceiling
+      allowed_labels: [blue]
+      speed_factor: 1.6     # ~80 km/h (fastest of the three)
   - id: agv-2
     label: AGV 2
-    color: '#8e44ad'
+    color: '#27ae60'        # green
     bay: [10, 5]
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 50.0   # green band ceiling
+      allowed_labels: [green]
+      speed_factor: 1.0     # baseline
   - id: agv-3
     label: AGV 3
-    color: '#2980b9'
+    color: '#f1c40f'        # yellow
     bay: [10, 7]
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 80.0   # yellow band ceiling
+      allowed_labels: [yellow]
+      speed_factor: 0.6     # heavier loads, slower
 
 ai:
   # qwen_brain (legacy per-arm 0.5b) stays on the local container.
@@ -77,5 +100,30 @@ ai:
   model_tactical: qwen2.5:14b-instruct-q4_K_M
   # COORDINATION_MODE: how AGVs coordinate.
   #   centralized   — original path (central_brain.reassign + plan_executor /assign)
-  #   decentralized — contract-net via /bus/* (Phase 1+: agents bid + claim)
-  coordination_mode: decentralized
+  #   decentralized — US 32 contract-net via /bus/* (agents bid + claim)
+  #   smart         — US 34 = decentralized contract-net + capability-aware bidding,
+  #                   distance-aware scoring, sequence preservation, A* routing
+  coordination_mode: smart
+  # US 34 capability defaults applied to any AGV that doesn't declare its own
+  # capabilities block above. Per-AGV blocks override these.
+  capability_defaults:
+    kind: shuttle
+    weight_max_kg: 50.0
+    allowed_labels: [any]
+    speed_factor: 1.0
+  # US 34 bid-score weights for the deterministic composite. Tunable.
+  # Score = w_distance*(1 - dist/grid_diameter)
+  #       + w_capability*capability_match
+  #       + w_load*(1 - current_load_fraction)
+  bid_weights:
+    distance: 0.6
+    capability: 0.3
+    load: 0.1
+  # US 34.1: weight bands per colour. Each colour-tagged package falls in a
+  # band (min..max kg). The interpreter uses this table to extract a default
+  # weight when the prompt only mentions colour ("3 blue packages" → mid-band).
+  # The AGV-side bid filter rejects bids where package weight > AGV.weight_max_kg.
+  weight_bands:
+    blue:   { min: 10, max: 20 }   # served by AGV-1 only
+    green:  { min: 20, max: 50 }   # served by AGV-2 only
+    yellow: { min: 50, max: 80 }   # served by AGV-3 only

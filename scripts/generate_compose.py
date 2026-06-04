@@ -174,6 +174,31 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
     # AGVs are static infrastructure — always running, one container per AGV.
     _ = (arms, asset_ports)  # arms parsed for validation/summary only
 
+    # US 34: extract capability defaults so per-AGV blocks can be optional.
+    capability_defaults = ai_cfg.get("capability_defaults") or {}
+
+    def _agv_capability_env(agv):
+        """Build US 34 capability env vars for one AGV from pipeline.yaml.
+
+        Priority: per-AGV block > ai.capability_defaults > hardcoded fallback.
+        """
+        caps = (agv.get("capabilities") or {})
+        merged = {**capability_defaults, **caps}
+        kind = merged.get("kind", "shuttle")
+        weight = merged.get("weight_max_kg", 50.0)
+        labels = merged.get("allowed_labels", ["any"])
+        if isinstance(labels, str):
+            labels_csv = labels
+        else:
+            labels_csv = ",".join(str(l).lower() for l in (labels or []))
+        speed = merged.get("speed_factor", 1.0)
+        return [
+            f"AGV_KIND={kind}",
+            f"AGV_WEIGHT_MAX_KG={weight}",
+            f"AGV_ALLOWED_LABELS={labels_csv}",
+            f"AGV_SPEED_FACTOR={speed}",
+        ]
+
     for i, agv in enumerate(agvs, start=1):
         agv_id = agv["id"]
         services[agv_id] = {
@@ -186,6 +211,8 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
                 f"OLLAMA_BASE_URL={ollama_base_url}",
                 f"COORDINATION_MODE={coordination_mode}",
                 "PYTHONUNBUFFERED=1",
+                # US 34 capability fields per AGV (read by scripts/agv_*.py)
+                *_agv_capability_env(agv),
             ],
             "depends_on": {"backend": {"condition": "service_healthy"}},
         }

@@ -49,8 +49,15 @@ def register(
     label: Optional[str] = None,
     color: str = "#16a085",
     bay_cell: Optional[List[int]] = None,
+    capabilities: Optional[dict] = None,
 ) -> None:
-    """Register an AGV. Idempotent. Starts parked in its bay, idle."""
+    """Register an AGV. Idempotent. Starts parked in its bay, idle.
+
+    `capabilities` is the dict form of `app.models.agv_capabilities.AGVCapabilities`
+    (US 34). If None, capabilities are populated lazily from pipeline_config
+    when needed — but the eager path is preferred so `/agv/<id>/state` exposes
+    them straight away.
+    """
     with _lock:
         if agv_id in _state:
             return
@@ -65,6 +72,7 @@ def register(
             "cell": list(bay),
             "target_cell": None,
             "carried_object": None,
+            "capabilities": dict(capabilities) if capabilities else None,
             "last_change": time.time(),
         }
 
@@ -170,14 +178,38 @@ def mark_idle(agv_id: str) -> Optional[dict]:
 
 
 def initialize_from_config() -> None:
-    """(Re)register every AGV from pipeline_config. Idempotent + safe to
-    call at startup and after a config reload."""
+    """(Re)register every AGV from pipeline_config with capabilities.
+
+    Idempotent + safe to call at startup and after a config reload.
+    """
     from app.models import pipeline_config
 
     for a in pipeline_config.get_agvs():
+        caps = pipeline_config.get_agv_capabilities(a["id"])
         register(
             a["id"],
             a.get("label"),
             a.get("color", "#16a085"),
             list(a.get("bay", [0, 0])),
+            capabilities=caps.to_dict(),
         )
+
+
+def set_capabilities(agv_id: str, capabilities: dict) -> Optional[dict]:
+    """Replace the AGV's capability block. Returns the updated record."""
+    with _lock:
+        rec = _state.get(agv_id)
+        if rec is None:
+            return None
+        rec["capabilities"] = dict(capabilities)
+        _touch(rec)
+        return dict(rec)
+
+
+def get_capabilities(agv_id: str) -> Optional[dict]:
+    """Return the AGV's capability dict (or None if not registered)."""
+    with _lock:
+        rec = _state.get(agv_id)
+        if rec is None:
+            return None
+        return dict(rec.get("capabilities") or {})

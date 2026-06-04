@@ -961,8 +961,102 @@ def get_grid():
 
 
 def get_agvs():
-    """Return the list of AGV config dicts ({id,label,color,bay:[c,r]})."""
+    """Return the list of AGV config dicts ({id,label,color,bay:[c,r],capabilities?})."""
     return list(get_warehouse_config().get("agvs") or [])
+
+
+def get_ai_config():
+    """Return the raw `ai:` dict, or {} when not configured."""
+    return get_config().get("ai") or {}
+
+
+def get_coordination_mode():
+    """Return the coordination mode flag from `ai.coordination_mode`.
+
+    Values: 'centralized' | 'decentralized' | 'smart' (US 34 superset).
+    Defaults to 'centralized' for backwards safety if unset.
+    """
+    return str(get_ai_config().get("coordination_mode", "centralized")).lower()
+
+
+def coordination_mode_is_decentralized():
+    """True for both US 32 ('decentralized') and US 34 ('smart').
+
+    Both modes run the contract-net protocol; 'smart' adds US 34 features.
+    """
+    return get_coordination_mode() in ("decentralized", "smart")
+
+
+def coordination_mode_is_smart():
+    """True only for US 34 mode. Use this to gate US 34 features."""
+    return get_coordination_mode() == "smart"
+
+
+def get_capability_defaults():
+    """Return the `ai.capability_defaults` dict (used when an AGV omits its own)."""
+    return dict(get_ai_config().get("capability_defaults") or {})
+
+
+def get_bid_weights():
+    """Return the `ai.bid_weights` dict (distance, capability, load) for US 34 scoring.
+
+    Defaults are sensible-non-zero so the score is well-defined even without config.
+    """
+    raw = get_ai_config().get("bid_weights") or {}
+    return {
+        "distance": float(raw.get("distance", 0.6)),
+        "capability": float(raw.get("capability", 0.3)),
+        "load": float(raw.get("load", 0.1)),
+    }
+
+
+def get_weight_bands():
+    """Return the `ai.weight_bands` dict — colour → {min, max} in kg (US 34.1).
+
+    Used by the interpreter to default a package's weight when the prompt only
+    gives a colour, and by the bid filter to sanity-check colour↔weight pairing.
+    Returns {} when the config block is absent — callers should treat missing
+    as "no band info" and skip the inference.
+    """
+    raw = get_ai_config().get("weight_bands") or {}
+    out: dict = {}
+    if isinstance(raw, dict):
+        for colour, band in raw.items():
+            if not isinstance(band, dict):
+                continue
+            try:
+                lo = float(band.get("min")) if band.get("min") is not None else None
+                hi = float(band.get("max")) if band.get("max") is not None else None
+            except (TypeError, ValueError):
+                continue
+            out[str(colour).strip().lower()] = {"min": lo, "max": hi}
+    return out
+
+
+def get_agv_capabilities(agv_id):
+    """Return an `AGVCapabilities` instance for one AGV (from pipeline.yaml).
+
+    Reads the per-AGV `capabilities` block if present, otherwise the
+    `ai.capability_defaults` block, otherwise hardcoded module defaults.
+    """
+    from app.models.agv_capabilities import from_config
+
+    cfg = get_agv(agv_id) or {"id": agv_id}
+    return from_config(cfg, get_capability_defaults())
+
+
+def get_all_agv_capabilities():
+    """Return {agv_id: AGVCapabilities} for every configured AGV.
+
+    Used by the `/capabilities` endpoint (Phase 5) and by the master
+    capability filter (Phase 3).
+    """
+    from app.models.agv_capabilities import from_config
+
+    defaults = get_capability_defaults()
+    return {
+        a["id"]: from_config(a, defaults) for a in get_agvs()
+    }
 
 
 def get_agv_ids():
