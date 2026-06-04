@@ -35,13 +35,7 @@ export function loadLocal(): TopologyDoc | null {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
     const r = parseTopology(raw);
-    if (!r.ok) return null;
-    // The earlier legacy-ID auto-purge (`^veh-[a-z]$`) was removed:
-    // nodeFactory.nextAgvId now mints AGV ids in the exact same shape
-    // (veh-a, veh-b, …), so the purge silently ate every freshly-dropped
-    // AGV on every refresh. Use the Topbar Reset button for the
-    // one-click stale-workspace escape.
-    return r.doc;
+    return r.ok ? r.doc : null;
   } catch {
     return null;
   }

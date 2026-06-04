@@ -1,6 +1,7 @@
 // Topology validation - pure, frontend engineering checks (NO AI, NO routing).
-// Decentralised model: actors + zones; no handover/transfer pads.
-import type { TopologyActor, TopologyZone, ValidationRow } from "@/store/types";
+// Decentralised model: actors only. Phase 7 Stage F: zones are kind:"zone"
+// actors — source/sink checks read them from the actor list, no zones slice.
+import type { TopologyActor, ValidationRow } from "@/store/types";
 
 export interface ValidationReport {
   rows: ValidationRow[];
@@ -12,38 +13,18 @@ export interface ValidationReport {
 
 type Input = {
   actors: Record<string, TopologyActor>;
-  zones: Record<string, TopologyZone>;
 };
 
-export function validateTopology({ actors, zones }: Input): ValidationReport {
+export function validateTopology({ actors }: Input): ValidationReport {
   const rows: ValidationRow[] = [];
   const list = Object.values(actors);
   const arms = list.filter((a) => a.kind === "arm");
   const agvs = list.filter((a) => a.kind === "agv");
-
-  // Zones come from TWO sources after the Phase 5.1 zone-marker fix:
-  //   - the legacy separate `zones` slice (kept for back-compat), and
-  //   - actor entries with `kind === "zone"` (current canvas-drop path).
-  // Merge both so the deploy panel + warnings see every zone the user
-  // dropped, regardless of which path created it.
-  const zoneActors = list.filter((a) => a.kind === "zone");
-  const zoneList = [
-    ...Object.values(zones),
-    // Project zone-kind actors onto the legacy { id, role, label } shape so
-    // downstream role checks (.role === "source" / "sink") keep working.
-    ...zoneActors.map((a) => ({
-      id: a.id,
-      role: a.subtype === "sink" ? "sink" : "source",
-      label: a.label ?? a.id,
-      position: a.position,
-    })),
-  ];
-
-  // Functional actors only (not zone markers).
-  const functionalList = list.filter((a) => a.kind !== "zone");
+  // Phase 7 Stage F: zones are kind:"zone" actors; source/sink via subtype.
+  const zoneList = list.filter((a) => a.kind === "zone");
 
   // ── errors ──────────────────────────────────────────────────────────────
-  if (functionalList.length === 0) {
+  if (list.length === 0) {
     rows.push({
       id: "v-empty",
       level: "warn",
@@ -63,8 +44,7 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
     seen.add(a.id);
   }
 
-  // Zones are structural markers, not functional actors — skip capability check.
-  for (const a of list.filter((x) => x.kind !== "zone")) {
+  for (const a of list) {
     if (!a.capabilities || a.capabilities.length === 0)
       rows.push({
         id: `v-cap-${a.id}`,
@@ -83,13 +63,13 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
   }
 
   // ── warnings / hints ────────────────────────────────────────────────────
-  if (functionalList.length > 0 && !zoneList.some((z) => z.role === "source"))
+  if (list.length > 0 && !zoneList.some((z) => z.subtype === "source"))
     rows.push({
       id: "v-src",
       level: "warn",
       text: "No source zone - nothing feeds the orchestration",
     });
-  if (functionalList.length > 0 && !zoneList.some((z) => z.role === "sink"))
+  if (list.length > 0 && !zoneList.some((z) => z.subtype === "sink"))
     rows.push({
       id: "v-sink",
       level: "warn",
@@ -103,7 +83,7 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
     });
 
   // ── ok / info ───────────────────────────────────────────────────────────
-  if (functionalList.length > 0 && rows.every((r) => r.level === "info"))
+  if (list.length > 0 && rows.every((r) => r.level === "info"))
     rows.unshift({
       id: "v-ok",
       level: "ok",
@@ -117,7 +97,7 @@ export function validateTopology({ actors, zones }: Input): ValidationReport {
 
   const errors = rows.filter((r) => r.level === "error").length;
   const warnings = rows.filter((r) => r.level === "warn").length;
-  const deployable = functionalList.length > 0 && errors === 0;
+  const deployable = list.length > 0 && errors === 0;
 
   return { rows, errors, warnings, deployable };
 }

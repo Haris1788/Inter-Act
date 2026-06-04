@@ -32,6 +32,255 @@ import yaml
 from app.models import pipeline_config
 from app.services import container_manager
 
+# ---------------------------------------------------------------------------
+# Coordinate helpers
+# ---------------------------------------------------------------------------
+
+def _get_effective_grid() -> dict[str, Any]:
+    """Return warehouse grid config from the currently-loaded pipeline.yaml.
+
+    Raises RuntimeError when no warehouse section is configured — callers
+    must handle this so a missing grid never silently produces wrong cells.
+    """
+    try:
+        grid = pipeline_config.get_grid()
+    except Exception as exc:
+        raise RuntimeError(f"pipeline_config.get_grid() failed: {exc}") from exc
+    if not grid or not grid.get("cell_px"):
+        raise RuntimeError(
+            "warehouse.grid not configured in pipeline.yaml — "
+            "cannot convert authored actor positions to grid cells. "
+            "Ensure pipeline.yaml has a warehouse: section with grid, origin."
+        )
+    return grid
+
+
+def _px_to_cell(cx: float, cy: float, grid: dict[str, Any]) -> list[int]:
+    """Convert canvas pixel centre (cx, cy) → warehouse [col, row].
+
+    Inverse of pipeline_config.cell_to_px:
+        cell_to_px([col, row]).x = origin_x + (col + 0.5) * cell_px
+        → col = floor((cx - origin_x) / cell_px)
+
+    Clamps to valid grid bounds so an off-grid actor never crashes the deploy.
+    """
+    origin = grid.get("origin") or {}
+    ox = float(origin.get("x", 0))
+    oy = float(origin.get("y", 0))
+    cp = float(grid.get("cell_px", 1))
+    cols = int(grid.get("cols", 1))
+    rows = int(grid.get("rows", 1))
+    col = int((cx - ox) / cp)
+    row = int((cy - oy) / cp)
+    return [max(0, min(col, cols - 1)), max(0, min(row, rows - 1))]
+
+
+# ---------------------------------------------------------------------------
+# Warehouse section generation
+# ---------------------------------------------------------------------------
+
+_AUTHORED_AGV_COLORS = ["#9b59b6", "#2980b9", "#27ae60", "#e67e22", "#e74c3c"]
+
+
+def _authored_agv_color(agv_id: str) -> str:
+    """Stable color for an authored AGV — matches AgvTokenLayer.authoredAgvColor."""
+    nums = re.findall(r"\d+", str(agv_id))
+    n = int(nums[-1]) if nums else 1
+    return _AUTHORED_AGV_COLORS[(n - 1) % len(_AUTHORED_AGV_COLORS)]
+
+
+def _build_warehouse_section(
+    actors: list[dict[str, Any]],
+    arms_in: list[tuple[int, dict[str, Any]]],
+    base: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Generate the merged warehouse section and a list of validation warnings.
+
+    Strategy:
+    - Preserve everything from base `warehouse:` unchanged.
+    - For authored arms: derive input_arm / output_arm stations from positions.
+    - For authored AGVs: derive bay cells from positions.
+    - Authored entries are merged ON TOP of seeded entries for the same key,
+      so an authored arm-3 station replaces a stale seeded arm-3 entry, but
+      the seeded agv-1/agv-2/agv-3 bays are untouched if no authored AGV
+      carries those IDs.
+
+    Returns (warehouse_dict, warnings).
+    """
+    warnings: list[str] = []
+
+    # Deep-copy the existing warehouse section so seeded data is preserved.
+    wh = copy.deepcopy(base.get("warehouse") or {})
+
+    # ── grid: use from base config (authoritative), never override ─────────
+    try:
+        grid = _get_effective_grid()
+    except RuntimeError as exc:
+        warnings.append(str(exc))
+        return wh, warnings
+
+    cols = int(grid.get("cols", 1))
+    rows = int(grid.get("rows", 1))
+
+    # ── authored stations from arms ─────────────────────────────────────────
+    authored_stations: dict[str, Any] = {}
+
+    def _actor_centre(actor: dict[str, Any]) -> tuple[float, float]:
+        size = actor.get("size") or {}
+        pos = actor.get("position") or {}
+        cx = float(pos.get("x", 0)) + float(size.get("w", 0)) / 2.0
+        cy = float(pos.get("y", 0)) + float(size.get("h", 0)) / 2.0
+        return cx, cy
+
+    if arms_in:
+        # First (leftmost) → input_arm
+        first_num, first_actor = arms_in[0]
+        fx, fy = _actor_centre(first_actor)
+        f_cell = _px_to_cell(fx, fy, grid)
+        f_col, f_row = f_cell
+        f_dock_col = min(f_col + 1, cols - 1)
+        if f_dock_col == f_col:
+            warnings.append(
+                f"input_arm (arm-{first_num}): arm cell [{f_col},{f_row}] "
+                f"is at grid right edge — dock cannot be placed to the right"
+            )
+        authored_stations["input_arm"] = {
+            "cell": f_cell,
+            "dock": [f_dock_col, f_row],
+            "label": "IN",
+            "served_by": f"arm-{first_num}",
+        }
+
+    if len(arms_in) >= 2:
+        # Last (rightmost) → output_arm
+        last_num, last_actor = arms_in[-1]
+        lx, ly = _actor_centre(last_actor)
+        l_cell = _px_to_cell(lx, ly, grid)
+        l_col, l_row = l_cell
+        l_dock_col = max(l_col - 1, 0)
+        if l_dock_col == l_col:
+            warnings.append(
+                f"output_arm (arm-{last_num}): arm cell [{l_col},{l_row}] "
+                f"is at grid left edge — dock cannot be placed to the left"
+            )
+        authored_stations["output_arm"] = {
+            "cell": l_cell,
+            "dock": [l_dock_col, l_row],
+            "label": "OUT",
+            "served_by": f"arm-{last_num}",
+        }
+    elif arms_in:
+        warnings.append(
+            "Only 1 authored arm — AGV routing requires both input_arm and "
+            "output_arm stations. Add a second arm for AGV task execution."
+        )
+
+    # ── authored AGV bays ───────────────────────────────────────────────────
+    authored_agvs: list[dict[str, Any]] = []
+    caps_defaults: dict[str, Any] = {}
+    try:
+        caps_defaults = pipeline_config.get_capability_defaults()
+    except Exception:
+        pass
+
+    for a in actors:
+        if a.get("kind") != "agv":
+            continue
+        agv_id = str(a.get("id", ""))
+        if not agv_id:
+            continue
+        cx, cy = _actor_centre(a)
+        bay = _px_to_cell(cx, cy, grid)
+        authored_agvs.append({
+            "id": agv_id,
+            "label": a.get("label") or agv_id,
+            "color": _authored_agv_color(agv_id),
+            "bay": bay,
+            "capabilities": dict(caps_defaults),
+        })
+
+    # ── merge: authored ON TOP of seeded ───────────────────────────────────
+    existing_stations: dict[str, Any] = dict(wh.get("stations") or {})
+    merged_stations = {**existing_stations, **authored_stations}
+    wh["stations"] = merged_stations
+
+    existing_agvs_by_id: dict[str, Any] = {
+        a["id"]: a for a in (wh.get("agvs") or [])
+    }
+    for agv in authored_agvs:
+        existing_agvs_by_id[agv["id"]] = agv
+    wh["agvs"] = list(existing_agvs_by_id.values())
+
+    # ── lane: preserve seeded; omit authored (A* fallback covers smart mode) ─
+    # Lane is not generated for authored topologies. In smart coordination mode
+    # (the default), agv_brain falls back to A* between input_dock and
+    # output_dock when lane_cells is empty. For centralized/decentralized modes
+    # the seeded lane is already present; authored additions don't interfere.
+
+    return wh, warnings
+
+
+def _validate_authored_warehouse(
+    authored_stations: dict[str, Any],
+    authored_agvs: list[dict[str, Any]],
+    grid: dict[str, Any],
+) -> list[str]:
+    """Additional cross-checks: duplicate cells, bay/station overlaps."""
+    warnings: list[str] = []
+    cols = int(grid.get("cols", 1))
+    rows = int(grid.get("rows", 1))
+
+    # Out-of-bounds checks
+    for name, st in authored_stations.items():
+        for field in ("cell", "dock"):
+            c = st.get(field, [])
+            if c and (c[0] < 0 or c[0] >= cols or c[1] < 0 or c[1] >= rows):
+                warnings.append(
+                    f"station {name}.{field} {c} is outside grid bounds "
+                    f"({cols}×{rows})"
+                )
+
+    for agv in authored_agvs:
+        bay = agv.get("bay", [])
+        if bay and (bay[0] < 0 or bay[0] >= cols or bay[1] < 0 or bay[1] >= rows):
+            warnings.append(
+                f"agv {agv['id']}.bay {bay} is outside grid bounds "
+                f"({cols}×{rows})"
+            )
+
+    # Duplicate station cells
+    cell_map: dict[tuple, str] = {}
+    for name, st in authored_stations.items():
+        key = tuple(st.get("cell", []))
+        if key in cell_map:
+            warnings.append(
+                f"station {name} and {cell_map[key]} share cell {list(key)}"
+            )
+        else:
+            cell_map[key] = name
+
+    # AGV bay overlapping station cell
+    station_cells = {tuple(st.get("cell", [])) for st in authored_stations.values()}
+    for agv in authored_agvs:
+        bay = tuple(agv.get("bay", []))
+        if bay in station_cells:
+            warnings.append(
+                f"agv {agv['id']}.bay {list(bay)} overlaps a station cell"
+            )
+
+    # Duplicate bays
+    bay_map: dict[tuple, str] = {}
+    for agv in authored_agvs:
+        bay = tuple(agv.get("bay", []))
+        if bay in bay_map:
+            warnings.append(
+                f"agv {agv['id']} and {bay_map[bay]} share bay {list(bay)}"
+            )
+        else:
+            bay_map[bay] = agv["id"]
+
+    return warnings
+
 # Background deploy state. Heavy work (image build + N container
 # create/restart) runs off the request thread so the HTTP call returns
 # instantly and never trips the client timeout, regardless of actor count.
@@ -76,13 +325,19 @@ def _config_path() -> str:
     return os.path.abspath(pipeline_config._CONFIG_PATH)
 
 
-def build_pipeline_yaml(payload: dict[str, Any]) -> dict[str, Any]:
-    """Translate a frontend deploy payload into a pipeline.yaml dict.
+def build_pipeline_yaml(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Translate a frontend deploy payload into a (pipeline.yaml dict, warnings).
 
     Arms become a left-to-right dependency chain (ordered by authored x).
     Vehicles are wired from the first to the last arm. The pipeline /
-    failure_policy / health / canvas blocks of the currently-loaded config
-    are preserved so a deploy never silently changes run policy.
+    failure_policy / health / canvas / warehouse / ai blocks of the
+    currently-loaded config are preserved so a deploy never silently changes
+    run policy or grid geometry.
+
+    Returns (doc, warnings) where warnings is a list of non-fatal issues
+    found during coordinate conversion and validation.
     """
     actors = payload.get("actors") or []
 
@@ -122,7 +377,7 @@ def build_pipeline_yaml(payload: dict[str, Any]) -> dict[str, Any]:
             "id": aid,
             "type": "vehicle",
             "label": a.get("label") or aid,
-            "color": "#9b59b6",
+            "color": _authored_agv_color(aid),
             "speed": 140,
             "loop": False,
             "waypoints": [{"x": 730, "y": 300}, {"x": 900, "y": 300}],
@@ -136,6 +391,7 @@ def build_pipeline_yaml(payload: dict[str, Any]) -> dict[str, Any]:
         base = copy.deepcopy(pipeline_config.get_config() or {})
     except Exception:
         base = {}
+
     out: dict[str, Any] = {
         "pipeline": base.get("pipeline")
         or {"mode": "dependency", "products": 3, "speed": "normal"},
@@ -148,43 +404,40 @@ def build_pipeline_yaml(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if base.get("canvas"):
         out["canvas"] = base["canvas"]
+    if base.get("ai"):
+        out["ai"] = base["ai"]
 
-    # Stage 3: include topology block when the payload carries one.
-    # Coexists with warehouse: / arms: / assets: during Stage 1-3 transition.
-    topology_in = payload.get("topology")
-    if topology_in and isinstance(topology_in, dict):
-        canvas_block = topology_in.get("canvas") or {}
-        actors_raw = topology_in.get("actors") or []
-        # Serialize actors list — keep all optional fields if present.
-        actors_out = []
-        for a in actors_raw:
-            entry: dict[str, Any] = {
-                "id": a["id"],
-                "kind": a["kind"],
-                "x": float(a["x"]),
-                "y": float(a["y"]),
+    # ── warehouse section: merge authored actor positions into seeded config ──
+    warehouse, wh_warnings = _build_warehouse_section(actors, arms_in, base)
+    if warehouse:
+        out["warehouse"] = warehouse
+
+    # ── cross-validation on authored entries only ───────────────────────────
+    # Validate only the stations/AGVs that came from this payload (not seeded).
+    val_warnings: list[str] = []
+    if warehouse:
+        try:
+            grid = _get_effective_grid()
+            authored_arm_ids = {f"arm-{num}" for num, _ in arms_in}
+            authored_stns = {
+                k: v for k, v in warehouse.get("stations", {}).items()
+                if v.get("served_by") in authored_arm_ids
             }
-            if "reach_px" in a:
-                entry["reach_px"] = float(a["reach_px"])
-            if "capacity" in a:
-                entry["capacity"] = int(a["capacity"])
-            if "speed" in a:
-                entry["speed"] = float(a["speed"])
-            if "label" in a and a["label"] is not None:
-                entry["label"] = a["label"]
-            if "color" in a and a["color"] is not None:
-                entry["color"] = a["color"]
-            actors_out.append(entry)
-        out["topology"] = {
-            "canvas": {
-                "width": int(canvas_block.get("width", 1600)),
-                "height": int(canvas_block.get("height", 1000)),
-                "cell_px": int(canvas_block.get("cell_px", 40)),
-            },
-            "actors": actors_out,
-        }
+            payload_agv_ids = {
+                str(a.get("id")) for a in actors if a.get("kind") == "agv"
+            }
+            authored_agv_list = [
+                a for a in warehouse.get("agvs", [])
+                if a["id"] in payload_agv_ids
+            ]
+            val_warnings = _validate_authored_warehouse(
+                authored_stns, authored_agv_list, grid
+            )
+        except Exception:
+            pass
 
-    return out
+    all_warnings = wh_warnings + val_warnings
+    return out, all_warnings
 
 
 def _docker_compose_cmd() -> Optional[list[str]]:
@@ -225,10 +478,12 @@ def apply_topology(
     )
     project_dir = os.path.dirname(cfg_path)
 
-    doc = build_pipeline_yaml(payload)
+    doc, deploy_warnings = build_pipeline_yaml(payload)
     arm_ids = [f"arm-{a['id']}" for a in doc["arms"]]
     asset_ids = [a["id"] for a in doc["assets"]]
     steps: dict[str, str] = {}
+    if deploy_warnings:
+        steps["warnings"] = "; ".join(deploy_warnings)
 
     # 1) Write pipeline.yaml (may be read-only inside the container).
     try:
@@ -273,9 +528,12 @@ def apply_topology(
     if reload_runtime:
         try:
             pipeline_config.reload()
-            from app.models import arm_state
+            from app.models import arm_state, agv_state
 
             arm_state.reinitialize()
+            # Register newly authored AGVs so they appear in /agv/state
+            # immediately after config reload (before containers boot).
+            agv_state.initialize_from_config()
             steps["reloaded"] = "ok"
             reloaded_ok = True
         except Exception as exc:  # noqa: BLE001

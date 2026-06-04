@@ -1,84 +1,97 @@
 // AgvTokenLayer - Live AGV motion tokens rendered in Konva stage-space.
 //
-// Stage 5 Track B changes:
-//   - Subscribes to `agv_position` SocketIO events via the runtime slice's
-//     `runtimePosition` field. Prefers runtimePosition when present (live
-//     motion); falls back to authored actor.position (idle/initial state).
-//   - Position tween: delegates to the existing spatialSlice tick() mechanism
-//     (setAgvTarget in socketDriver → tick() interpolates). The layer reads
-//     the already-interpolated pos from agvKinematics.
-//   - Heading: uses runtimePosition.theta when available (precise atan2 from
-//     backend); falls back to kinematics.heading (derived from travel direction).
-//   - Vehicle shape upgraded to spec: 50×30 px rounded rect body + triangle
-//     front pointer + drop shadow + actor_id label below.
+// For each AGV in useAgvKinematics() with a non-null pos, draws a matte
+// industrial marker at that position, locked to React Flow pan/zoom via the
+// same useViewportTransform() transform that the other Layers receive.
 //
-// Stage 5 Track C changes (additive on top of Track B):
-//   - Return path arrow: faint tapered line from current pos → authored origin
-//     when phase === "returning". Drawn behind the body group.
-//   - Idle breathing pulse: soft oscillating ring when idle at origin. Reuses
-//     the existing RAF pulsePhase (no extra animation loop).
-//   - Status dot: small circle beside the label with phase-keyed color.
+// Rendering rules:
+//   - Token: rounded rect 18×14 px (stage units), tokens.cta stroke, subtle
+//     warm fill, heading tick line pointing in the direction of travel.
+//   - In-transit (target non-null): soft radial trail halo; pulse phase driven
+//     by a dedicated rAF (cosmetic only - position integration is in the store).
+//   - Settled (target null): no trail; reduced opacity on heading tick.
+//   - Tether: thin low-opacity line from token centre to the AGV's RF home
+//     card centre (actor.position + size/2) while in transit.
 //
-// Phase 5.1 Fix Pass — AGV drop invisibility fix:
-//   Newly dropped AGVs exist in the topology `actors` slice but have no
-//   kinematics entry (no backend socket events yet). The layer now builds a
-//   merged render list: kinematics entries (live/tween) UNION authored AGV actors
-//   not yet in kinematics (idle at their authored centre). The authored centre
-//   is actor.position + size/2, matching the RF node centroid.
-//   A 300 ms scale-in animation acknowledges the drop immediately.
-//
-// This layer is listening={false}. Drag/select are handled by RF nodes above.
+// This layer is listening={false} and does NOT integrate positions - it only
+// reads current store state each render frame.
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Layer, Group, Rect, Arrow, Circle } from "react-konva";
-
-import { ShuttleAgv } from "./agv/ShuttleAgv";
-import { ForkliftAgv } from "./agv/ForkliftAgv";
-import { TowAgv } from "./agv/TowAgv";
+import { useEffect, useRef, useState } from "react";
+import { Layer, Group, Rect, Circle, Line, Text } from "react-konva";
 
 import type { ViewportTransform } from "./useViewportTransform";
-import {
-  useAgvKinematics,
-  useActors,
-  useAgvCargo,
-  useActorRuntimeAll,
-  useReplayMode,
-  useReplayPositions,
-} from "@/store/selectors";
+import type { AgvKinematics } from "@/store/types";
+import { useAgvKinematics, useActors, useAgvCargo, useDeployedAt } from "@/store/selectors";
 import { useStore } from "@/store";
+import { useStatusPulse } from "./agv/useStatusPulse";
+
+// Authoring-time parity: authored AGVs (in topology.actors, no backend /config
+// colour) get a palette colour so the chassis + bay read like the seeded fleet
+// instead of the "#888" fallback grey. Exported so WarehouseGridLayer paints the
+// authored bay outline in the same colour.
+const AUTHORED_AGV_COLORS = ["#2980b9", "#27ae60", "#f1c40f", "#8e44ad", "#e67e22"];
+export function authoredAgvColor(id: string): string {
+  const n = parseInt(id.replace(/\D/g, ""), 10) || 1;
+  return AUTHORED_AGV_COLORS[(n - 1) % AUTHORED_AGV_COLORS.length];
+}
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-// Shuttle body dims are the reference for transit halo size + label placement.
-// Each silhouette component manages its own dims internally.
-const BODY_W = 50;
-const BODY_H = 30;
-
-/** Default AGV color (spec: #16a085). */
-const DEFAULT_AGV_COLOR = "#16a085";
-
-/** Pulse speed for the cosmetic trail halo (legacy, kept for compat). */
+const TOKEN_W = 22;
+const TOKEN_H = 16;
+const TRAIL_R = 24;
+const TETHER_OPACITY = 0.18;
 const PULSE_SPEED = 2.4;
-const TRAIL_OPACITY_IN_TRANSIT = 0.18;
-
-/** Idle breathing ring — 2-second period. */
-const IDLE_PULSE_SPEED = 1.0; // cycles per second (2 s period = 0.5 Hz × 2π)
-const BODY_DIAGONAL = Math.sqrt((BODY_W / 2) ** 2 + (BODY_H / 2) ** 2);
-
-/** Age threshold (ms) above which runtimePosition is considered stale. */
-const STALE_THRESHOLD_MS = 1500;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// US 34.1 (Sneh-port 5c23991): inline status-dot + label rendered below the
+// chassis. The dot pulses by state (fast moving / urgent fault / static
+// stopped); the label is black for legibility against the light canvas.
+const LABEL_FONT_SIZE = 10;
+const LABEL_DOT_GAP = 4;
+const LABEL_Y_OFFSET = TOKEN_H / 2 + 8;
 
 function hexToRgba(hex: string, a: number): string {
-  const r = parseInt(hex.slice(1, 3), 16) || 22;
-  const g = parseInt(hex.slice(3, 5), 16) || 160;
-  const b = parseInt(hex.slice(5, 7), 16) || 133;
+  const r = parseInt(hex.slice(1, 3), 16) || 24;
+  const g = parseInt(hex.slice(3, 5), 16) || 24;
+  const b = parseInt(hex.slice(5, 7), 16) || 27;
   return `rgba(${r},${g},${b},${a.toFixed(3)})`;
+}
+
+// US 34.1 (Sneh-port 5c23991): inline status dot + AGV id label, rendered
+// in WORLD SPACE (outside the chassis rotation Group) so the label always
+// reads horizontally regardless of vehicle heading. The dot pulses by
+// state via useStatusPulse, the label is black on light canvas.
+function AgvStatusLabel({ id }: { id: string }) {
+  // Pull the AGV's phase from runtime — phase is the raw backend status
+  // ("moving" / "loading" / "faulted" / "idle" / ...). The pulse hook
+  // returns "none" for unknown so missing runtime falls back to a still dot.
+  const phase = useStore((s) => s.actorRuntime[id]?.phase ?? "stopped");
+  const pulse = useStatusPulse(phase);
+  // Centre the (dot + " agv-N") line under the chassis. Use approx text width
+  // to compute the offset — Konva Text doesn't auto-centre across siblings.
+  const textPx = id.length * (LABEL_FONT_SIZE * 0.55);
+  const totalW = pulse.radius * 2 + LABEL_DOT_GAP + textPx;
+  const startX = -totalW / 2;
+  return (
+    <Group y={LABEL_Y_OFFSET}>
+      <Circle
+        x={startX + pulse.radius}
+        y={0}
+        radius={pulse.radius}
+        fill={pulse.fill}
+        opacity={pulse.opacity}
+      />
+      <Text
+        x={startX + pulse.radius * 2 + LABEL_DOT_GAP}
+        y={-LABEL_FONT_SIZE / 2}
+        text={id}
+        fontSize={LABEL_FONT_SIZE}
+        fill="rgba(0,0,0,0.85)"
+        fontStyle="600"
+      />
+    </Group>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -89,14 +102,9 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
   const kinematics = useAgvKinematics();
   const actors = useActors();
   const agvCargo = useAgvCargo();
-  const actorRuntime = useActorRuntimeAll();
-  // Phase 5 Stage 8 Track C — replay position source (highest priority).
-  const replayMode = useReplayMode();
-  const replayPositions = useReplayPositions();
-  const selectedActorId = useStore((s) => s.selectedActorId);
-
-  // Per-AGV color fetched from /config (same as previous layer).
+  const deployedAt = useDeployedAt();
   const [agvColors, setAgvColors] = useState<Record<string, string>>({});
+
   useEffect(() => {
     fetch("/config")
       .then((r) => r.json())
@@ -104,16 +112,19 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
         const m: Record<string, string> = {};
         (cfg.warehouse?.agvs ?? []).forEach(
           (a: { id: string; color?: string }) => {
-            m[a.id] = a.color ?? DEFAULT_AGV_COLOR;
+            m[a.id] = a.color ?? "#888";
           },
         );
         setAgvColors(m);
       })
       .catch(() => {});
-  }, []);
+  // deployedAt: re-fetch so authored AGV tokens use the runtime color from
+  // warehouse.agvs instead of the authoredAgvColor() fallback.
+  }, [deployedAt]);
 
-  // Shared RAF for both transit halo pulse and idle breathing ring.
-  // Track C reuses this loop — no second requestAnimationFrame.
+  // Cosmetic pulse phase - only used for the trail glow, harmless if no AGVs
+  // are in transit. A single shared phase is fine; all tokens pulse together
+  // which reads as a system heartbeat rather than per-unit animation.
   const [pulsePhase, setPulsePhase] = useState(0);
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef<number | null>(null);
@@ -135,71 +146,41 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
     };
   }, []);
 
-  // --- Phase 5.1 Fix: merge authored AGV actors + kinematics into one list ---
-  //
-  // "entries" is an array of [id, kinematicsOrNull] tuples covering every AGV
-  // that should be rendered:
-  //   1. Kinematics entries (live tweened positions from backend socket events).
-  //   2. Authored actors with kind === "agv" that have NO kinematics yet
-  //      (newly dropped, not yet driven by backend). Their position is the
-  //      authored node centre (position + size/2).
-  //
-  // The merge ensures a drop ALWAYS produces an immediate visible token, even
-  // before the first agv_position event arrives.
-  const entries = useMemo(() => {
-    type KinOrNull = (typeof kinematics)[string] | null;
-    const result: [string, KinOrNull][] = [];
-    const seen = new Set<string>();
-    // 1. Kinematics (live/tween — preferred source for position).
-    for (const [id, k] of Object.entries(kinematics)) {
-      if (k.pos !== null) {
-        result.push([id, k]);
-        seen.add(id);
-      }
-    }
-    // 2. Authored AGV actors without a kinematics entry yet (idle/dropped).
-    for (const [id, actor] of Object.entries(actors)) {
-      if (actor.kind !== "agv" || seen.has(id)) continue;
-      // Centre of the RF node box → Konva world-space position.
-      const cx = actor.position.x + actor.size.w / 2;
-      const cy = actor.position.y + actor.size.h / 2;
-      result.push([id, {
-        pos: { x: cx, y: cy },
-        heading: 0,
-        speed: 220,
-        target: null,
-        origin: null,
-      }]);
-    }
-    return result;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kinematics, actors]);
-
-  // Track when each AGV id first appeared so we can animate a scale-in.
-  // Keyed by id → timestamp (ms). New ids get the current time; existing ids
-  // keep their original entry so the animation plays only on the first render.
-  const firstSeenRef = useRef<Record<string, number>>({});
-  const nowMs = Date.now();
-  for (const [id] of entries) {
-    if (firstSeenRef.current[id] === undefined) {
-      firstSeenRef.current[id] = nowMs;
-    }
-  }
+  // Phase 7 Stage D fix: tokens are gated to AGV actors in the topology store —
+  // the canvas is actor-driven, so delete-all leaves a blank canvas. An AGV
+  // actor renders at its live interpolated pos (kinematics from agv_update) when
+  // available, else a STATIC chassis at its authored card centre (target:null →
+  // settled, no trail). Runtime kinematics for an AGV NOT in the topology (e.g.
+  // a seeded fleet AGV with no actor) is no longer drawn — no orphan token.
+  const entries: [string, AgvKinematics][] = Object.values(actors)
+    .filter((a) => a.kind === "agv")
+    .map((a) => {
+      const k = kinematics[a.id];
+      // First-authored-AGV fix: a freshly-authored AGV must render at its
+      // AUTHORED position, not adopt a live runtime AGV's kinematics by id
+      // coincidence (e.g. dropping the first AGV → id "veh-1" which already
+      // exists in the seeded fleet). That decoupled the visible Konva token
+      // from its RF interaction shell (still at the authored position), making
+      // the token unselectable/unmovable/undeletable. Kinematics applies only
+      // to non-authored (seeded/deployed) AGVs, or to an authored AGV that is
+      // genuinely in transit (target set → actually running post-deploy).
+      const useKin = !!k && k.pos !== null && (!a.authored || k.target !== null);
+      if (useKin) return [a.id, k];
+      return [
+        a.id,
+        {
+          pos: { x: a.position.x + a.size.w / 2, y: a.position.y + a.size.h / 2 },
+          heading: 0,
+          speed: 0,
+          target: null,
+        },
+      ];
+    });
 
   if (entries.length === 0) return null;
 
+  // Pulse multiplier: 0..1 sine, biased to spend more time near 0 (calm)
   const pulse = (Math.sin(pulsePhase) * 0.5 + 0.5) * 0.55 + 0.15; // 0.15..0.70
-
-  // Idle breathing ring oscillates independently at IDLE_PULSE_SPEED Hz.
-  // We derive a separate phase from pulsePhase, scaled by the ratio of speeds.
-  const idlePhaseNorm = (pulsePhase / (Math.PI * 2)) * (IDLE_PULSE_SPEED / PULSE_SPEED);
-  const idleSin = Math.sin(idlePhaseNorm * Math.PI * 2); // -1..1
-  const idleT = idleSin * 0.5 + 0.5; // 0..1
-  const idleRingRadius = BODY_DIAGONAL * (1 + idleT * 0.15); // diagonal .. diagonal × 1.15
-  const idleRingAlpha = 0.05 + idleT * 0.10; // 0.05..0.15
-
-  // nowMs used for both idle-pulse staleness check and drop-fade age.
-  const now = nowMs;
 
   return (
     <Layer
@@ -210,135 +191,108 @@ export function AgvTokenLayer({ tx }: { tx: ViewportTransform }) {
       scaleY={tx.zoom}
     >
       {entries.map(([id, k]) => {
-        // Phase 5 Stage 8 Track C — position-resolution seam.
-        // Priority: replayPositions (highest) > runtimeKinematics > authored.
-        // In replay mode, snap to historical position (no tween).
-        const replayPos = replayMode ? (replayPositions[id] ?? null) : null;
-        const pos = replayPos !== null ? { x: replayPos.x, y: replayPos.y } : (k?.pos ?? { x: 0, y: 0 });
-        const target = k?.target ?? null;
-        // In replay mode there is no live target; suppress transit halo.
-        const inTransit = replayPos === null && target !== null;
+        const { pos, heading, target } = k;
+        const inTransit = target !== null;
 
-        // Phase 5.1 Fix: scale-in fade for newly dropped tokens (300 ms).
-        // Existing AGVs (first seen > 300 ms ago) render at full opacity.
-        const ageMs = nowMs - (firstSeenRef.current[id] ?? nowMs);
-        const FADE_MS = 300;
-        const dropOpacity = Math.min(1, ageMs / FADE_MS);
-        const dropScale = 0.5 + 0.5 * Math.min(1, ageMs / FADE_MS);
-
-        // Heading: replay > runtimePosition.theta > kinematics heading.
-        const rtp = actorRuntime[id]?.runtimePosition;
-        const theta =
-          replayPos !== null
-            ? replayPos.theta
-            : rtp != null
-              ? rtp.theta
-              : (k?.heading ?? 0);
-        const headingDeg = (theta * 180) / Math.PI;
-
+        // Home card centre for tether
         const actor = actors[id];
-        const agvColor =
-          agvColors[id] ??
-          (actor as (typeof actor & { color?: string }) | undefined)?.color ??
-          DEFAULT_AGV_COLOR;
-        const isSelected = id === selectedActorId;
-        const trailOpacity = inTransit ? pulse * TRAIL_OPACITY_IN_TRANSIT : 0;
-        const cargo = agvCargo[id] ?? null;
+        const homeX = actor ? actor.position.x + actor.size.w / 2 : null;
+        const homeY = actor ? actor.position.y + actor.size.h / 2 : null;
 
-        // --- Track C: phase-based status for dot + return arrow + idle pulse ---
-        const rt = actorRuntime[id];
-        // `phase` holds the raw backend status string ("returning", "moving", etc.)
-        const phase = rt?.phase ?? "";
+        // Vehicle faces its travel direction (forward = +x in local space).
+        const headingDeg = (heading * 180) / Math.PI;
 
-        // Return path arrow: authored origin (canvas drop position).
-        const origin = actor?.position ?? null;
-        const isReturning = phase === "returning";
-
-        // Idle pulse: shown when phase is idle AND runtimePosition is stale/absent.
-        const rtpAge = rtp != null ? now - rtp.ts * 1000 : Infinity;
-        const isIdleAtOrigin =
-          (phase === "idle" || rt?.status === "idle") &&
-          rtpAge > STALE_THRESHOLD_MS;
+        const agvColor = agvColors[id] ?? authoredAgvColor(id);
+        const bodyFill = agvColor;          // always fully opaque — was 0.85 alpha when idle
+        const strokeColor = "rgba(0,0,0,0.75)";  // darker outline so AGV is clearly visible against route
+        const strokeWidth = 2.0;
+        const trailOpacity = inTransit ? pulse * 0.45 : 0;
+        // cargo is now rendered by PayloadLayer using object_update events.
+        void agvCargo;
 
         return (
-          <Group key={id} x={pos.x} y={pos.y} opacity={dropOpacity} scaleX={dropScale} scaleY={dropScale}>
-
-            {/* ── Track C: Return path arrow ──────────────────────────────────
-                Rendered first (lowest z) so it's behind everything else.
-                Visible only when phase === "returning". Origin coords are in
-                stage space relative to the layer's own transform, so we
-                translate from the group's current position (pos) to origin. */}
-            {isReturning && origin !== null && (
-              <Arrow
-                points={[
-                  0,
-                  0,
-                  origin.x - pos.x,
-                  origin.y - pos.y,
-                ]}
-                pointerLength={8}
-                pointerWidth={6}
-                fill={hexToRgba(agvColor, 0.4)}
-                stroke={hexToRgba(agvColor, 0.4)}
-                strokeWidth={1.5}
-                dash={[6, 4]}
-                opacity={1}
+          <Group key={id} x={pos.x} y={pos.y}>
+            {/* Tether line to home card - only while in transit */}
+            {inTransit && homeX !== null && homeY !== null && (
+              <Line
+                points={[0, 0, homeX - pos.x, homeY - pos.y]}
+                stroke={agvColor}
+                strokeWidth={0.7}
+                dash={[3, 5]}
+                opacity={TETHER_OPACITY}
               />
             )}
 
-            {/* ── Track C: Idle breathing ring ────────────────────────────────
-                Drawn behind the body group. Subtle — low opacity 0.05→0.15. */}
-            {isIdleAtOrigin && (
+            {/* Radial trail halo (in-transit pulse) */}
+            {inTransit && (
               <Circle
                 x={0}
                 y={0}
-                radius={idleRingRadius}
-                fill={hexToRgba(agvColor, idleRingAlpha)}
-                listening={false}
+                radius={TRAIL_R}
+                fillRadialGradientStartPoint={{ x: 0, y: 0 }}
+                fillRadialGradientEndPoint={{ x: 0, y: 0 }}
+                fillRadialGradientStartRadius={0}
+                fillRadialGradientEndRadius={TRAIL_R}
+                fillRadialGradientColorStops={[
+                  0,
+                  hexToRgba(agvColor, trailOpacity * 0.5),
+                  1,
+                  hexToRgba(agvColor, 0),
+                ]}
               />
             )}
 
-            {/* Transit halo — subtle radial hint when in motion.
-                Rendered outside the silhouette group so it's always behind
-                the body regardless of subtype dimensions. */}
-            {inTransit && (
-              <Group rotation={headingDeg}>
+            {/* Vehicle, rotated to face its direction of travel */}
+            <Group rotation={headingDeg}>
+              {/* Four wheels (dark, straddling the chassis edges) */}
+              {[
+                [-TOKEN_W * 0.34, -TOKEN_H / 2 - 1.5],
+                [TOKEN_W * 0.1, -TOKEN_H / 2 - 1.5],
+                [-TOKEN_W * 0.34, TOKEN_H / 2 - 2.5],
+                [TOKEN_W * 0.1, TOKEN_H / 2 - 2.5],
+              ].map(([wx, wy], wi) => (
                 <Rect
-                  x={-BODY_W / 2 - 4}
-                  y={-BODY_H / 2 - 4}
-                  width={BODY_W + 8}
-                  height={BODY_H + 8}
-                  cornerRadius={10}
-                  fill={hexToRgba(agvColor, trailOpacity)}
+                  key={wi}
+                  x={wx}
+                  y={wy}
+                  width={TOKEN_W * 0.24}
+                  height={4}
+                  cornerRadius={1.5}
+                  fill="rgba(20,20,24,0.85)"
                 />
-              </Group>
-            )}
+              ))}
 
-            {/* ── Per-kind silhouette dispatch ─────────────────────────────────
-                Each component renders its own body + inline dot+label in the
-                group's local coordinate space (centred at 0,0). Label always
-                legible regardless of heading (world-space, not rotated). */}
-            {(() => {
-              const subtype = actor?.subtype ?? "shuttle";
-              const silhouetteProps = {
-                x: 0,
-                y: 0,
-                theta,
-                color: agvColor,
-                isSelected,
-                carried: cargo !== null,
-                status: phase,
-                actorId: id,
-              };
-              if (subtype === "forklift") {
-                return <ForkliftAgv {...silhouetteProps} />;
-              }
-              if (subtype === "tow") {
-                return <TowAgv {...silhouetteProps} />;
-              }
-              // Default: "shuttle"
-              return <ShuttleAgv {...silhouetteProps} />;
-            })()}
+              {/* Chassis */}
+              <Rect
+                x={-TOKEN_W / 2}
+                y={-TOKEN_H / 2}
+                width={TOKEN_W}
+                height={TOKEN_H}
+                cornerRadius={3}
+                fill={bodyFill}
+                stroke={strokeColor}
+                strokeWidth={strokeWidth}
+              />
+
+              {/* Front bumper / headlight strip (forward = +x) */}
+              <Rect
+                x={TOKEN_W / 2 - 3}
+                y={-TOKEN_H * 0.3}
+                width={3}
+                height={TOKEN_H * 0.6}
+                cornerRadius={1}
+                fill="rgba(255,255,255,0.75)"
+              />
+
+              {/* Sneh-port: package render moved to PayloadLayer. PayloadLayer
+                  resolves agv-carrier payloads to this AGV's live interpolated
+                  position, so the carried package always rides the chassis
+                  with no duplicate render in the table/arm slots. */}
+            </Group>
+
+            {/* US 34.1: status dot + label, rendered OUTSIDE the rotation
+                so the line stays horizontal regardless of heading. */}
+            <AgvStatusLabel id={id} />
           </Group>
         );
       })}

@@ -146,9 +146,7 @@ class TestExecuteTaskBrainFailure:
 
 class TestExecuteTaskArmTimeout:
     def test_returns_failed_when_arm_server_times_out(self):
-        # arm_id=2 because current pipeline.yaml only has arms 1 + 2.
-        # arm_state validates the id before reaching the timeout path.
-        executor = arm_execution.get_arm_executor(2)
+        executor = arm_execution.get_arm_executor(3)
         executor.brain = MagicMock()
         executor.brain.decide_action.return_value = {
             "action": "drop",
@@ -157,7 +155,7 @@ class TestExecuteTaskArmTimeout:
             "reasoning": "Output at 0",
             "status": "success",
             "validated": True,
-            "arm_id": 2,
+            "arm_id": 3,
             "cache_hit": False,
         }
 

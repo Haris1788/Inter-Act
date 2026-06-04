@@ -4,15 +4,16 @@
 import { useStore } from "@/store";
 import type {
   TopologyActor,
-  TopologyZone,
+  TopologyPool,
   TopologyGoal,
 } from "@/store/types";
-import { mockActors, mockZones, mockGoal } from "./mockData";
+import { mockActors, mockPool, mockGoal } from "./mockData";
 import { normalizeActor } from "@/lib/actorNormalizer";
 
+// Phase 7 Stage F: zones are kind:"zone" actors — no separate zones field.
 interface PresetTopology {
   actors: Record<string, TopologyActor>;
-  zones: Record<string, TopologyZone>;
+  pool: TopologyPool;
   goal: TopologyGoal;
 }
 
@@ -62,24 +63,22 @@ function agv(
     spec,
   });
 }
-// Authored presets have no live feed yet - neutral counts, not fabricated.
-const ZONES: Record<string, TopologyZone> = {
-  // Match mock layout: on the centerline, clear of the arm halos.
-  "feed-I": {
-    id: "feed-I",
-    role: "source",
-    label: "feed-I",
-    position: { x: 55, y: 240 },
-    count: "queue · -",
-  },
-  "sink-O": {
-    id: "sink-O",
-    role: "sink",
-    label: "sink-O",
-    position: { x: 1265, y: 240 },
-    count: "received · -",
-  },
+// Phase 7 Stage F: zones are kind:"zone" actors (box top-left; 100×100), merged
+// into each preset's actors map. Centerline placement, clear of the arm halos.
+const ZONE_ACTORS: Record<string, TopologyActor> = {
+  "feed-I": normalizeActor({
+    id: "feed-I", kind: "zone", subtype: "source", label: "feed-I",
+    position: { x: 5, y: 190 }, size: { w: 100, h: 100 },
+  }),
+  "sink-O": normalizeActor({
+    id: "sink-O", kind: "zone", subtype: "sink", label: "sink-O",
+    position: { x: 1215, y: 190 }, size: { w: 100, h: 100 },
+  }),
 };
+const poolFor = (nAgv: number): TopologyPool => ({
+  ...mockPool,
+  sub: `· ${nAgv} agent${nAgv === 1 ? "" : "s"} · available`,
+});
 const GOAL: TopologyGoal = {
   text: "move objects from feed-I to sink-O",
   constraints: { time: true, energy: false, throughput: false },
@@ -91,8 +90,9 @@ export const PRESETS: Preset[] = [
     label: "Demo · transport cell",
     description: "2 arms + 3 AGV pool - the standard demonstration topology.",
     build: () => ({
+      // mockActors already includes the feed-I/sink-O zone actors.
       actors: { ...mockActors },
-      zones: { ...mockZones },
+      pool: { ...mockPool },
       goal: { ...mockGoal },
     }),
   },
@@ -118,8 +118,9 @@ export const PRESETS: Preset[] = [
           455,
           "10 m/s · cap 1",
         ),
+        ...ZONE_ACTORS,
       },
-      zones: { ...ZONES },
+      pool: poolFor(1),
       goal: GOAL,
     }),
   },
@@ -170,8 +171,9 @@ export const PRESETS: Preset[] = [
           455,
           "10 m/s · cap 1",
         ),
+        ...ZONE_ACTORS,
       },
-      zones: { ...ZONES },
+      pool: poolFor(4),
       goal: GOAL,
     }),
   },
@@ -181,7 +183,7 @@ export const PRESETS: Preset[] = [
     description: "No actors - start composing a topology from scratch.",
     build: () => ({
       actors: {},
-      zones: { ...ZONES },
+      pool: poolFor(0),
       goal: { text: "", constraints: {} },
     }),
   },

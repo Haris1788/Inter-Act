@@ -6,7 +6,9 @@
 import type {
   ActorId,
   ActorStatus,
+  BusKind,
   LogLine,
+  TopologyActor,
   Vec2,
 } from "@/store/types";
 import type { RootStore } from "@/store";
@@ -82,6 +84,32 @@ export function toLogLine(p: {
   };
 }
 
+// ---- coordination/bus classification ------------------------------------
+// The backend has no bid/contract events. The decentralised "message bus" is
+// derived from log_message + script_chosen: only lines that read as actor
+// coordination surface as bus pills (direct-docking model - no handover).
+const BUS_RULES: { re: RegExp; kind: BusKind }[] = [
+  { re: /\bdock|docking|approach|undock/i, kind: "dock" },
+  { re: /\bpick|grab|announce|seeking|request/i, kind: "announce" },
+  {
+    re: /\bplace|deliver|complete|done|hand(ed)?\s?off|transfer/i,
+    kind: "accept",
+  },
+  { re: /\bbid|select|assign|chose|chosen/i, kind: "bid" },
+];
+
+export function classifyBus(
+  source: string,
+  message: string,
+): { kind: BusKind; from: string; text: string } | null {
+  for (const r of BUS_RULES) {
+    if (r.re.test(message)) {
+      return { kind: r.kind, from: source || "system", text: message };
+    }
+  }
+  return null;
+}
+
 // ---- owner → stage position ---------------------------------------------
 // arm/asset → that actor's node center; zone → zone chip; transfer_point /
 // handover_N → NULL (no transfer node exists in the decentralised model - the
@@ -98,13 +126,19 @@ export function resolveOwnerPosition(
     return null;
   }
   if (ownerType === "zone") {
-    const z =
-      store.zones[ownerId] ?? store.zones[ownerId.replace(/-zone$/, "")];
-    if (z) return { x: z.position.x, y: z.position.y };
-    // intake/output fall back to source/sink by role
-    const role = /in|feed|intake/i.test(ownerId) ? "source" : "sink";
-    const byRole = Object.values(store.zones).find((zz) => zz.role === role);
-    return byRole ? { x: byRole.position.x, y: byRole.position.y } : null;
+    // Phase 7 Stage F: zones are kind:"zone" actors. Resolve by id, else by
+    // source/sink subtype. Position is the box centre (store holds top-left).
+    const center = (a: TopologyActor) => ({
+      x: a.position.x + a.size.w / 2,
+      y: a.position.y + a.size.h / 2,
+    });
+    const z = store.actors[ownerId] ?? store.actors[ownerId.replace(/-zone$/, "")];
+    if (z && z.kind === "zone") return center(z);
+    const want = /in|feed|intake/i.test(ownerId) ? "source" : "sink";
+    const byRole = Object.values(store.actors).find(
+      (a) => a.kind === "zone" && a.subtype === want,
+    );
+    return byRole ? center(byRole) : null;
   }
   // transfer_point / handover_N - no node in the new model.
   return null;

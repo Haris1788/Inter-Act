@@ -10,22 +10,21 @@
 // switch RF interaction, keyboard shortcuts delete/duplicate. Konva stays a
 // pure runtime slave to the RF transform (coexistence preserved).
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
-  Background,
-  BackgroundVariant,
+  MiniMap,
   useReactFlow,
   type NodeChange,
   type Node,
 } from "@xyflow/react";
-import { useSnapPreference, CELL_PX } from "./snap/useSnapPreference";
 
 import { useStore } from "@/store";
 import {
   useEditorMode,
   useFocusRequest,
+  useSelectedActorId,
 } from "@/store/selectors";
 import { createActorFromPalette } from "@/runtime/nodeFactory";
 import { DRAG_MIME } from "@/lib/dragContract";
@@ -46,13 +45,7 @@ function FlowInner() {
   const rf = useReactFlow();
   const mode = useEditorMode();
   const focusRequest = useFocusRequest();
-
-  // ── Snap-to-grid (Track C) ─────────────────────────────────────────────
-  const [snapEnabled, toggleSnap] = useSnapPreference();
-  // Track Shift key: when held, skip snap for that drag even if toggle is ON.
-  const shiftHeldRef = useRef(false);
-  // useState so RF re-renders with correct snapToGrid when toggle changes.
-  const [shiftHeld, setShiftHeld] = useState(false);
+  const selectedId = useSelectedActorId();
 
   const setSelectedActor = useStore((s) => s.setSelectedActor);
   const moveActor = useStore((s) => s.moveActor);
@@ -80,47 +73,16 @@ function FlowInner() {
     });
   }, [focusRequest, rf]);
 
-  // Track Shift key for per-drag snap override (Track C).
-  useEffect(() => {
-    const onDown = (e: KeyboardEvent) => {
-      if (e.key === "Shift") {
-        shiftHeldRef.current = true;
-        setShiftHeld(true);
-      }
-    };
-    const onUp = (e: KeyboardEvent) => {
-      if (e.key === "Shift") {
-        shiftHeldRef.current = false;
-        setShiftHeld(false);
-      }
-    };
-    window.addEventListener("keydown", onDown);
-    window.addEventListener("keyup", onUp);
-    return () => {
-      window.removeEventListener("keydown", onDown);
-      window.removeEventListener("keyup", onUp);
-    };
-  }, []);
-
   const handleNodesChange = useCallback(
     (changes: NodeChange<Node>[]) => {
       for (const c of changes) {
         if (c.type === "position" && c.position) {
-          // Snap math: when snap is ON and Shift is NOT held, round to
-          // nearest cell_px multiple. RF's native snapToGrid handles live
-          // drag feedback; this ensures the stored value is always snapped
-          // even if RF's internal rounding drifts slightly.
-          let { x, y } = c.position;
-          if (snapEnabled && !shiftHeldRef.current) {
-            x = Math.round(x / CELL_PX) * CELL_PX;
-            y = Math.round(y / CELL_PX) * CELL_PX;
-          }
-          moveActor(c.id, { x, y });
+          moveActor(c.id, { x: c.position.x, y: c.position.y });
           markDirty();
         }
       }
     },
-    [moveActor, markDirty, snapEnabled],
+    [moveActor, markDirty],
   );
 
   const handleNodeClick = useCallback(
@@ -165,6 +127,9 @@ function FlowInner() {
       if (!key) return;
       e.preventDefault();
       const center = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+
+      // Phase 7: ONE path for every kind (arm/agv/zone) — all are TopologyActors
+      // created via createActorFromPalette and added with addActor.
       const actor = createActorFromPalette(
         key,
         center,
@@ -300,26 +265,46 @@ function FlowInner() {
         fitView={false}
         className="h-full w-full"
         style={{ background: "transparent" }}
-        // ── Snap-to-grid (Track C) ─────────────────────────────────────
-        // RF native snap drives live drag feedback; shiftHeld disables it
-        // for that drag; manual rounding in handleNodesChange guarantees
-        // the stored value is always on-grid.
-        snapToGrid={snapEnabled && !shiftHeld}
-        snapGrid={[CELL_PX, CELL_PX]}
       >
-        {/* Faint grid overlay when snap is ON (Track C).
-            gap=40 matches cell_px; dots read as a position reference,
-            not a visual distraction. Opacity kept very low. */}
-        {snapEnabled && (
-          <Background
-            variant={BackgroundVariant.Dots}
-            gap={CELL_PX}
-            size={1}
-            color="rgba(96,94,88,0.18)"
-          />
-        )}
-
+        {/* Real, functional overview: live nodes, viewport mask synced to
+            pan/zoom, click/drag to navigate. Styled as the prototype
+            "TOPOLOGY · OVERVIEW" card; the label strip is the chrome
+            element just below (covers the reserved top band). */}
+        <MiniMap
+          position="bottom-right"
+          pannable
+          zoomable
+          ariaLabel="Topology overview"
+          className="!rounded-md !border !border-line !bg-bg-surface !shadow-e2"
+          style={{ width: 180, height: 120, margin: 12 }}
+          maskColor="rgba(244,243,239,0.62)"
+          maskStrokeColor="rgba(201,198,189,0.75)"
+          nodeBorderRadius={3}
+          nodeStrokeWidth={1}
+          nodeColor={(n) =>
+            n.id === selectedId
+              ? "rgba(24,24,27,0.30)"
+              : n.type === "actorNode"
+                ? (n.data as { kind?: string })?.kind === "agv"
+                  ? "rgba(122,132,110,0.22)"
+                  : "rgba(96,94,88,0.24)"
+                : "rgba(201,198,189,0.16)"
+          }
+          nodeStrokeColor={(n) =>
+            n.id === selectedId ? "#18181B" : "rgba(96,94,88,0.55)"
+          }
+        />
       </ReactFlow>
+
+      {/* Prototype card label - overlays the reserved 22px top band of the
+          MiniMap (which is offset via paddingTop) so it reads as a framed
+          "TOPOLOGY · OVERVIEW" card without blocking the live thumbnail. */}
+      <div
+        className="pointer-events-none absolute z-[5] flex items-center rounded-t-md border border-b-0 border-line bg-bg-surface px-2 text-[10px] uppercase tracking-[0.08em] text-ink-4"
+        style={{ right: 12, bottom: 110, width: 180, height: 22 }}
+      >
+        Topology · overview
+      </div>
 
       <div className="pointer-events-none absolute inset-0 z-[2]">
         <KonvaOverlay />
@@ -328,11 +313,7 @@ function FlowInner() {
         <LabelsOverlay />
       </div>
 
-      <CanvasToolbar
-        onFit={fitToStage}
-        snapEnabled={snapEnabled}
-        onToggleSnap={toggleSnap}
-      />
+      <CanvasToolbar onFit={fitToStage} />
       <CanvasMeta />
       <ZoomCluster onFit={fitToStage} />
       <GoalBar />
@@ -345,18 +326,6 @@ export function CanvasViewport() {
   return (
     <ReactFlowProvider>
       <section className="dot-grid relative h-full overflow-hidden border-b border-line bg-bg-canvas">
-        {/* Phase 5.1 Stage 5 Track A — Ambient cool-dark tint.
-            Faint gradient at 4-6% alpha laid over bg-bg-canvas so the empty
-            world reads as a "quiet world", not a missing render.
-            pointer-events-none + z-[0] keeps it strictly behind all content. */}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 z-[0]"
-          style={{
-            background:
-              "linear-gradient(160deg, rgba(10,14,20,0.06) 0%, rgba(14,17,24,0.04) 50%, rgba(8,12,18,0.07) 100%)",
-          }}
-        />
         <FlowInner />
       </section>
     </ReactFlowProvider>

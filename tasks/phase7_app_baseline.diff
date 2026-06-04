@@ -1,0 +1,514 @@
+diff --git a/app/routes/dispatch_routes.py b/app/routes/dispatch_routes.py
+index dfd9f46..2dffccd 100644
+--- a/app/routes/dispatch_routes.py
++++ b/app/routes/dispatch_routes.py
+@@ -24,13 +24,18 @@ from app.models import agv_state, pipeline_config
+ 
+ dispatch_bp = Blueprint("dispatch", __name__)
+ 
+-# Map of AGV container ports (host-side) so the backend can reach them.
+-# Container-to-container: agv-1 listens on port 8100 inside docker network.
+-_AGV_CONTAINER_URLS = {
+-    "agv-1": "http://agv-1:8100",
+-    "agv-2": "http://agv-2:8100",
+-    "agv-3": "http://agv-3:8100",
+-}
++def _agv_url(agv_id: str) -> str | None:
++    """Derive the AGV container URL from its registered runtime state.
++
++    All AGV containers (seeded via compose or authored via create_actor) listen
++    on port 8100 and are reachable via their network alias == agv_id.
++    Returns None when the AGV is not registered in agv_state (unknown / not
++    yet deployed).
++    """
++    from app.models import agv_state as _agv_state
++    if _agv_state.get(agv_id) is not None:
++        return f"http://{agv_id}:8100"
++    return None
+ 
+ 
+ def _ts() -> str:
+@@ -197,7 +202,7 @@ def _idle_agvs() -> List[str]:
+ 
+ def _assign_agv(agv_id: str, package_id: str, label: str) -> bool:
+     """POST assignment to the AGV container's /assign endpoint."""
+-    url = _AGV_CONTAINER_URLS.get(agv_id)
++    url = _agv_url(agv_id)
+     if not url:
+         return False
+     try:
+diff --git a/app/services/container_manager.py b/app/services/container_manager.py
+index ec5055c..fb9e04c 100644
+--- a/app/services/container_manager.py
++++ b/app/services/container_manager.py
+@@ -125,10 +125,12 @@ def is_enabled() -> bool:
+ _REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+ _SHARED_IMAGE = {
+     "arm": "interact-shared-arm:latest",
++    "vehicle": "interact-shared-agv:latest",
+     "asset": "interact-shared-asset:latest",
+ }
+ _DOCKERFILE = {
+     "arm": "docker/Dockerfile.arm",
++    "vehicle": "docker/Dockerfile.agv",
+     "asset": "docker/Dockerfile.asset",
+ }
+ _SHARED_IMAGE_SET = set(_SHARED_IMAGE.values()) | {
+@@ -215,7 +217,11 @@ def _infra_runtime() -> dict:
+ 
+ 
+ def _kind_key(kind: str) -> str:
+-    return "arm" if kind == "arm" else "asset"
++    if kind == "arm":
++        return "arm"
++    if kind == "vehicle":
++        return "vehicle"
++    return "asset"
+ 
+ 
+ def create_actor(
+@@ -247,6 +253,34 @@ def create_actor(
+             "PIPELINE_CONFIG=/config/pipeline.yaml",
+             "PYTHONUNBUFFERED=1",
+         ]
++        internal_port = 8000
++    elif kind == "vehicle":
++        # AGV containers use agv_server.py (AGV_ID, not ASSET_ID).
++        # Capability env vars are read from pipeline.yaml warehouse.agvs via
++        # pipeline_config so the authored AGV's capabilities match what was
++        # written to config during deploy.
++        coordination_mode = os.environ.get("COORDINATION_MODE", "centralized")
++        caps: dict = {}
++        try:
++            from app.models import pipeline_config as _pc
++            caps_obj = _pc.get_agv_capabilities(module_id)
++            caps = caps_obj.to_dict()
++        except Exception:
++            pass
++        labels_csv = ",".join(
++            str(l) for l in (caps.get("allowed_labels") or ["any"])
++        )
++        env = [
++            f"AGV_ID={module_id}",
++            "SERVER_HOST=http://backend:5000",
++            f"COORDINATION_MODE={coordination_mode}",
++            f"AGV_KIND={caps.get('kind', 'shuttle')}",
++            f"AGV_WEIGHT_MAX_KG={caps.get('weight_max_kg', 50.0)}",
++            f"AGV_ALLOWED_LABELS={labels_csv}",
++            f"AGV_SPEED_FACTOR={caps.get('speed_factor', 1.0)}",
++            "PYTHONUNBUFFERED=1",
++        ]
++        internal_port = 8100  # agv_server listens on 8100 (Dockerfile.agv EXPOSE)
+     else:
+         env = [
+             f"ASSET_ID={module_id}",
+@@ -257,14 +291,15 @@ def create_actor(
+             "SPEED_FACTOR=1.0",
+             "PYTHONUNBUFFERED=1",
+         ]
++        internal_port = 8000
+ 
+     args = [
+         "docker", "run", "-d",
+         "--name", name,
+         "--restart", "unless-stopped",
+         "--network", infra["network"],
+-        # Compose-parity DNS so the health monitor's http://<module>:8000
+-        # resolves regardless of container name.
++        # Compose-parity DNS so http://<module_id>:<port> resolves from any
++        # container on the same network (used by dispatch + AGV brain HTTP calls).
+         "--network-alias", module_id,
+         "--label", f"{LBL_ROLE}={ROLE_ACTOR}",
+         "--label", f"{LBL_ID}={module_id}",
+@@ -277,7 +312,7 @@ def create_actor(
+         if src and dst:
+             args += ["-v", f"{src}:{dst}:ro"]
+     if publish_port:
+-        args += ["-p", f"{publish_port}:8000"]
++        args += ["-p", f"{publish_port}:{internal_port}"]
+     for e in env:
+         args += ["-e", e]
+     args.append(_SHARED_IMAGE[kk])
+@@ -433,6 +468,11 @@ def reconcile_actors(desired: list[dict]) -> dict:
+                 port = 8000 + int(mid.split("-")[-1])
+             except ValueError:
+                 port = None
++        elif kind == "vehicle":
++            # Host ports for authored AGVs start at 8110 to avoid colliding
++            # with compose-managed seeded AGVs (8101–8103 from generate_compose).
++            port = 8110 + veh_index * 10
++            veh_index += 1
+         else:
+             port = 8010 + veh_index * 10
+             veh_index += 1
+diff --git a/app/services/deploy_bridge.py b/app/services/deploy_bridge.py
+index b5d3b88..674eee1 100644
+--- a/app/services/deploy_bridge.py
++++ b/app/services/deploy_bridge.py
+@@ -32,6 +32,255 @@ import yaml
+ from app.models import pipeline_config
+ from app.services import container_manager
+ 
++# ---------------------------------------------------------------------------
++# Coordinate helpers
++# ---------------------------------------------------------------------------
++
++def _get_effective_grid() -> dict[str, Any]:
++    """Return warehouse grid config from the currently-loaded pipeline.yaml.
++
++    Raises RuntimeError when no warehouse section is configured — callers
++    must handle this so a missing grid never silently produces wrong cells.
++    """
++    try:
++        grid = pipeline_config.get_grid()
++    except Exception as exc:
++        raise RuntimeError(f"pipeline_config.get_grid() failed: {exc}") from exc
++    if not grid or not grid.get("cell_px"):
++        raise RuntimeError(
++            "warehouse.grid not configured in pipeline.yaml — "
++            "cannot convert authored actor positions to grid cells. "
++            "Ensure pipeline.yaml has a warehouse: section with grid, origin."
++        )
++    return grid
++
++
++def _px_to_cell(cx: float, cy: float, grid: dict[str, Any]) -> list[int]:
++    """Convert canvas pixel centre (cx, cy) → warehouse [col, row].
++
++    Inverse of pipeline_config.cell_to_px:
++        cell_to_px([col, row]).x = origin_x + (col + 0.5) * cell_px
++        → col = floor((cx - origin_x) / cell_px)
++
++    Clamps to valid grid bounds so an off-grid actor never crashes the deploy.
++    """
++    origin = grid.get("origin") or {}
++    ox = float(origin.get("x", 0))
++    oy = float(origin.get("y", 0))
++    cp = float(grid.get("cell_px", 1))
++    cols = int(grid.get("cols", 1))
++    rows = int(grid.get("rows", 1))
++    col = int((cx - ox) / cp)
++    row = int((cy - oy) / cp)
++    return [max(0, min(col, cols - 1)), max(0, min(row, rows - 1))]
++
++
++# ---------------------------------------------------------------------------
++# Warehouse section generation
++# ---------------------------------------------------------------------------
++
++_AUTHORED_AGV_COLORS = ["#9b59b6", "#2980b9", "#27ae60", "#e67e22", "#e74c3c"]
++
++
++def _authored_agv_color(agv_id: str) -> str:
++    """Stable color for an authored AGV — matches AgvTokenLayer.authoredAgvColor."""
++    nums = re.findall(r"\d+", str(agv_id))
++    n = int(nums[-1]) if nums else 1
++    return _AUTHORED_AGV_COLORS[(n - 1) % len(_AUTHORED_AGV_COLORS)]
++
++
++def _build_warehouse_section(
++    actors: list[dict[str, Any]],
++    arms_in: list[tuple[int, dict[str, Any]]],
++    base: dict[str, Any],
++) -> tuple[dict[str, Any], list[str]]:
++    """Generate the merged warehouse section and a list of validation warnings.
++
++    Strategy:
++    - Preserve everything from base `warehouse:` unchanged.
++    - For authored arms: derive input_arm / output_arm stations from positions.
++    - For authored AGVs: derive bay cells from positions.
++    - Authored entries are merged ON TOP of seeded entries for the same key,
++      so an authored arm-3 station replaces a stale seeded arm-3 entry, but
++      the seeded agv-1/agv-2/agv-3 bays are untouched if no authored AGV
++      carries those IDs.
++
++    Returns (warehouse_dict, warnings).
++    """
++    warnings: list[str] = []
++
++    # Deep-copy the existing warehouse section so seeded data is preserved.
++    wh = copy.deepcopy(base.get("warehouse") or {})
++
++    # ── grid: use from base config (authoritative), never override ─────────
++    try:
++        grid = _get_effective_grid()
++    except RuntimeError as exc:
++        warnings.append(str(exc))
++        return wh, warnings
++
++    cols = int(grid.get("cols", 1))
++    rows = int(grid.get("rows", 1))
++
++    # ── authored stations from arms ─────────────────────────────────────────
++    authored_stations: dict[str, Any] = {}
++
++    def _actor_centre(actor: dict[str, Any]) -> tuple[float, float]:
++        size = actor.get("size") or {}
++        pos = actor.get("position") or {}
++        cx = float(pos.get("x", 0)) + float(size.get("w", 0)) / 2.0
++        cy = float(pos.get("y", 0)) + float(size.get("h", 0)) / 2.0
++        return cx, cy
++
++    if arms_in:
++        # First (leftmost) → input_arm
++        first_num, first_actor = arms_in[0]
++        fx, fy = _actor_centre(first_actor)
++        f_cell = _px_to_cell(fx, fy, grid)
++        f_col, f_row = f_cell
++        f_dock_col = min(f_col + 1, cols - 1)
++        if f_dock_col == f_col:
++            warnings.append(
++                f"input_arm (arm-{first_num}): arm cell [{f_col},{f_row}] "
++                f"is at grid right edge — dock cannot be placed to the right"
++            )
++        authored_stations["input_arm"] = {
++            "cell": f_cell,
++            "dock": [f_dock_col, f_row],
++            "label": "IN",
++            "served_by": f"arm-{first_num}",
++        }
++
++    if len(arms_in) >= 2:
++        # Last (rightmost) → output_arm
++        last_num, last_actor = arms_in[-1]
++        lx, ly = _actor_centre(last_actor)
++        l_cell = _px_to_cell(lx, ly, grid)
++        l_col, l_row = l_cell
++        l_dock_col = max(l_col - 1, 0)
++        if l_dock_col == l_col:
++            warnings.append(
++                f"output_arm (arm-{last_num}): arm cell [{l_col},{l_row}] "
++                f"is at grid left edge — dock cannot be placed to the left"
++            )
++        authored_stations["output_arm"] = {
++            "cell": l_cell,
++            "dock": [l_dock_col, l_row],
++            "label": "OUT",
++            "served_by": f"arm-{last_num}",
++        }
++    elif arms_in:
++        warnings.append(
++            "Only 1 authored arm — AGV routing requires both input_arm and "
++            "output_arm stations. Add a second arm for AGV task execution."
++        )
++
++    # ── authored AGV bays ───────────────────────────────────────────────────
++    authored_agvs: list[dict[str, Any]] = []
++    caps_defaults: dict[str, Any] = {}
++    try:
++        caps_defaults = pipeline_config.get_capability_defaults()
++    except Exception:
++        pass
++
++    for a in actors:
++        if a.get("kind") != "agv":
++            continue
++        agv_id = str(a.get("id", ""))
++        if not agv_id:
++            continue
++        cx, cy = _actor_centre(a)
++        bay = _px_to_cell(cx, cy, grid)
++        authored_agvs.append({
++            "id": agv_id,
++            "label": a.get("label") or agv_id,
++            "color": _authored_agv_color(agv_id),
++            "bay": bay,
++            "capabilities": dict(caps_defaults),
++        })
++
++    # ── merge: authored ON TOP of seeded ───────────────────────────────────
++    existing_stations: dict[str, Any] = dict(wh.get("stations") or {})
++    merged_stations = {**existing_stations, **authored_stations}
++    wh["stations"] = merged_stations
++
++    existing_agvs_by_id: dict[str, Any] = {
++        a["id"]: a for a in (wh.get("agvs") or [])
++    }
++    for agv in authored_agvs:
++        existing_agvs_by_id[agv["id"]] = agv
++    wh["agvs"] = list(existing_agvs_by_id.values())
++
++    # ── lane: preserve seeded; omit authored (A* fallback covers smart mode) ─
++    # Lane is not generated for authored topologies. In smart coordination mode
++    # (the default), agv_brain falls back to A* between input_dock and
++    # output_dock when lane_cells is empty. For centralized/decentralized modes
++    # the seeded lane is already present; authored additions don't interfere.
++
++    return wh, warnings
++
++
++def _validate_authored_warehouse(
++    authored_stations: dict[str, Any],
++    authored_agvs: list[dict[str, Any]],
++    grid: dict[str, Any],
++) -> list[str]:
++    """Additional cross-checks: duplicate cells, bay/station overlaps."""
++    warnings: list[str] = []
++    cols = int(grid.get("cols", 1))
++    rows = int(grid.get("rows", 1))
++
++    # Out-of-bounds checks
++    for name, st in authored_stations.items():
++        for field in ("cell", "dock"):
++            c = st.get(field, [])
++            if c and (c[0] < 0 or c[0] >= cols or c[1] < 0 or c[1] >= rows):
++                warnings.append(
++                    f"station {name}.{field} {c} is outside grid bounds "
++                    f"({cols}×{rows})"
++                )
++
++    for agv in authored_agvs:
++        bay = agv.get("bay", [])
++        if bay and (bay[0] < 0 or bay[0] >= cols or bay[1] < 0 or bay[1] >= rows):
++            warnings.append(
++                f"agv {agv['id']}.bay {bay} is outside grid bounds "
++                f"({cols}×{rows})"
++            )
++
++    # Duplicate station cells
++    cell_map: dict[tuple, str] = {}
++    for name, st in authored_stations.items():
++        key = tuple(st.get("cell", []))
++        if key in cell_map:
++            warnings.append(
++                f"station {name} and {cell_map[key]} share cell {list(key)}"
++            )
++        else:
++            cell_map[key] = name
++
++    # AGV bay overlapping station cell
++    station_cells = {tuple(st.get("cell", [])) for st in authored_stations.values()}
++    for agv in authored_agvs:
++        bay = tuple(agv.get("bay", []))
++        if bay in station_cells:
++            warnings.append(
++                f"agv {agv['id']}.bay {list(bay)} overlaps a station cell"
++            )
++
++    # Duplicate bays
++    bay_map: dict[tuple, str] = {}
++    for agv in authored_agvs:
++        bay = tuple(agv.get("bay", []))
++        if bay in bay_map:
++            warnings.append(
++                f"agv {agv['id']} and {bay_map[bay]} share bay {list(bay)}"
++            )
++        else:
++            bay_map[bay] = agv["id"]
++
++    return warnings
++
+ # Background deploy state. Heavy work (image build + N container
+ # create/restart) runs off the request thread so the HTTP call returns
+ # instantly and never trips the client timeout, regardless of actor count.
+@@ -76,13 +325,19 @@ def _config_path() -> str:
+     return os.path.abspath(pipeline_config._CONFIG_PATH)
+ 
+ 
+-def build_pipeline_yaml(payload: dict[str, Any]) -> dict[str, Any]:
+-    """Translate a frontend deploy payload into a pipeline.yaml dict.
++def build_pipeline_yaml(
++    payload: dict[str, Any],
++) -> tuple[dict[str, Any], list[str]]:
++    """Translate a frontend deploy payload into a (pipeline.yaml dict, warnings).
+ 
+     Arms become a left-to-right dependency chain (ordered by authored x).
+     Vehicles are wired from the first to the last arm. The pipeline /
+-    failure_policy / health / canvas blocks of the currently-loaded config
+-    are preserved so a deploy never silently changes run policy.
++    failure_policy / health / canvas / warehouse / ai blocks of the
++    currently-loaded config are preserved so a deploy never silently changes
++    run policy or grid geometry.
++
++    Returns (doc, warnings) where warnings is a list of non-fatal issues
++    found during coordinate conversion and validation.
+     """
+     actors = payload.get("actors") or []
+ 
+@@ -122,7 +377,7 @@ def build_pipeline_yaml(payload: dict[str, Any]) -> dict[str, Any]:
+             "id": aid,
+             "type": "vehicle",
+             "label": a.get("label") or aid,
+-            "color": "#9b59b6",
++            "color": _authored_agv_color(aid),
+             "speed": 140,
+             "loop": False,
+             "waypoints": [{"x": 730, "y": 300}, {"x": 900, "y": 300}],
+@@ -136,6 +391,7 @@ def build_pipeline_yaml(payload: dict[str, Any]) -> dict[str, Any]:
+         base = copy.deepcopy(pipeline_config.get_config() or {})
+     except Exception:
+         base = {}
++
+     out: dict[str, Any] = {
+         "pipeline": base.get("pipeline")
+         or {"mode": "dependency", "products": 3, "speed": "normal"},
+@@ -148,7 +404,40 @@ def build_pipeline_yaml(payload: dict[str, Any]) -> dict[str, Any]:
+     }
+     if base.get("canvas"):
+         out["canvas"] = base["canvas"]
+-    return out
++    if base.get("ai"):
++        out["ai"] = base["ai"]
++
++    # ── warehouse section: merge authored actor positions into seeded config ──
++    warehouse, wh_warnings = _build_warehouse_section(actors, arms_in, base)
++    if warehouse:
++        out["warehouse"] = warehouse
++
++    # ── cross-validation on authored entries only ───────────────────────────
++    # Validate only the stations/AGVs that came from this payload (not seeded).
++    val_warnings: list[str] = []
++    if warehouse:
++        try:
++            grid = _get_effective_grid()
++            authored_arm_ids = {f"arm-{num}" for num, _ in arms_in}
++            authored_stns = {
++                k: v for k, v in warehouse.get("stations", {}).items()
++                if v.get("served_by") in authored_arm_ids
++            }
++            payload_agv_ids = {
++                str(a.get("id")) for a in actors if a.get("kind") == "agv"
++            }
++            authored_agv_list = [
++                a for a in warehouse.get("agvs", [])
++                if a["id"] in payload_agv_ids
++            ]
++            val_warnings = _validate_authored_warehouse(
++                authored_stns, authored_agv_list, grid
++            )
++        except Exception:
++            pass
++
++    all_warnings = wh_warnings + val_warnings
++    return out, all_warnings
+ 
+ 
+ def _docker_compose_cmd() -> Optional[list[str]]:
+@@ -189,10 +478,12 @@ def apply_topology(
+     )
+     project_dir = os.path.dirname(cfg_path)
+ 
+-    doc = build_pipeline_yaml(payload)
++    doc, deploy_warnings = build_pipeline_yaml(payload)
+     arm_ids = [f"arm-{a['id']}" for a in doc["arms"]]
+     asset_ids = [a["id"] for a in doc["assets"]]
+     steps: dict[str, str] = {}
++    if deploy_warnings:
++        steps["warnings"] = "; ".join(deploy_warnings)
+ 
+     # 1) Write pipeline.yaml (may be read-only inside the container).
+     try:
+@@ -237,9 +528,12 @@ def apply_topology(
+     if reload_runtime:
+         try:
+             pipeline_config.reload()
+-            from app.models import arm_state
++            from app.models import arm_state, agv_state
+ 
+             arm_state.reinitialize()
++            # Register newly authored AGVs so they appear in /agv/state
++            # immediately after config reload (before containers boot).
++            agv_state.initialize_from_config()
+             steps["reloaded"] = "ok"
+             reloaded_ok = True
+         except Exception as exc:  # noqa: BLE001

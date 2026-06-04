@@ -6,7 +6,7 @@ import { ConnectionChip } from "./ConnectionChip";
 import { WorkspaceName } from "./WorkspaceName";
 import { DeployModal } from "./DeployModal";
 import { serializeTopology, docToState } from "@/lib/topologySchema";
-import { exportTopologyFile, importTopologyFile, clearLocal } from "@/lib/persistence";
+import { exportTopologyFile, importTopologyFile } from "@/lib/persistence";
 import { saveWorkspace } from "@/runtime/save";
 import {
   undo,
@@ -109,17 +109,6 @@ export function Topbar() {
       document.removeEventListener("keydown", onKey);
     };
   }, [presetsOpen]);
-
-  const onReset = () => {
-    if (
-      window.confirm(
-        "Reset workspace? This clears all actors, zones, and settings from localStorage and reloads to an empty canvas.",
-      )
-    ) {
-      clearLocal();
-      window.location.reload();
-    }
-  };
 
   const onExport = () =>
     exportTopologyFile(serializeTopology(useStore.getState()));
@@ -284,13 +273,6 @@ export function Topbar() {
           className="inline-flex h-[30px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-12.5 text-ink-2 hover:bg-bg-hover"
         >
           Export
-        </button>
-        <button
-          onClick={onReset}
-          title="Clear localStorage and reload to empty canvas"
-          className="inline-flex h-[30px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-12.5 text-ink-4 hover:bg-bg-hover hover:text-err"
-        >
-          Reset
         </button>
 
         {/* Presets */}

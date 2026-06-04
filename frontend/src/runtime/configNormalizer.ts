@@ -4,7 +4,7 @@
 
 import { STAGE_W, STAGE_H } from "@/lib/stageCoords";
 import { normalizeActor } from "@/lib/actorNormalizer";
-import type { TopologyActor, TopologyZone, Vec2 } from "@/store/types";
+import type { TopologyActor, Vec2 } from "@/store/types";
 
 interface RawGraphNode {
   id: string;
@@ -39,10 +39,12 @@ export interface RawConfig {
 
 export interface NormalizedTopology {
   actors: Record<string, TopologyActor>;
-  zones: Record<string, TopologyZone>;
+  // Phase 7 Stage F: zones are kind:"zone" actors inside `actors` — no zones map.
   /** actorId → downstream actorIds (for AGV transit routing) */
   adjacency: Record<string, string[]>;
 }
+
+const ZONE_SIZE = { w: 100, h: 100 };
 
 const ARM_SIZE = { w: 210, h: 150 };
 const AGV_SIZE = { w: 184, h: 118 };
@@ -57,7 +59,6 @@ export function normalizeConfig(cfg: RawConfig): NormalizedTopology {
   const map = (p: Vec2): Vec2 => ({ x: ox + p.x * s, y: oy + p.y * s });
 
   const actors: Record<string, TopologyActor> = {};
-  const zones: Record<string, TopologyZone> = {};
   const adjacency: Record<string, string[]> = {};
 
   const graph = cfg.asset_graph ?? [];
@@ -93,14 +94,26 @@ export function normalizeConfig(cfg: RawConfig): NormalizedTopology {
     }
   }
 
+  // Phase 7 Stage F: intake/output zones hydrate as kind:"zone" actors (centre
+  // → top-left), so they flow through the single actor source of truth.
   if (cfg.intake_zone) {
     const c = map({ x: cfg.intake_zone.x, y: cfg.intake_zone.y });
-    zones["feed-I"] = { id: "feed-I", role: "source", label: cfg.intake_zone.label ?? "feed-I", position: c, count: "" };
+    actors["feed-I"] = normalizeActor({
+      id: "feed-I", kind: "zone", subtype: "source",
+      label: cfg.intake_zone.label ?? "feed-I",
+      position: { x: c.x - ZONE_SIZE.w / 2, y: c.y - ZONE_SIZE.h / 2 },
+      size: ZONE_SIZE,
+    });
   }
   if (cfg.output_zone) {
     const c = map({ x: cfg.output_zone.x, y: cfg.output_zone.y });
-    zones["sink-O"] = { id: "sink-O", role: "sink", label: cfg.output_zone.label ?? "sink-O", position: c, count: "" };
+    actors["sink-O"] = normalizeActor({
+      id: "sink-O", kind: "zone", subtype: "sink",
+      label: cfg.output_zone.label ?? "sink-O",
+      position: { x: c.x - ZONE_SIZE.w / 2, y: c.y - ZONE_SIZE.h / 2 },
+      size: ZONE_SIZE,
+    });
   }
 
-  return { actors, zones, adjacency };
+  return { actors, adjacency };
 }

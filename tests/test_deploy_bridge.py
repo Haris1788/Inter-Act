@@ -11,11 +11,11 @@ def _payload():
         "actors": [
             # Deliberately out of x-order to prove sorting drives the chain.
             {"id": "arm-5", "kind": "arm", "label": "Arm 5",
-             "position": {"x": 900, "y": 100}},
+             "position": {"x": 900, "y": 100}, "size": {"w": 210, "h": 150}},
             {"id": "arm-1", "kind": "arm", "label": "Source",
-             "position": {"x": 100, "y": 100}},
+             "position": {"x": 100, "y": 100}, "size": {"w": 210, "h": 150}},
             {"id": "veh-a", "kind": "agv", "label": "Shuttle A",
-             "position": {"x": 500, "y": 400}},
+             "position": {"x": 500, "y": 400}, "size": {"w": 184, "h": 118}},
         ],
         "zones": [],
         "goal": {"text": "", "constraints": {}},
@@ -24,7 +24,7 @@ def _payload():
 
 class TestBuildPipelineYaml:
     def test_arms_sorted_into_dependency_chain(self):
-        doc = deploy_bridge.build_pipeline_yaml(_payload())
+        doc, _warnings = deploy_bridge.build_pipeline_yaml(_payload())
         ids = [a["id"] for a in doc["arms"]]
         assert ids == [1, 5]  # sorted by authored x, not insertion order
         assert doc["arms"][0]["depends_on"] == []
@@ -32,7 +32,7 @@ class TestBuildPipelineYaml:
         assert all(a["critical"] for a in doc["arms"])
 
     def test_vehicle_wired_first_to_last_arm(self):
-        doc = deploy_bridge.build_pipeline_yaml(_payload())
+        doc, _warnings = deploy_bridge.build_pipeline_yaml(_payload())
         assert len(doc["assets"]) == 1
         veh = doc["assets"][0]
         assert veh["id"] == "veh-a"
@@ -41,7 +41,7 @@ class TestBuildPipelineYaml:
         assert veh["downstream"] == ["arm-5"]
 
     def test_preserves_run_policy_blocks(self):
-        doc = deploy_bridge.build_pipeline_yaml(_payload())
+        doc, _warnings = deploy_bridge.build_pipeline_yaml(_payload())
         for key in ("pipeline", "failure_policy", "health"):
             assert key in doc and doc[key]
 

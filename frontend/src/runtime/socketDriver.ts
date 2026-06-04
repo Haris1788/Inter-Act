@@ -2,7 +2,7 @@ import { io, type Socket } from "socket.io-client";
 import type { useStore } from "@/store";
 import type { RuntimeDriver, ActorOpResult } from "./driver";
 import { normalizeConfig, type RawConfig } from "./configNormalizer";
-import type { BusKind, BusMessage } from "@/store/types";
+import { loadLocal } from "@/lib/persistence";
 import {
   armActorId,
   assetActorId,
@@ -55,10 +55,108 @@ function armNumber(actorId: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+// US 34.1: render a one-line summary of a bus event for the BusPane. Keeps
+// the panel readable instead of dumping the whole JSON payload.
+function busEventToText(
+  type: string,
+  payload: Record<string, unknown>,
+  taskId?: string | null,
+): string {
+  const pkg = (payload.package_id as string) ?? taskId ?? "?";
+  switch (type) {
+    case "task_announce":
+      return `announce ${pkg} (${payload.label ?? "no-label"}${
+        payload.weight_kg != null ? ` · ${payload.weight_kg}kg` : ""
+      })`;
+    case "task_orphan":
+      return `orphan ${pkg} — ${payload.reason ?? "fault"}`;
+    case "bid": {
+      const score = payload.score as number | undefined;
+      const why = payload.rationale as string | undefined;
+      return `bid ${pkg} score=${score?.toFixed?.(1) ?? score ?? "?"} ${why ?? ""}`;
+    }
+    case "claim":
+      return `claim ${pkg} → ${payload.winner ?? "?"} (score=${
+        payload.winning_score ?? "?"
+      })`;
+    case "agent_status":
+      return `status=${payload.status ?? "?"}${
+        payload.current_task ? ` task=${payload.current_task}` : ""
+      }`;
+    case "intent": {
+      const path = Array.isArray(payload.path_cells)
+        ? ` (${(payload.path_cells as unknown[]).length} cells)`
+        : "";
+      return `intent ${payload.action ?? "?"}${path}${
+        payload.detail ? ` — ${payload.detail}` : ""
+      }`;
+    }
+    case "arm_approach":
+      return `approach ${payload.arm_station ?? "?"} eta=${payload.eta_s ?? "?"}s`;
+    case "arm_ready":
+      return `arm ${payload.action ?? "?"} for ${payload.for_agv ?? "?"}`;
+    case "arm_busy":
+      return `arm busy ${payload.arm_station ?? "?"}`;
+    case "yield":
+      return `yield: ${payload.reason ?? "?"}${
+        payload.waiting_for ? ` (waiting ${payload.waiting_for})` : ""
+      }`;
+    case "help_request":
+      return `help: ${payload.reason ?? "?"}`;
+    default:
+      // Unknown type — show the JSON so nothing is silently swallowed.
+      try {
+        return `${type} ${JSON.stringify(payload).slice(0, 140)}`;
+      } catch {
+        return type;
+      }
+  }
+}
+
+// US 34.1: map a bus event to which AI tier is currently "speaking". Returns
+// null when the event is not associated with an AI action (e.g. yield is
+// pure script). Mirrors §4 of Work flow(12 June 2026).md.
+function inferActiveAi(
+  type: string,
+  source: string,
+): { model: string; role: string; source: string } | null {
+  switch (type) {
+    case "task_spec":
+    case "plan":
+    case "task_announce":
+      return { model: "qwq:32b", role: "planner", source: "master" };
+    case "bid":
+      return {
+        model: "qwen2.5:14b",
+        role: "judge",
+        source: source || "agv",
+      };
+    case "intent":
+      return {
+        model: "qwen2.5:14b",
+        role: "tactical",
+        source: source || "agv",
+      };
+    case "arm_ready":
+    case "arm_approach":
+      return {
+        model: "qwen2.5:14b",
+        role: "arm-gate",
+        source: source || "arm",
+      };
+    case "claim":
+      return { model: "qwq:32b", role: "planner", source: "master" };
+    default:
+      return null;
+  }
+}
+
 export function createSocketDriver(): RuntimeDriver {
   let socket: Socket | null = null;
   let raf = 0;
   let last = 0;
+  let busWindow: number[] = [];
+  let lastBusSec = 0;
   // event_seq guard per object (mirror backend stale-drop). Capped - old
   // object ids are evicted FIFO so a long run can't grow these unbounded.
   const OBJ_CAP = 500;
@@ -66,11 +164,6 @@ export function createSocketDriver(): RuntimeDriver {
   // last emitted status per actor - dedup so observability records only real
   // transitions, never per-poll repeats.
   const lastStatus = new Map<string, string>();
-  // Per-actor heartbeat state dedup map — tracks the last negotiation state
-  // seen for each actor from AVAILABILITY_UPDATE heartbeats. When the state
-  // is unchanged, the bus message is suppressed from the UI stream.
-  // "seen" = actor appeared at least once (first-sighting gets one push).
-  const lastHeartbeatState = new Map<string, string>();
   // actorId → downstream actorIds (from /config asset_graph).
   let adjacency: Record<string, string[]> = {};
   // object_id → last owner key, for detecting dock moments.
@@ -78,6 +171,15 @@ export function createSocketDriver(): RuntimeDriver {
   // Captured at start() so the Phase 13 operational controls can reconcile
   // store state from the backend without holding a separate store ref.
   let storeRef: typeof useStore | null = null;
+  // US 34.1: per-AGV color lookup (from /config.warehouse.agvs[]), populated
+  // at bootstrap. Used to colour route polylines and bus messages by AGV.
+  // Empty until /config returns — polylines fall back to a neutral colour
+  // while the lookup is cold.
+  let agvColors: Record<string, string> = {};
+  // US 34.1: bus dedup by (seq, type, task_id). The backend rebroadcasts the
+  // same envelope twice (room + default broadcast); without this the
+  // BusPane shows every event twice.
+  const seenBus = new Set<string>();
 
   // Re-derive truthful actor runtime from the backend container snapshot.
   // Used on reconnect and after every operational action so the UI never
@@ -114,14 +216,28 @@ export function createSocketDriver(): RuntimeDriver {
       const bootstrap = async () => {
         const cfg = await getJSON<RawConfig>("/config");
         if (cfg) {
-          const { adjacency: adj } = normalizeConfig(cfg);
+          const { actors, adjacency: adj } = normalizeConfig(cfg);
           adjacency = adj;
-          // Phase 5.1: canvas is the source of truth for topology.
-          // /config no longer auto-seeds the canvas. Runtime-only entities
-          // (backend reconciler-spawned agv-1/2/3, arm-1/2) populate the
-          // actorRuntime slice for Fleet Roster / Inspector observability,
-          // NOT the authored topology slice. The authored topology is
-          // restored from localStorage by useAutosave exclusively.
+          // US 34.1: capture per-AGV color so the bus handler can paint route
+          // polylines + bus rows in each AGV's signature colour.
+          const whAgvs = (cfg as unknown as {
+            warehouse?: { agvs?: { id: string; color?: string }[] };
+          }).warehouse?.agvs;
+          if (Array.isArray(whAgvs)) {
+            const next: Record<string, string> = {};
+            for (const a of whAgvs)
+              if (a?.id) next[a.id] = a.color ?? "#888";
+            agvColors = next;
+          }
+          // The authored topology (positions/labels) is the USER's document
+          // and is restored from local storage by useAutosave. Backend
+          // /config must NOT overwrite it on every (re)connect, or saved
+          // layout reverts on refresh. Only seed from /config when there is
+          // no saved workspace yet. Runtime (health/asset) is a separate
+          // slice and keeps flowing regardless.
+          const hasSaved = (loadLocal()?.actors?.length ?? 0) > 0;
+          if (!hasSaved && Object.keys(actors).length)
+            st().hydrateTopology({ actors });
         }
         const [state, objects, arms, assets] = await Promise.all([
           getJSON<{
@@ -191,8 +307,8 @@ export function createSocketDriver(): RuntimeDriver {
         // object events being wrongly dropped as stale. Bootstrap reseeds them.
         objSeq.clear();
         objOwner.clear();
+        busWindow = [];
         lastStatus.clear();
-        lastHeartbeatState.clear();
         void bootstrap();
       });
       socket.on("disconnect", () => {
@@ -216,6 +332,116 @@ export function createSocketDriver(): RuntimeDriver {
               phase: a.status,
             }),
           );
+        },
+      );
+
+      // ────────────────────────────────────────────────────────────────────
+      // US 34.1: live bus mirror — backend's publish_local() emits to the
+      // SocketIO event name "bus" (also into the "coord-bus" room). Every
+      // task_announce / bid / claim / agent_status / intent / arm_ready /
+      // task_orphan / yield etc. flows through here. Three things happen
+      // per event:
+      //   (1) Pushed verbatim into busMessages so BusPane shows the full
+      //       coordination conversation (was log-derived heuristic before).
+      //   (2) intent events carrying `path_cells` populate agvRoutes for the
+      //       Konva polyline overlay (item 4).
+      //   (3) The activeAi label is derived from event type/source so the
+      //       left-foot badge tells the operator which model tier is doing
+      //       work right now (item 5).
+      // ────────────────────────────────────────────────────────────────────
+      socket.on(
+        "bus",
+        (ev: {
+          type: string;
+          from?: string;
+          to?: string;
+          task_id?: string | null;
+          payload?: Record<string, unknown>;
+          seq?: number;
+          ts?: string;
+        }) => {
+          // Dedup: the backend emits each event twice (room + default
+          // broadcast). Identical seq+type+task_id collapses to one row.
+          const dedupKey = `${ev.seq ?? "x"}|${ev.type}|${ev.task_id ?? ""}`;
+          if (seenBus.has(dedupKey)) return;
+          seenBus.add(dedupKey);
+          if (seenBus.size > 2000) {
+            // Trim oldest 500 to keep the set bounded. Iteration order is
+            // insertion order in Set, so .keys().next() is the oldest.
+            let n = 500;
+            for (const k of seenBus) {
+              seenBus.delete(k);
+              if (--n <= 0) break;
+            }
+          }
+
+          const s = st();
+          const kind = (ev.type ?? "system") as
+            | "task_announce" | "task_orphan" | "bid" | "claim"
+            | "agent_status" | "intent" | "arm_approach" | "arm_ready"
+            | "arm_busy" | "yield" | "help_request" | "system";
+          const text = busEventToText(ev.type, ev.payload ?? {}, ev.task_id);
+          const ts = ev.ts && /^\d{2}:\d{2}:\d{2}$/.test(ev.ts)
+            ? ev.ts
+            : new Date().toISOString().slice(11, 19);
+          s.pushBusMessage({
+            id: `bus-${ev.seq ?? Date.now()}-${ev.type}`,
+            ts,
+            kind,
+            from: ev.from ?? "?",
+            to: ev.to,
+            text,
+            taskId: ev.task_id ?? undefined,
+            seq: ev.seq,
+          });
+
+          // (2) intent.path_cells → polyline
+          if (ev.type === "intent") {
+            const payload = ev.payload ?? {};
+            const cells = Array.isArray(payload.path_cells)
+              ? (payload.path_cells as [number, number][]).filter(
+                  (c) => Array.isArray(c) && c.length >= 2,
+                )
+              : null;
+            const agvId = (payload.agv_id as string) || ev.from || "";
+            // Fallback colour matches AGV id when /config hasn't returned yet.
+            // Without this the route was invisible against the grey bay fill.
+            const FALLBACK_COLORS: Record<string, string> = {
+              "agv-1": "#2563eb",   // blue
+              "agv-2": "#16a34a",   // green
+              "agv-3": "#eab308",   // yellow
+            };
+            const routeColor =
+              agvColors[agvId] ??
+              FALLBACK_COLORS[agvId] ??
+              "#ff00aa";  // hot pink so a missed mapping is unmissable, not invisible
+            if (agvId && cells && cells.length > 0) {
+              // Build helps debugging: log every published route so DevTools
+              // shows exactly what the canvas should draw.
+              console.log("[route]", agvId, "→", cells.length, "cells:", cells);
+              s.setAgvRoute({
+                agvId,
+                color: routeColor,
+                cells,
+                action: String(payload.action ?? ""),
+                ts: performance.now(),
+              });
+            }
+            // The return_to_bay intent ends the leg — clear the polyline a
+            // few seconds after the AGV reports it (timer fires below in the
+            // same handler so we don't need a new rAF). Keeps the canvas
+            // from accumulating dead routes after a run.
+            if ((payload.action as string) === "return_to_bay" && agvId) {
+              window.setTimeout(() => st().clearAgvRoute(agvId), 8000);
+            }
+          }
+
+          // (3) Derive active-AI from the event. The mapping mirrors
+          // PROJECT_FLOWCHART: task_announce / claim / plan → master qwq:32b;
+          // bid / intent → tactical qwen14b on the AGV; arm_ready → arm
+          // qwen14b. agent_status alone doesn't move the badge.
+          const ai = inferActiveAi(ev.type, ev.from ?? "system");
+          if (ai) s.setActiveAi({ ...ai, tsMs: performance.now() });
         },
       );
 
@@ -274,6 +500,7 @@ export function createSocketDriver(): RuntimeDriver {
           owner_id: string;
           carrier_asset?: string | null;
           carrier_arm?: number | null;
+          color?: string | null;
           event_seq?: number;
         }) => {
           // stale-drop (mirror backend ledger semantics)
@@ -285,6 +512,27 @@ export function createSocketDriver(): RuntimeDriver {
           const prevKey = objOwner.get(p.object_id);
           const ownerKey = `${p.owner_type}:${p.owner_id}`;
           objOwner.set(p.object_id, ownerKey);
+
+          // Arm-cargo tracking (legacy, kept for ArmLayer fallback).
+          if (p.owner_type === "arm") {
+            s.setArmCargo(p.owner_id, p.object_id);
+          } else if (prevKey && prevKey.startsWith("arm:")) {
+            const prevArm = prevKey.slice(4);
+            s.setArmCargo(prevArm, null);
+          }
+
+          // Sneh-port: unified payload model. ONE entry per package, the
+          // carrier string fully determines the render position. This is
+          // what kills the "package on table AND on AGV" duplicate render.
+          //   arm   → carrier = "arm-N"          (PayloadLayer reads arm tip)
+          //   asset → carrier = "agv-N"          (PayloadLayer reads AGV pos)
+          //   zone  → carrier = "zone:<station>" (PayloadLayer reads table pos)
+          let carrier: string | null = null;
+          if (p.owner_type === "arm") carrier = p.owner_id;
+          else if (p.owner_type === "asset") carrier = p.owner_id;
+          else if (p.owner_type === "zone") carrier = `zone:${p.owner_id}`;
+          else if (p.owner_type === "transfer_point") carrier = `zone:${p.owner_id}`;
+          s.setPayloadCarrier(p.object_id, p.color ?? "#888", carrier);
 
           // FIFO evict oldest tracked objects (Map keeps insertion order).
           while (objSeq.size > OBJ_CAP) {
@@ -377,12 +625,13 @@ export function createSocketDriver(): RuntimeDriver {
           } else if (dest) {
             // Subsequent updates: set the new cell as a TARGET and let the
             // spatial tick() ease the body there — continuous vehicle motion
-            // instead of cell-to-cell snapping. Speed is tuned ABOVE the
-            // backend cell cadence (120px / 0.5s = 240px/s) so the visual
-            // token tracks the AGV's logical cell instead of lagging behind
-            // it; otherwise arm/load choreography (which keys off the logical
-            // cell) fires while the token is still mid-path.
-            s.setAgvTarget(p.id, { x: dest.x, y: dest.y }, 260);
+            // instead of cell-to-cell snapping. Speed MUST exceed the backend
+            // cell cadence: AGV-1 at speed_factor 1.6 steps cells every 310ms
+            // (cell_px 120 / 0.31s = 387 px/s minimum), so 260 px/s caused
+            // the canvas token to lag and cut corners — looking like "AGV
+            // ignores its own path". 600 px/s keeps the visual token snapped
+            // to the AGV's logical cell even for the fastest AGV.
+            s.setAgvTarget(p.id, { x: dest.x, y: dest.y }, 600);
           }
           const status =
             p.status === "faulted" || p.status === "stopped" ? "down"
@@ -392,57 +641,6 @@ export function createSocketDriver(): RuntimeDriver {
           if (p.carried_object !== undefined) {
             s.setAgvCargo(p.id, p.carried_object ?? null);
           }
-        },
-      );
-
-      // Stage 5 Track B — live AGV pixel-space position at ~10 Hz.
-      // Emitted by the backend spatial movement loop (_traverse_to).
-      // 1. Stores runtimePosition in the runtime slice (observational, never
-      //    sent back to the backend).
-      // 2. Drives the existing spatial kinematics tween so tick() interpolates
-      //    smoothly between updates (ANIM_DURATION ≈ 200 ms, well below the
-      //    100 ms × 2 = 200 ms catch-up threshold).
-      socket.on(
-        "agv_position",
-        (p: { actor_id: string; x: number; y: number; theta: number; ts: number }) => {
-          const s = st();
-          // Store raw observational position (Track C surfaces this for polish).
-          s.setRuntimePosition(p.actor_id, { x: p.x, y: p.y, theta: p.theta, ts: p.ts });
-          // Feed the spatial tween so the token moves smoothly.
-          const existing = s.agvKinematics[p.actor_id];
-          if (!existing || !existing.pos) {
-            // First sighting: place the token at the reported position without
-            // animation so it doesn't slide in from a stale location.
-            s.setAgvKinematics(p.actor_id, {
-              pos: { x: p.x, y: p.y },
-              heading: p.theta,
-            });
-          } else {
-            // Subsequent updates: set new position as the interpolation target.
-            // tick() will ease there; speed=260 px/s gives ~200 ms over a 52 px
-            // step (typical at 10 Hz × 5 px/step), satisfying ANIM_DURATION < 2×cadence.
-            s.setAgvTarget(p.actor_id, { x: p.x, y: p.y }, 260);
-          }
-        },
-      );
-
-      // Phase 5.1 Stage 4 — AGV planned path overlay.
-      // Emitted by backend after successful A* + reserve, before traversal begins.
-      // Observational only: no consensus decisions depend on this event.
-      socket.on(
-        "agv_path",
-        (p: {
-          actor_id: string;
-          task_id: string;
-          epoch: number;
-          path_cells: [number, number][];
-          ts: number;
-        }) => {
-          st().setAgvPath(p.actor_id, {
-            cells: p.path_cells,
-            epoch: p.epoch,
-            ts: p.ts,
-          });
         },
       );
 
@@ -472,7 +670,23 @@ export function createSocketDriver(): RuntimeDriver {
           message?: string;
           level?: string | null;
         }) => {
-          st().pushLogLine(toLogLine(p));
+          // US 34.1: log lines go to the log panel only. The bus panel is now
+          // fed by the canonical `bus` SocketIO event (see the handler above)
+          // — the old heuristic classifyBus pass over log messages caused
+          // duplicates AND missed events that never made it to the log stream.
+          const s = st();
+          s.pushLogLine(toLogLine(p));
+          const now = performance.now();
+          busWindow = busWindow.filter((t) => now - t < 1000);
+          busWindow.push(now);
+          // Throttle busRate to ~1 Hz so a high-frequency log stream doesn't
+          // re-render bus-rate subscribers on every message.
+          const sec = Math.floor(now / 1000);
+          if (sec !== lastBusSec) {
+            lastBusSec = sec;
+            if (busWindow.length !== s.busRate)
+              s.hydrateRuntime({ busRate: busWindow.length });
+          }
         },
       );
 
@@ -491,6 +705,13 @@ export function createSocketDriver(): RuntimeDriver {
               ? armActorId(p.arm_id)
               : assetActorId(String(p.actor_id));
           st().setActorRuntime(id, { phase: p.script });
+          st().pushBusMessage({
+            id: `sc-${p.timestamp ?? ""}-${Math.random().toString(36).slice(2, 6)}`,
+            ts: p.timestamp ?? "",
+            kind: "bid",
+            from: id,
+            text: `→ ${p.script}`,
+          });
           st().pushEvent({
             kind: "lifecycle",
             actorId: id,
@@ -498,227 +719,6 @@ export function createSocketDriver(): RuntimeDriver {
             tone: "info",
             ts: p.timestamp,
           });
-        },
-      );
-
-      // ── Real NegotiationBus events ──────────────────────────────────────────
-      // The backend mirrors every Message from the NegotiationBus as a
-      // `bus_message` SocketIO event. The `type` field IS the BusKind - no
-      // regex inference, no fabrication.
-      socket.on(
-        "bus_message",
-        (p: {
-          type: string;
-          task_id?: string;
-          negotiation_round?: number;
-          sender?: string;
-          slot_id?: string;
-          bid_version?: number;
-          ts?: string;
-          payload?: unknown;
-        }) => {
-          // Validate that the type is a known BusKind; drop silently if not.
-          const KNOWN_KINDS = new Set<string>([
-            "task_announce",
-            "capability_broadcast",
-            "availability_update",
-            "bid",
-            "counter_offer",
-            "accept",
-            "reject",
-            "busy",
-            "fault",
-            "withdraw",
-            "consensus_reached",
-            "task_failed",
-            // Stage 4 leg execution events
-            "leg_started",
-            "leg_completed",
-            "leg_halted",
-            // Stage 8 — bus-mirrored position update (drives canvas motion
-            // in distributed mode where actor SocketIO is not browser-bound)
-            "position_update",
-          ]);
-          if (!KNOWN_KINDS.has(p.type)) return;
-
-          const kind = p.type as BusKind;
-          // Backend Message.ts is Python time.time() — SECONDS since epoch.
-          // JS Date constructor expects MILLISECONDS. Multiply by 1000 or
-          // the bus pane renders 1970-era timestamps that look reasonable
-          // ("14:19:21") but are actually 21 days into 1970.
-          const ts =
-            typeof p.ts === "number"
-              ? new Date(p.ts * 1000).toISOString().slice(11, 19)
-              : new Date().toISOString().slice(11, 19);
-          const from = p.sender ?? "system";
-
-          // Phase 5.1 Item 4 — heartbeat dedup for AVAILABILITY_UPDATE.
-          // Always update negotiationState (NegotiationHaloLayer relies on it).
-          // Only push to the bus message stream for first-sighting or state changes.
-          if (kind === "availability_update" && p.payload) {
-            const pay = p.payload as Record<string, unknown>;
-            const isHeartbeat = pay.heartbeat === true;
-            const newState = typeof pay.state === "string" ? pay.state : undefined;
-
-            // Always update negotiation halo state regardless of dedup.
-            if (newState !== undefined) {
-              st().setActorRuntime(from, { negotiationState: newState });
-            }
-
-            if (isHeartbeat && newState !== undefined) {
-              const prevState = lastHeartbeatState.get(from);
-
-              if (prevState === undefined) {
-                // First sighting — push a compact "alive" event.
-                lastHeartbeatState.set(from, newState);
-                st().pushBusMessage({
-                  id: `bm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                  ts,
-                  kind,
-                  from,
-                  round: p.negotiation_round,
-                  task_id: p.task_id,
-                  text: `${from} alive`,
-                });
-              } else if (prevState !== newState) {
-                // State changed — push a transition event.
-                lastHeartbeatState.set(from, newState);
-                st().pushBusMessage({
-                  id: `bm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                  ts,
-                  kind,
-                  from,
-                  round: p.negotiation_round,
-                  task_id: p.task_id,
-                  text: `${from}: ${prevState} → ${newState}`,
-                });
-              }
-              // else: same state, same sender — silently suppress (heartbeat spam).
-              return;
-            }
-            // Non-heartbeat availability_update (manually published) — fall through
-            // to normal pushBusMessage below, after building text.
-          }
-
-          // Build a human-readable text summary from payload fields.
-          let text = "";
-          if (p.task_id) text += p.task_id;
-          if (p.slot_id) text += (text ? " · " : "") + `slot ${p.slot_id}`;
-          // v0 is the default first-bid revision — show only when re-bid
-          // (v >= 1) so the bus pane stops being flooded with "· v0" noise.
-          if (typeof p.bid_version === "number" && p.bid_version > 0)
-            text += (text ? " · " : "") + `v${p.bid_version}`;
-          if (p.payload && typeof p.payload === "object") {
-            const pay = p.payload as Record<string, unknown>;
-            if (typeof pay.score === "number")
-              text += (text ? " · " : "") + `score ${pay.score.toFixed(2)}`;
-            if (typeof pay.reason === "string")
-              text += (text ? " · " : "") + pay.reason;
-            // Render transition label for collapsed heartbeat messages
-            // (non-heartbeat availability_update that got a transition text set).
-            if (typeof pay.transition === "string")
-              text = pay.transition;
-          }
-
-          // Phase-6 rationale capture — only consensus_reached carries this.
-          let rationale: BusMessage["rationale"];
-          let constraint: string | undefined;
-          if (kind === "consensus_reached" && p.payload && typeof p.payload === "object") {
-            const pay = p.payload as Record<string, unknown>;
-            if (Array.isArray(pay.rationale)) {
-              rationale = pay.rationale as BusMessage["rationale"];
-            }
-            if (typeof pay.constraint === "string") constraint = pay.constraint;
-          }
-
-          st().pushBusMessage({
-            id: `bm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            ts,
-            kind,
-            from,
-            round: p.negotiation_round,
-            task_id: p.task_id,
-            text,
-            rationale,
-            constraint,
-          });
-
-          // Surface fault/task_failed/leg_halted as operational events too.
-          if (kind === "fault" || kind === "task_failed" || kind === "leg_halted") {
-            st().pushEvent({
-              kind: "lifecycle",
-              text: `${kind} · ${text || from}`,
-              tone: "err",
-              ts,
-            });
-          }
-
-          // Phase 5.1 Stage 4 — clear path preview after transport leg completes.
-          // leg_completed from an agv actor (slot_id = "transport") means the AGV
-          // has finished its planned path; the dashed overlay should be cleared.
-          if (kind === "leg_completed" && p.slot_id === "transport" && p.sender) {
-            st().clearAgvPath(p.sender);
-          }
-
-          // Phase 5.1 Fix — drive AGV canvas motion from POSITION_UPDATE on the
-          // bus stream. Actor containers publish agv_position via their own
-          // (disconnected) SocketIO instance, so the dedicated agv_position
-          // handler above never fires in distributed mode. The bus mirror DOES
-          // forward POSITION_UPDATE to the browser as bus_message, so translate
-          // that into the same setRuntimePosition + setAgvTarget flow used by
-          // the in-process agv_position event.
-          // Phase-6 payload lifecycle — spawn on PAYLOAD_SPAWN, follow carrier
-          // on PAYLOAD_TRANSFER. Pure derived rendering; no consensus impact.
-          if (kind === "payload_spawn" && p.payload) {
-            const pay = p.payload as Record<string, unknown>;
-            const objId = typeof pay.obj_id === "string" ? pay.obj_id : null;
-            const posArr = Array.isArray(pay.pos) ? pay.pos : null;
-            const pos =
-              posArr && posArr.length >= 2
-                ? { x: Number(posArr[0]), y: Number(posArr[1]) }
-                : null;
-            if (objId) st().spawnPayload(objId, pos);
-          }
-          if (kind === "payload_transfer" && p.payload) {
-            const pay = p.payload as Record<string, unknown>;
-            const objId = typeof pay.obj_id === "string" ? pay.obj_id : null;
-            const from = typeof pay.from === "string" ? pay.from : null;
-            const to = typeof pay.to === "string" ? pay.to : null;
-            if (objId) {
-              const s = st();
-              // If handing off TO a zone, snapshot the current carrier's
-              // live pos into payload.pos so PayloadLayer has a coord to draw
-              // at after the actor leaves the carrier slot.
-              if (to && to.startsWith("zone:") && from) {
-                const fromKin = s.agvKinematics[from];
-                const fromActor = s.actors[from];
-                const pos = fromKin?.pos ?? fromActor?.position ?? null;
-                if (pos) s.spawnPayload(objId, pos);
-              }
-              s.transferPayload(objId, to);
-            }
-          }
-
-          if (kind === "position_update" && p.sender && p.payload) {
-            const pay = p.payload as Record<string, unknown>;
-            const x = typeof pay.x === "number" ? pay.x : null;
-            const y = typeof pay.y === "number" ? pay.y : null;
-            const theta = typeof pay.theta === "number" ? pay.theta : 0;
-            const posTs = typeof pay.ts === "number" ? pay.ts : 0;
-            if (x !== null && y !== null) {
-              const s = st();
-              s.setRuntimePosition(p.sender, { x, y, theta, ts: posTs });
-              const existing = s.agvKinematics[p.sender];
-              if (!existing || !existing.pos) {
-                s.setAgvKinematics(p.sender, { pos: { x, y }, heading: theta });
-              } else {
-                // POSITION_UPDATE cadence is ~500 ms; bump tween speed
-                // accordingly so the token reaches the target before the
-                // next update arrives (else it visibly stalls).
-                s.setAgvTarget(p.sender, { x, y }, 120);
-              }
-            }
-          }
         },
       );
 

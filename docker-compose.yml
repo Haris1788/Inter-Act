@@ -1,23 +1,21 @@
 services:
-  # NOTE: the embedded ollama service was removed (Phase 5 cleanup). All
-  # LLM traffic flows through host.docker.internal:11500 to the
-  # TU Clausthal tunnel (qwq:32b + qwen2.5:14b). Saves GPU/CPU + build
-  # time and removes a vestigial container. Any legacy
-  # OLLAMA_BASE_URL reader now resolves to the same tunnel via the
-  # backend env below.
-  redis:
-    image: redis:7-alpine
-    command:
-    - redis-server
-    - --appendonly
-    - "yes"
-    - --appendfsync
-    - everysec
-    volumes:
-    - redis-data:/data
+  ollama:
+    image: ollama/ollama:latest
     ports:
-    - "6379:6379"
-    restart: unless-stopped
+    - ${OLLAMA_HOST_PORT:-11434}:11434
+    volumes:
+    - ollama_data:/root/.ollama
+    environment:
+    - OLLAMA_KEEP_ALIVE=24h
+    healthcheck:
+      test:
+      - CMD
+      - ollama
+      - list
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
   backend:
     build: .
     container_name: interact-backend
@@ -26,19 +24,17 @@ services:
     environment:
     - SERVER_HOST=http://backend:5000
     - DEMO_RUNNER_HOST=http://demo-runner:6000
-    - OLLAMA_BASE_URL=http://host.docker.internal:11500
+    - OLLAMA_BASE_URL=http://ollama:11434
     - LLM_BASE_URL=http://host.docker.internal:11500
     - OLLAMA_MODEL_PLANNER=qwq:32b-q4_K_M
     - OLLAMA_MODEL_TACTICAL=qwen2.5:14b-instruct-q4_K_M
+    - COORDINATION_MODE=smart
     - PIPELINE_CONFIG=/config/pipeline.yaml
     - FLASK_ENV=production
     - FLASK_DEBUG=0
     - PYTHONUNBUFFERED=1
     - CONTAINER_CONTROL=on
     - COMPOSE_CONTAINER_PREFIX=interact
-    - REDIS_URL=redis://redis:6379/0
-    - INTERACT_BUS=redis
-    - INTERACT_STATE=redis
     volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     - ./pipeline.yaml:/config/pipeline.yaml:rw
@@ -56,8 +52,8 @@ services:
     extra_hosts:
     - host.docker.internal:host-gateway
     depends_on:
-      redis:
-        condition: service_started
+      ollama:
+        condition: service_healthy
   frontend:
     build:
       context: .
@@ -94,16 +90,65 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-  # interact-shared-actor: build target so `docker compose build actor-image`
-  # pre-builds the image that container_manager.reconcile_actors() uses for
-  # arm + agv containers.  NOT a running service — containers are
-  # reconciler-owned ephemeral entities, never compose services.
-  actor-image:
+  agv-1:
     build:
       context: .
-      dockerfile: Dockerfile.actor
-    image: interact-shared-actor:latest
-    profiles:
-    - build-only
+      dockerfile: docker/Dockerfile.agv
+    container_name: interact-agv-1
+    ports:
+    - 8101:8100
+    environment:
+    - AGV_ID=agv-1
+    - SERVER_HOST=http://backend:5000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - COORDINATION_MODE=smart
+    - PYTHONUNBUFFERED=1
+    - AGV_KIND=shuttle
+    - AGV_WEIGHT_MAX_KG=20.0
+    - AGV_ALLOWED_LABELS=blue
+    - AGV_SPEED_FACTOR=1.6
+    depends_on:
+      backend:
+        condition: service_healthy
+  agv-2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agv
+    container_name: interact-agv-2
+    ports:
+    - 8102:8100
+    environment:
+    - AGV_ID=agv-2
+    - SERVER_HOST=http://backend:5000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - COORDINATION_MODE=smart
+    - PYTHONUNBUFFERED=1
+    - AGV_KIND=shuttle
+    - AGV_WEIGHT_MAX_KG=50.0
+    - AGV_ALLOWED_LABELS=green
+    - AGV_SPEED_FACTOR=1.0
+    depends_on:
+      backend:
+        condition: service_healthy
+  agv-3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agv
+    container_name: interact-agv-3
+    ports:
+    - 8103:8100
+    environment:
+    - AGV_ID=agv-3
+    - SERVER_HOST=http://backend:5000
+    - OLLAMA_BASE_URL=http://ollama:11434
+    - COORDINATION_MODE=smart
+    - PYTHONUNBUFFERED=1
+    - AGV_KIND=shuttle
+    - AGV_WEIGHT_MAX_KG=80.0
+    - AGV_ALLOWED_LABELS=yellow
+    - AGV_SPEED_FACTOR=0.6
+    depends_on:
+      backend:
+        condition: service_healthy
 volumes:
-  redis-data: {}
+  ollama_data: {}

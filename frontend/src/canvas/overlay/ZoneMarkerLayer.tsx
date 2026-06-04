@@ -1,12 +1,15 @@
-// ZoneMarkerLayer — Konva physical-world markers for zone actors (kind="zone").
+// ZoneMarkerLayer — Phase 7 Stage C: Konva markers for zone actors (kind="zone").
+// Ported from E:/Inter Act (canvas-as-source-of-truth). Store-driven only — NO
+// /config, NO warehouse.stations, NO static geometry.
 //
-// Renders one labeled circle per zone actor:
-//   · Source (subtype="source"): green-ish circle, radius 40 px, "IN" label.
-//   · Sink   (subtype="sink"):   red-ish  circle, radius 40 px, "OUT" label.
+// Renders one labeled dashed circle per zone actor:
+//   · source (subtype="source"): green-ish circle + "IN"  label.
+//   · sink   (subtype="sink"):   red-ish   circle + "OUT" label.
 //
-// Positioned at actor.position (top-left of the 100×100 size box) + 50px offset
-// to center the circle inside the box. Locked to RF viewport transform.
-// listening={false} — React Flow handles drag/selection on the RF node.
+// Position = actor.position (top-left of the 100×100 box) + half-size, so the
+// circle is centred in the actor box. The RF node is an invisible shell that
+// owns drag/select; this layer is listening={false} and follows the actor's
+// live position, so dragging the node moves the marker in real time.
 
 import React from "react";
 import { Layer, Circle, Text } from "react-konva";
@@ -34,13 +37,7 @@ export function ZoneMarkerLayer({ tx }: Props) {
   if (zones.length === 0) return null;
 
   return (
-    <Layer
-      listening={false}
-      x={tx.x}
-      y={tx.y}
-      scaleX={tx.zoom}
-      scaleY={tx.zoom}
-    >
+    <Layer listening={false} x={tx.x} y={tx.y} scaleX={tx.zoom} scaleY={tx.zoom}>
       {zones.map((actor) => {
         const cx = actor.position.x + actor.size.w / 2;
         const cy = actor.position.y + actor.size.h / 2;

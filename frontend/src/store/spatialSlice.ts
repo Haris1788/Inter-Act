@@ -24,6 +24,7 @@ export const createSpatialSlice: StateCreator<
   armAngles: {},
   tablePkgs: {},
   agvCargo: {},
+  armCargo: {},
   payloads: {},
 
   tick: (dtMs) =>
@@ -147,28 +148,31 @@ export const createSpatialSlice: StateCreator<
   setAgvCargo: (agvId, packageId) =>
     set((s) => ({ agvCargo: { ...s.agvCargo, [agvId]: packageId } })),
 
-  spawnPayload: (objId, pos, color) =>
-    set((s) => ({
-      payloads: {
-        ...s.payloads,
-        [objId]: {
-          pos,
-          carrier: null,
-          color: color ?? s.payloads[objId]?.color ?? "#B08742",
-        },
-      },
-    })),
+  setArmCargo: (armKey, packageId) =>
+    set((s) => ({ armCargo: { ...s.armCargo, [armKey]: packageId } })),
 
-  transferPayload: (objId, carrier) =>
+  setPayloadCarrier: (id, color, carrier, lastPos) =>
     set((s) => {
-      const existing = s.payloads[objId] ?? {
-        pos: null,
-        carrier: null,
-        color: "#B08742",
-      };
+      const prev = s.payloads[id];
       return {
-        payloads: { ...s.payloads, [objId]: { ...existing, carrier } },
+        payloads: {
+          ...s.payloads,
+          [id]: {
+            id,
+            color: color || prev?.color || "#888",
+            carrier,
+            lastPos: lastPos ?? prev?.lastPos,
+          },
+        },
       };
+    }),
+
+  clearPayload: (id) =>
+    set((s) => {
+      if (!s.payloads[id]) return {};
+      const next = { ...s.payloads };
+      delete next[id];
+      return { payloads: next };
     }),
 
   emitTrajectory: (t) =>
@@ -191,6 +195,7 @@ export const createSpatialSlice: StateCreator<
       armAngles: {},
       tablePkgs: {},
       agvCargo: {},
+      armCargo: {},
       payloads: {},
     })),
 

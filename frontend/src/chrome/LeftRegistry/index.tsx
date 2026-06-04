@@ -8,7 +8,7 @@ import { LibRow } from "./LibRow";
 import { LibSection, LibGroupHeader } from "./LibSection";
 import { SearchBox } from "./SearchBox";
 
-// ── Stationary Actors ───────────────────────────────────────────────────────
+// ── Capability Stations ──────────────────────────────────────────────────────
 
 const CapStationArm6DoF = (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -18,23 +18,7 @@ const CapStationArm6DoF = (
   </svg>
 );
 
-const CapStationArmSCARA = (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <rect x="4" y="14" width="16" height="3" rx="1" />
-    <path d="M9 14V8h6v6" />
-    <path d="M12 8V4" />
-  </svg>
-);
-
-const CapStationArmDelta = (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <path d="M4 6h16" />
-    <path d="M6 6l6 12 6-12" />
-    <circle cx="12" cy="18" r="1.5" />
-  </svg>
-);
-
-// ── Mobile Actors ───────────────────────────────────────────────────────────
+// ── Mobile Agents ────────────────────────────────────────────────────────────
 
 const MobileShuttle = (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -45,24 +29,11 @@ const MobileShuttle = (
   </svg>
 );
 
-const MobileForklift = (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <path d="M3 17h11V7h4l3 4v6h-2" />
-    <circle cx="7" cy="19" r="1.5" />
-    <circle cx="17" cy="19" r="1.5" />
-  </svg>
-);
-
-const MobileTow = (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <rect x="3" y="11" width="11" height="5" rx="1" />
-    <path d="M14 13h4l3 3" />
-    <circle cx="7" cy="18" r="1.4" />
-    <circle cx="18" cy="18" r="1.4" />
-  </svg>
-);
-
 // ── Zones ────────────────────────────────────────────────────────────────────
+// US 34.1 (Sneh-port 5c23991, c228768): Control section deleted entirely
+// (Scripted / Scheduler FIFO / LLM assist were never wired); Charging dock
+// zone removed (no charging behaviour in the warehouse demo). Zone glyphs
+// are now the only "row" items in the sidebar.
 
 const ZoneSource = (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -117,22 +88,36 @@ interface PaletteSection {
   grid?: boolean;
   listClassName?: string;
   items: PaletteItem[];
-  /** Group header rendered once before first section in group */
+  /** US 34.1 (Sneh-port f8569c9): when set, a group header with this label
+   *  is rendered once before the first section that carries the same group
+   *  string. Sibling sections sharing the same group cluster under it. */
   group?: string;
-  /** Render as subsection (smaller indented header) */
+  /** When true, the section header renders as a smaller indented subsection. */
   sub?: boolean;
 }
 
+// Type-based authoring palette: each chip drops a NEW actor/zone onto the
+// canvas with an auto-assigned id (arm-N / veh-N / zone-input-N /
+// zone-output-N). Drag source keys MUST match nodeFactory.PALETTE keys
+// ("arm", "agv", "zone-source", "zone-sink") or the drop is a no-op.
+// Authoring writes only the topology slice + localStorage; it never touches
+// the runtime until an explicit Deploy.
 const PALETTE: PaletteSection[] = [
+  {
+    label: "Zones",
+    grid: true,
+    items: [
+      { kind: "chip", name: "Input Zone",  sub: "input · inbound",   paletteKey: "zone-source", icon: ZoneSource },
+      { kind: "chip", name: "Output Zone", sub: "output · outbound", paletteKey: "zone-sink",   icon: ZoneSink },
+    ],
+  },
   {
     label: "Stationary Actors",
     group: "Actors",
     sub: true,
     grid: true,
     items: [
-      { kind: "chip", name: "Arm · 6DoF", sub: "pick · place · dock", paletteKey: "arm-6dof", icon: CapStationArm6DoF },
-      { kind: "chip", name: "Arm · SCARA", sub: "fast cycle", paletteKey: "arm-scara", icon: CapStationArmSCARA },
-      { kind: "chip", name: "Arm · Delta", sub: "high-speed", paletteKey: "arm-delta", icon: CapStationArmDelta },
+      { kind: "chip", name: "Arm", sub: "pick · place · dock", paletteKey: "arm", icon: CapStationArm6DoF },
     ],
   },
   {
@@ -141,29 +126,17 @@ const PALETTE: PaletteSection[] = [
     sub: true,
     grid: true,
     items: [
-      { kind: "chip", name: "Shuttle AGV", sub: "fast · cap 1", paletteKey: "agv-shuttle", icon: MobileShuttle },
-      { kind: "chip", name: "Forklift AGV", sub: "heavy · pallet", paletteKey: "agv-forklift", icon: MobileForklift },
-      { kind: "chip", name: "Tow AGV", sub: "balanced", paletteKey: "agv-tow", icon: MobileTow },
-    ],
-  },
-  {
-    label: "Zones",
-    grid: true,
-    items: [
-      { kind: "chip", name: "Input Zone",  sub: "input · inbound",    paletteKey: "zone-source", icon: ZoneSource },
-      { kind: "chip", name: "Output Zone",  sub: "output · outbound", paletteKey: "zone-sink",   icon: ZoneSink },
+      { kind: "chip", name: "AGV", sub: "transit · carry", paletteKey: "agv", icon: MobileShuttle },
     ],
   },
   {
     label: "Capabilities",
     listClassName: "gap-0",
     items: [
-      { kind: "cap", name: "pick",    count: "2 actors",  filled: true },
-      { kind: "cap", name: "place",   count: "2 actors",  filled: true },
-      { kind: "cap", name: "dock",    count: "5 actors",  filled: true },
-      { kind: "cap", name: "transit", count: "3 actors",  filled: true },
-      { kind: "cap", name: "weigh",   count: "0 actors",  filled: false },
-      { kind: "cap", name: "inspect", count: "0 actors",  filled: false },
+      { kind: "cap", name: "load",    count: "1 arm",   filled: true },
+      { kind: "cap", name: "unload",  count: "1 arm",   filled: true },
+      { kind: "cap", name: "transit", count: "3 AGVs",  filled: true },
+      { kind: "cap", name: "colour gate", count: "3 weight bands", filled: true },
     ],
   },
 ];
@@ -239,56 +212,66 @@ export function LeftRegistry() {
           </div>
         )}
 
-        {/* ── Palette sections ── */}
-        {filteredSections.map((section, i) => {
-          const prevGroup = i > 0 ? filteredSections[i - 1].group : undefined;
-          const showGroupHeader = section.group && section.group !== prevGroup;
-          return (
-            <div key={section.label}>
-              {showGroupHeader && <LibGroupHeader label={section.group!} />}
+        {/* ── Palette sections (US 34.1: emit a LibGroupHeader once per
+            unique `group` string, immediately before the first section that
+            carries that group). ── */}
+        {(() => {
+          const rendered: React.ReactNode[] = [];
+          let lastGroup: string | undefined;
+          filteredSections.forEach((section) => {
+            if (section.group && section.group !== lastGroup) {
+              rendered.push(
+                <LibGroupHeader key={`grp-${section.group}`} label={section.group} />,
+              );
+              lastGroup = section.group;
+            }
+            if (!section.group) lastGroup = undefined;
+            rendered.push(
               <LibSection
+                key={section.label}
                 label={section.label}
                 count={section.items.length}
                 grid={section.grid}
                 listClassName={section.listClassName}
                 sub={section.sub}
               >
-            {section.items.map((item) => {
-              if (item.kind === "chip") {
-                return (
-                  <LibChip
-                    key={item.paletteKey}
-                    icon={item.icon}
-                    name={item.name}
-                    sub={item.sub}
-                    paletteKey={item.paletteKey}
-                  />
-                );
-              }
-              if (item.kind === "row") {
-                return (
-                  <LibRow
-                    key={item.name}
-                    icon={item.icon}
-                    name={item.name}
-                    meta={item.meta}
-                  />
-                );
-              }
-              // cap
-              return (
-                <CapRow
-                  key={item.name}
-                  name={item.name}
-                  count={item.count}
-                  filled={item.filled}
-                />
-              );
-            })}
-              </LibSection>
-            </div>
-          );
-        })}
+                {section.items.map((item) => {
+                  if (item.kind === "chip") {
+                    return (
+                      <LibChip
+                        key={item.paletteKey}
+                        icon={item.icon}
+                        name={item.name}
+                        sub={item.sub}
+                        paletteKey={item.paletteKey}
+                      />
+                    );
+                  }
+                  if (item.kind === "row") {
+                    return (
+                      <LibRow
+                        key={item.name}
+                        icon={item.icon}
+                        name={item.name}
+                        meta={item.meta}
+                      />
+                    );
+                  }
+                  // cap
+                  return (
+                    <CapRow
+                      key={item.name}
+                      name={item.name}
+                      count={item.count}
+                      filled={item.filled}
+                    />
+                  );
+                })}
+              </LibSection>,
+            );
+          });
+          return rendered;
+        })()}
 
       </div>
 

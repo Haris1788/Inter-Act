@@ -5,9 +5,10 @@
 // (the prototype uses translate(-50%,-50%) on zone chips).
 import type {
   TopologyActor,
-  TopologyZone,
+  TopologyPool,
   TopologyGoal,
   ActorRuntime,
+  BusMessage,
   LogLine,
   ValidationRow,
   Trajectory,
@@ -27,10 +28,7 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     liveCapability: "pick",
     brain: "Scripted",
     spec: "reach 1.2 m · 5 kg",
-    // Phase 5 spatial fields
-    reach_px: 120,
-    capacity: 1,
-    speed: 1.0,
+    authored: false,
   },
   "arm-2": {
     id: "arm-2",
@@ -44,10 +42,7 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     liveCapability: "place",
     brain: "Scripted",
     spec: "reach 0.9 m · 3 kg",
-    // Phase 5 spatial fields
-    reach_px: 120,
-    capacity: 1,
-    speed: 1.0,
+    authored: false,
   },
   "veh-1": {
     id: "veh-1",
@@ -60,10 +55,7 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     liveCapability: null,
     brain: "Scheduler · FIFO",
     spec: "10 m/s · cap 1",
-    // Phase 5 spatial fields
-    reach_px: 120,
-    capacity: 1,
-    speed: 1.0,
+    authored: false,
   },
   "veh-2": {
     id: "veh-2",
@@ -76,10 +68,7 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     liveCapability: null,
     brain: "Scheduler · FIFO",
     spec: "3 m/s · cap 4",
-    // Phase 5 spatial fields
-    reach_px: 120,
-    capacity: 4,
-    speed: 0.5,
+    authored: false,
   },
   "veh-3": {
     id: "veh-3",
@@ -92,31 +81,45 @@ export const mockActors: Record<ActorId, TopologyActor> = {
     liveCapability: null,
     brain: "Scheduler · FIFO",
     spec: "6 m/s · cap 2",
-    // Phase 5 spatial fields
-    reach_px: 120,
-    capacity: 2,
-    speed: 1.5,
+    authored: false,
   },
-};
-
-export const mockZones: Record<string, TopologyZone> = {
-  // Zones sit on the shared centerline (y=240) and clear the arm halos
-  // (outer r=170 → edges x=115 / x=1205) with ~40px breathing room. The
-  // KonvaOverlay whisper strokes bridge zone → halo.
+  // Phase 7 Stage F: zones are kind:"zone" actors (box top-left; 100×100).
+  // feed-I/sink-O placed on the centerline, clear of the arm halos.
   "feed-I": {
     id: "feed-I",
-    role: "source",
+    kind: "zone",
+    type: "Input Zone",
     label: "feed-I",
-    position: { x: 55, y: 240 },
-    count: "queue · 12",
+    subtype: "source",
+    position: { x: 5, y: 190 },
+    size: { w: 100, h: 100 },
+    capabilities: [],
+    liveCapability: null,
+    brain: "—",
+    spec: "",
+    authored: false,
   },
   "sink-O": {
     id: "sink-O",
-    role: "sink",
+    kind: "zone",
+    type: "Output Zone",
     label: "sink-O",
-    position: { x: 1265, y: 240 },
-    count: "received · 0",
+    subtype: "sink",
+    position: { x: 1215, y: 190 },
+    size: { w: 100, h: 100 },
+    capabilities: [],
+    liveCapability: null,
+    brain: "—",
+    spec: "",
+    authored: false,
   },
+};
+
+export const mockPool: TopologyPool = {
+  id: "pool",
+  bounds: { x: 350, y: 410, w: 620, h: 200 },
+  label: "Mobile Transport Pool",
+  sub: "· 3 agents · available",
 };
 
 export const mockGoal: TopologyGoal = {
@@ -128,34 +131,109 @@ export const mockActorRuntime: Record<ActorId, ActorRuntime> = {
   "arm-1": {
     status: "busy",
     phase: "announcing",
+    bid: null,
+    winning: false,
     uptime: "up 2h 03m",
     metrics: { cpu: 22, memMb: 120, battery: 100, busLatencyMs: 8 },
+    taskQueue: [],
   },
   "arm-2": {
     status: "ok",
     phase: "awaiting",
+    bid: null,
+    winning: false,
     uptime: "up 2h 03m",
     metrics: { cpu: 19, memMb: 110, battery: 100, busLatencyMs: 8 },
+    taskQueue: [],
   },
   "veh-1": {
     status: "busy",
     phase: "approaching arm-1",
+    bid: 0.92,
+    winning: true,
     uptime: "up 1h 42m",
     metrics: { cpu: 31, memMb: 142, battery: 82, busLatencyMs: 9 },
+    taskQueue: [
+      {
+        id: "t1",
+        ix: "▶",
+        label: "transit feed-I → arm-1",
+        sub: "obj#001",
+        etaS: 2.1,
+        active: true,
+      },
+      {
+        id: "t2",
+        ix: "02",
+        label: "dock @ arm-2",
+        sub: "obj#001",
+        etaS: 5.6,
+        active: false,
+      },
+      {
+        id: "t3",
+        ix: "03",
+        label: "return-to-pool",
+        sub: "slot-A",
+        etaS: 7.9,
+        active: false,
+      },
+    ],
   },
   "veh-2": {
     status: "idle",
     phase: "available",
+    bid: 0.61,
+    winning: false,
     uptime: "up 1h 42m",
     metrics: { cpu: 3, memMb: 98, battery: 96, busLatencyMs: 9 },
+    taskQueue: [],
   },
   "veh-3": {
     status: "idle",
     phase: "available",
+    bid: 0.78,
+    winning: false,
     uptime: "up 1h 42m",
     metrics: { cpu: 5, memMb: 101, battery: 88, busLatencyMs: 9 },
+    taskQueue: [],
   },
 };
+
+export const mockBus: BusMessage[] = [
+  {
+    id: "b1",
+    ts: "14:02:30",
+    kind: "announce",
+    from: "arm-1",
+    to: "*",
+    text: "pick @ feed-I",
+  },
+  {
+    id: "b2",
+    ts: "14:02:30",
+    kind: "bid",
+    from: "veh-1",
+    text: "0.92 (speed)",
+  },
+  { id: "b3", ts: "14:02:30", kind: "bid", from: "veh-2", text: "0.61" },
+  { id: "b4", ts: "14:02:30", kind: "bid", from: "veh-3", text: "0.78" },
+  {
+    id: "b5",
+    ts: "14:02:31",
+    kind: "accept",
+    from: "arm-1",
+    to: "veh-1",
+    text: "",
+  },
+  {
+    id: "b6",
+    ts: "14:02:31",
+    kind: "dock",
+    from: "veh-1",
+    text: "approach r=0.4 m",
+  },
+];
 
 const seg = (text: string, cls?: string) => ({ text, cls });
 export const mockLogs: LogLine[] = [
@@ -374,3 +452,5 @@ export const mockDockGlows = [
   { id: "g1", at: { x: 310, y: 318 }, intensity: 0.7 },
 ];
 
+export const mockContracts = [{ id: "c-7f3a", from: "arm-1", to: "veh-1" }];
+export const mockBusRate = 12;

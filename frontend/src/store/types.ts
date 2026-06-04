@@ -3,6 +3,9 @@
 
 export type ActorId = string;
 export type Vec2 = { x: number; y: number };
+// Phase 7 Stage A: "zone" added so source/sink zones become first-class actors
+// (canvas source-of-truth). Dormant this stage — no creation path emits a
+// kind:"zone" actor yet (Stage B wires nodeFactory + onDrop). Additive only.
 export type ActorKind = "arm" | "agv" | "zone";
 // "down" added in Phase 2 for dead/failed/stopped backend states
 // (degraded-state visualization).
@@ -13,11 +16,6 @@ export type DataSource = "mock" | "live";
 export type LinkStatus = "connecting" | "connected" | "disconnected";
 
 // ---------- SLICE 1: Topology (user-composed; persisted to YAML later) ----------
-// Phase 5 Stage 2A schema bump (2026-05-23):
-//   Added: reach_px (default 120), capacity (default 1), speed (default 1.0).
-//   Migration rule: old localStorage workspaces lacking these fields get
-//   defaults injected by normalizeActor (called in docToState on every load).
-//   Shape is additive — no existing field renamed or removed.
 export interface TopologyActor {
   id: ActorId;
   kind: ActorKind;
@@ -33,27 +31,46 @@ export interface TopologyActor {
   liveCapability: string | null;
   brain: string;
   spec: string;
-  // ── Phase 5 spatial fields ──────────────────────────────────────────────
-  /** Arm reach radius in canvas pixels. Meaningful for arms; kept on AGVs
-   *  (default 120) for a symmetric shape. Backend uses this to determine
-   *  which dock positions are reachable. */
-  reach_px: number;
-  /** Maximum simultaneous payload capacity (integer ≥ 1). */
-  capacity: number;
-  /** Speed multiplier (0.5 = slow … 3.0 = fast, step 0.5). Default 1.0. */
-  speed: number;
-  // ── Phase 5.1 Stage 3: per-kind AGV silhouette ─────────────────────────
-  /** AGV vehicle subtype. Ignored for arms. Default "shuttle" (back-compat).
-   *  Zone subtype: "source" | "sink". */
+  /**
+   * true  → user placed this actor via drag-drop (transparent RF node,
+   *         Konva assembly is the sole visual — before AND after deploy).
+   * false → seeded from /config, preset, or runtime hydration (full
+   *         ActorNode card).
+   * Normalized to an explicit boolean — never undefined at runtime.
+   */
+  authored: boolean;
+  /**
+   * Phase 7 Stage A: AGV silhouette ("shuttle"|"forklift"|"tow") OR zone role
+   * ("source"|"sink"). Ignored for arms. Optional + additive — existing arm/AGV
+   * code never reads it; zone renderers (Stage C) and zone deploy (Stage E) do.
+   * E parity: matches E `TopologyActor.subtype`. NOTE divergence — E also carries
+   * reach_px/capacity/speed (its Phase 5); NOT adopted here (D never had them,
+   * out of Phase 7 scope).
+   */
   subtype?: "shuttle" | "forklift" | "tow" | "source" | "sink";
 }
 
+/**
+ * Phase 7 Stage F: LEGACY DOC-FORMAT TYPE ONLY (documented compat shim).
+ * The runtime `zones` slice is retired — zones are `kind:"zone"` TopologyActors.
+ * This type survives solely so `TopologyDoc.zones[]` can still be parsed from
+ * old saved/exported workspaces and folded into actors on import
+ * (topologySchema.docToState). No store slice, selector, or live path uses it.
+ */
 export interface TopologyZone {
   id: string;
   role: "source" | "sink";
   label: string;
   position: Vec2;
   count: string;
+}
+
+export interface TopologyPool {
+  id: string;
+  /** stadium bounds in stage space */
+  bounds: { x: number; y: number; w: number; h: number };
+  label: string;
+  sub: string;
 }
 
 export interface TopologyGoal {
@@ -63,7 +80,8 @@ export interface TopologyGoal {
 
 export interface TopologySlice {
   actors: Record<ActorId, TopologyActor>;
-  zones: Record<string, TopologyZone>;
+  // Phase 7 Stage F: `zones` slice retired — zones are kind:"zone" actors.
+  pool: TopologyPool;
   goal: TopologyGoal;
   selectedActorId: ActorId | null;
   setSelectedActor: (id: ActorId | null) => void;
@@ -77,10 +95,10 @@ export interface TopologySlice {
   updateActor: (id: ActorId, patch: Partial<TopologyActor>) => void;
   /** wholesale replace (import / load) */
   replaceTopology: (
-    patch: Pick<TopologySlice, "actors" | "zones" | "goal">,
+    patch: Pick<TopologySlice, "actors" | "pool" | "goal">,
   ) => void;
   hydrateTopology: (
-    patch: Partial<Pick<TopologySlice, "actors" | "zones" | "goal">>,
+    patch: Partial<Pick<TopologySlice, "actors" | "pool" | "goal">>,
   ) => void;
 }
 
@@ -144,21 +162,11 @@ export interface EditorSlice {
 }
 
 // ---------- SLICE 2: Runtime (live status; read-mostly in UI) ----------
-
-/** Observational AGV position emitted by the backend at ~10 Hz.
- *  Never sent back. Authored position (canvas drag) is untouched. */
-export interface AgvRuntimePosition {
-  x: number;
-  y: number;
-  /** Heading in radians (atan2 convention). */
-  theta: number;
-  /** Backend timestamp (epoch ms). */
-  ts: number;
-}
-
 export interface ActorRuntime {
   status: ActorStatus;
   phase: string;
+  bid: number | null;
+  winning: boolean;
   uptime: string;
   metrics: {
     cpu: number;
@@ -166,51 +174,39 @@ export interface ActorRuntime {
     battery: number;
     busLatencyMs: number;
   };
-  /** Stage 5 Track B — live pixel position from `agv_position` SocketIO event.
-   *  Present only while an AGV is in spatial motion. Observational only. */
-  runtimePosition?: AgvRuntimePosition;
-  /** Phase 5.1 Stage 5 Track A — latest negotiation state from availability_update
-   *  bus messages. One of: "idle" | "bidding" | "won" | "executing" | "done" | "faulted".
-   *  Absent until the first heartbeat arrives. */
-  negotiationState?: string;
+  taskQueue: {
+    id: string;
+    ix: string;
+    label: string;
+    sub: string;
+    etaS: number;
+    active: boolean;
+  }[];
 }
 
-// Real NegotiationBus message types — sourced directly from the backend
-// Message.type field. No regex inference.
-// Stage 4 added: leg_started, leg_completed, leg_halted.
+// US 34.1: BusKind covers every event type the backend bus emits, so the
+// live BusPane is a faithful mirror of what the master/AGV/arm agents say
+// to one another. "system" is the fallback for log-derived rows that don't
+// carry a real bus envelope.
 export type BusKind =
-  | "task_announce"
-  | "capability_broadcast"
-  | "availability_update"
+  | "announce"
   | "bid"
-  | "counter_offer"
   | "accept"
-  | "reject"
-  | "busy"
-  | "fault"
-  | "withdraw"
-  | "consensus_reached"
-  | "task_failed"
-  | "leg_started"
-  | "leg_completed"
-  | "leg_halted"
-  | "position_update"
-  | "payload_spawn"
-  | "payload_transfer";
-
-/** One bid candidate as seen in a CONSENSUS_REACHED rationale block. */
-export interface BusRationaleCandidate {
-  sender: string;
-  score: number;
-  capacity?: number;
-}
-
-/** Per-slot rationale captured at consensus time. */
-export interface BusRationaleSlot {
-  slot_id: string;
-  winner: string | null;
-  candidates: BusRationaleCandidate[];
-}
+  | "dock"
+  | "task_announce"
+  | "task_orphan"
+  | "claim"
+  | "agent_status"
+  | "intent"
+  | "arm_approach"
+  | "arm_ready"
+  | "arm_busy"
+  | "yield"
+  | "help_request"
+  | "plan"
+  | "task_spec"
+  | "reassignment"
+  | "system";
 
 export interface BusMessage {
   id: string;
@@ -218,14 +214,21 @@ export interface BusMessage {
   kind: BusKind;
   from: string;
   to?: string;
-  /** negotiation round number (> 0 on reopen) */
-  round?: number;
-  task_id?: string;
   text: string;
-  /** Phase-6 rationale: only present on `consensus_reached` messages. */
-  rationale?: BusRationaleSlot[];
-  /** Constraint string carried alongside the rationale. */
-  constraint?: string;
+  /** US 34.1: raw bus task_id when present (e.g. "pkg-2"). */
+  taskId?: string;
+  /** US 34.1: monotonic seq number from the backend ring buffer. */
+  seq?: number;
+}
+
+// US 34.1: route polyline broadcast by an AGV's intent event. Cells are
+// (col, row) integers in the warehouse grid. Color matches the AGV.
+export interface AgvRoute {
+  agvId: string;
+  color: string;
+  cells: [number, number][];
+  action: string; // "move_to_input" | "traverse_lane" | "move_to_output" | "return_to_bay"
+  ts: number; // performance.now() at receipt — used by the layer to fade old routes
 }
 
 export interface LogLine {
@@ -261,60 +264,43 @@ export interface OperationalEvent {
   tone: "ok" | "warn" | "err" | "info";
 }
 
-/** Phase 5 Stage 8 Track C — historical AGV position for a single replay frame. */
-export interface ReplayPosition {
-  x: number;
-  y: number;
-  theta: number;
-}
-
-// ---------- Phase 5.1 Stage 4: AGV path preview ----------
-/** One planned path for a single AGV, emitted by backend agv_path event. */
-export interface AgvPath {
-  /** Grid cells [[col, row], ...] from A*. */
-  cells: [number, number][];
-  /** Epoch counter — monotonic per (task_id, actor_id). */
-  epoch: number;
-  /** Backend wall-clock timestamp (epoch seconds). */
-  ts: number;
+// US 34.1: which AI tier is currently doing work. Surfaced in the left-panel
+// foot so the operator sees "qwq:32b · planning" while the planner is hot,
+// "qwen2.5:14b · tactical" while AGVs/arms are evaluating, etc. Derived from
+// bus events, not from an explicit backend signal.
+export interface ActiveAi {
+  model: string; // e.g. "qwq:32b", "qwen2.5:14b", "qwen2.5:0.5b"
+  role: string;  // e.g. "planner", "tactical", "judge", "idle"
+  source: string; // who last fired ("master", "agv-2", "arm-1", ...)
+  tsMs: number;   // performance.now() at last update
 }
 
 export interface RuntimeSlice {
   actorRuntime: Record<ActorId, ActorRuntime>;
   busMessages: BusMessage[];
+  busRate: number;
   logLines: LogLine[];
   validation: ValidationRow[];
+  contracts: { id: string; from: ActorId; to: ActorId }[];
   /** Phase 2 - live link state, shown in the topbar; never persisted. */
   dataSource: DataSource;
   linkStatus: LinkStatus;
   /** Phase 8 - bounded operational event timeline (observability). */
   events: OperationalEvent[];
-  /** Phase 5 Stage 8 Track C — replay scrub state.
-   *  Observational only: never published back to the backend.
-   *  When replayMode is true, AGV tokens snap to replayPositions
-   *  (skipping tween) rather than reading live runtimePosition/kinematics. */
-  replayMode: boolean;
-  replayPositions: Record<ActorId, ReplayPosition>;
+  /** US 34.1 - per-AGV last announced route, for the canvas polyline. */
+  agvRoutes: Record<string, AgvRoute>;
+  /** US 34.1 - which AI is currently driving the system. */
+  activeAi: ActiveAi;
   pushBusMessage: (m: BusMessage) => void;
   pushLogLine: (l: LogLine) => void;
   pushEvent: (e: Omit<OperationalEvent, "id" | "ts"> & { ts?: string }) => void;
   setActorRuntime: (id: ActorId, patch: Partial<ActorRuntime>) => void;
-  /** Stage 5 Track B — update live pixel position for a single AGV.
-   *  Does NOT touch authored (canvas) position. */
-  setRuntimePosition: (id: ActorId, pos: AgvRuntimePosition) => void;
   setConnection: (source: DataSource, status: LinkStatus) => void;
-  /** Phase 5 Stage 8 Track C — enter replay mode with computed positions. */
-  setReplayPositions: (positions: Record<ActorId, ReplayPosition>) => void;
-  /** Phase 5 Stage 8 Track C — exit replay mode, return to live. */
-  clearReplayMode: () => void;
-  // ---------- Phase 5.1 Stage 4: AGV path preview ----------
-  /** Live planned paths per AGV, keyed by actor_id. Populated by agv_path SocketIO event. */
-  agvPaths: Record<ActorId, AgvPath>;
-  /** Store or supersede a planned path for one AGV.
-   *  Ignores the update when payload.epoch <= current stored epoch. */
-  setAgvPath: (actorId: ActorId, path: AgvPath) => void;
-  /** Remove the planned path entry for one AGV (called on leg_completed). */
-  clearAgvPath: (actorId: ActorId) => void;
+  /** US 34.1 - replace/clear a per-AGV route polyline. */
+  setAgvRoute: (route: AgvRoute) => void;
+  clearAgvRoute: (agvId: string) => void;
+  /** US 34.1 - update the active-AI label. */
+  setActiveAi: (patch: Partial<ActiveAi>) => void;
   hydrateRuntime: (
     patch: Partial<
       Pick<
@@ -323,6 +309,8 @@ export interface RuntimeSlice {
         | "busMessages"
         | "logLines"
         | "validation"
+        | "contracts"
+        | "busRate"
       >
     >,
   ) => void;
@@ -360,13 +348,15 @@ export interface TablePackage {
   color: string;
 }
 
-/** Phase-6 payload entity tracked from spawn through delivery. */
-export interface PayloadEntity {
-  /** Last-known canvas pixel position. Falls back to carrier's live pos. */
-  pos: Vec2 | null;
-  /** Current holder — actor id (arm/agv), `zone:src@...`/`zone:dst@...`, or null at spawn. */
-  carrier: string | null;
+/** Sneh-port: unified payload model. One entry per package, carrier resolves
+ * to a position. Eliminates the table/arm/AGV triple-render race. */
+export interface Payload {
+  id: string;
   color: string;
+  /** "agv-N" | "arm-N" | "zone:input_arm" | "zone:output_arm" | null */
+  carrier: string | null;
+  /** Last-known pixel position — used when carrier is a zone or null. */
+  lastPos?: Vec2;
 }
 
 export interface SpatialSlice {
@@ -380,8 +370,10 @@ export interface SpatialSlice {
   tablePkgs: Record<string, TablePackage[]>;
   /** Packages currently carried by each AGV. agv_id → package_id | null. */
   agvCargo: Record<string, string | null>;
-  /** Phase-6 payload entities keyed by obj_id. Ephemeral; cleared on hydrate. */
-  payloads: Record<string, PayloadEntity>;
+  /** Packages currently held by each arm (mid-sweep). arm_key → package_id | null. */
+  armCargo: Record<string, string | null>;
+  /** Sneh-port: unified payload registry, carrier-driven. */
+  payloads: Record<string, Payload>;
   tick: (dtMs: number) => void;
   // Phase 2 - runtime-driven, ephemeral. Driven by object_update events.
   setAgvKinematics: (id: ActorId, patch: Partial<AgvKinematics>) => void;
@@ -389,10 +381,10 @@ export interface SpatialSlice {
   setArmAngle: (armId: string, angle: number) => void;
   setTablePkgs: (station: string, pkgs: TablePackage[]) => void;
   setAgvCargo: (agvId: string, packageId: string | null) => void;
-  /** Spawn or replace a payload at a position. */
-  spawnPayload: (objId: string, pos: Vec2 | null, color?: string) => void;
-  /** Update the carrier of an existing payload. */
-  transferPayload: (objId: string, carrier: string | null) => void;
+  setArmCargo: (armKey: string, packageId: string | null) => void;
+  /** Sneh-port: upsert a payload and move it to a new carrier (or null). */
+  setPayloadCarrier: (id: string, color: string, carrier: string | null, lastPos?: Vec2) => void;
+  clearPayload: (id: string) => void;
   emitTrajectory: (t: Trajectory) => void;
   emitDockGlow: (g: DockGlow) => void;
   clearSpatialRuntime: () => void;

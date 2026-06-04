@@ -4,12 +4,7 @@ import { InspHead } from "./InspHead";
 import { InspTabs, type Tab } from "./InspTabs";
 import { SectionIdentity } from "./SectionIdentity";
 import { SectionCapabilities } from "./SectionCapabilities";
-import { SectionMotion } from "./SectionMotion";
-import { SectionDocking } from "./SectionDocking";
-import { SectionBrain } from "./SectionBrain";
-import { SectionRuntime } from "./SectionRuntime";
 import { SectionHistory } from "./SectionHistory";
-import { SectionSpatial } from "./SectionSpatial";
 import { ActionsRow } from "./ActionsRow";
 
 /** Subtle uppercase band divider - separates authored config from operational runtime. */
@@ -70,21 +65,8 @@ export function Inspector() {
             {/* ── Configuration band - authored / topology ── */}
             <BandDivider label="Configuration" />
             <SectionIdentity actor={actor} live={live} />
-            <SectionSpatial actor={actor} />
             <SectionCapabilities actor={actor} live={live} />
-            <SectionMotion actor={actor} live={live} />
-            <SectionBrain actor={actor} live={live} />
-
-            {/* ── Runtime & Docking band - operational ── */}
-            <BandDivider label="Runtime & Docking" />
-            <SectionDocking live={live} />
-            <SectionRuntime metrics={runtime.metrics} live={live} />
           </>
-        )}
-        {activeTab === "Runtime" && (
-          <div className="px-[14px] pt-[14px]">
-            <SectionRuntime metrics={runtime.metrics} live={live} />
-          </div>
         )}
         {activeTab === "History" && <SectionHistory actorId={selectedId} />}
         {activeTab === "YAML" && (

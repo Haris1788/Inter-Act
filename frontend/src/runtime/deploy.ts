@@ -3,58 +3,25 @@
 // accepts an authored topology - that is applied offline via
 // pipeline.yaml → generate_compose. `runDeploy` never claims otherwise.
 
-import type { TopologyActor, TopologyZone, TopologyGoal } from "@/store/types";
+import type { TopologyActor, TopologyGoal } from "@/store/types";
 import { useStore } from "@/store";
 import { validateTopology } from "@/lib/validation";
 import { serializeTopology } from "@/lib/topologySchema";
 
 export const DEPLOY_PAYLOAD_VERSION = 1 as const;
 
-// Stage 2D: canvas dimensions fallback constants. Real viewport sizing is not
-// yet threaded through to deploy; when it becomes available, pass it in via
-// DeployState.canvasWidth/canvasHeight. Until then, these match the Stage 1
-// backend Topology defaults (canvas_width=1600, canvas_height=1000).
-const CANVAS_WIDTH_DEFAULT = 1600 as const;
-const CANVAS_HEIGHT_DEFAULT = 1000 as const;
-// Matches Stage 1 backend default (cell_px=40) and Track C snap unit.
-const CELL_PX = 40 as const;
-
 export interface DeployActor {
   id: string;
-  kind: "arm" | "agv";
+  // Phase 7 Stage A: widened to accept "zone" (ActorKind grew). Payload-emission
+  // logic for zones lands in Stage E; this is the inert type-level propagation
+  // so the build stays green. No zone actor flows through yet.
+  kind: "arm" | "agv" | "zone";
   type: string;
   label: string;
   capabilities: string[];
   brain: string;
   position: { x: number; y: number };
-}
-
-// Stage 2D: topology actor shape sent to backend (subset of TopologyActor).
-// Backend Stage 3 will read this; Stage 2 backend silently ignores it.
-export interface DeployTopologyActor {
-  id: string;
-  kind: "arm" | "agv";
-  x: number;
-  y: number;
-  reach_px: number;
-  capacity: number;
-  speed: number;
-  label?: string;
-  color?: string;
-}
-
-// Stage 2D: topology canvas descriptor — matches Stage 1 parse_topology input.
-export interface DeployTopologyCanvas {
-  width: number;
-  height: number;
-  cell_px: typeof CELL_PX;
-}
-
-// Stage 2D: top-level topology block appended to the deploy payload.
-// Backend Stage 3 reads this; until then it is ignored (warehouse: block wins).
-export interface DeployTopology {
-  canvas: DeployTopologyCanvas;
-  actors: DeployTopologyActor[];
+  size: { w: number; h: number };
 }
 
 export interface DeployPayload {
@@ -63,63 +30,39 @@ export interface DeployPayload {
   actors: DeployActor[];
   zones: { id: string; role: string; label: string }[];
   goal: TopologyGoal;
-  // Stage 2D: additive — backend ignores until Stage 3 wires it in.
-  topology: DeployTopology;
 }
 
 type DeployState = {
   actors: Record<string, TopologyActor>;
-  zones: Record<string, TopologyZone>;
   goal: TopologyGoal;
 };
 
 export function buildDeployPayload(s: DeployState): DeployPayload {
+  const actorList = Object.values(s.actors);
   return {
     payloadVersion: DEPLOY_PAYLOAD_VERSION,
     generatedAt: new Date().toISOString(),
-    // Zones are frontend-only markers; exclude from the backend deploy payload.
-    actors: Object.values(s.actors)
-      .filter((a) => a.kind === "arm" || a.kind === "agv")
+    actors: actorList.map((a) => ({
+      id: a.id,
+      kind: a.kind,
+      type: a.type,
+      label: a.label,
+      capabilities: a.capabilities,
+      brain: a.brain,
+      position: a.position,
+      size: a.size,
+    })),
+    // Phase 7 Stage F: zones are kind:"zone" actors. The payload's legacy
+    // zones[] is derived from them (id/role/label) for the backend contract;
+    // zone actors also appear in actors[] above. Backend ignores kind:"zone".
+    zones: actorList
+      .filter((a) => a.kind === "zone")
       .map((a) => ({
         id: a.id,
-        kind: a.kind as "arm" | "agv",
-        type: a.type,
+        role: a.subtype === "sink" ? "sink" : "source",
         label: a.label,
-        capabilities: a.capabilities,
-        brain: a.brain,
-        position: a.position,
       })),
-    zones: Object.values(s.zones).map((z) => ({
-      id: z.id,
-      role: z.role,
-      label: z.label,
-    })),
     goal: s.goal,
-    // Stage 2D: topology block — additive, backward-compatible. Canvas dims
-    // fall back to Stage 1 backend defaults (no real viewport source yet).
-    topology: {
-      canvas: {
-        width: CANVAS_WIDTH_DEFAULT,
-        height: CANVAS_HEIGHT_DEFAULT,
-        cell_px: CELL_PX,
-      },
-      // Zones excluded (frontend-only; no backend topology semantics yet).
-      actors: Object.values(s.actors)
-        .filter((a) => a.kind === "arm" || a.kind === "agv")
-        .map((a) => {
-          const actor: DeployTopologyActor = {
-            id: a.id,
-            kind: a.kind as "arm" | "agv",
-            x: a.position.x,
-            y: a.position.y,
-            reach_px: a.reach_px,
-            capacity: a.capacity,
-            speed: a.speed,
-          };
-          if (a.label) actor.label = a.label;
-          return actor;
-        }),
-    },
   };
 }
 
@@ -215,7 +158,7 @@ export async function runDeploy(
 
   st().setDeployPhase("validating", "Validating topology…");
   await sleep(280);
-  const v = validateTopology({ actors: st().actors, zones: st().zones });
+  const v = validateTopology({ actors: st().actors });
   const payload = buildDeployPayload(st());
   if (!v.deployable) {
     st().setDeployPhase(

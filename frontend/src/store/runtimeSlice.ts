@@ -1,9 +1,23 @@
 import type { StateCreator } from "zustand";
-import type { AgvPath, AgvRuntimePosition, ReplayPosition, RootStore, RuntimeSlice } from "./types";
+import type { ActiveAi, AgvRoute, RootStore, RuntimeSlice } from "./types";
 
-const BUS_CAP = 40;
-const LOG_CAP = 200;
+// US 34.1: caps raised so the live coordination view is useful for longer
+// sessions. Bus panel previously stopped scrolling at 40 messages; log panel
+// at 200. Operator complaint: "messages disappear before we read them" and
+// "bus doesn't show all messages the backend bus emits".
+const BUS_CAP = 300;
+const LOG_CAP = 300;
 const EVENT_CAP = 300; // bounded - long-session memory safety
+
+// Default active-AI badge. Replaced as bus events arrive (intent → tactical,
+// task_announce → planner, etc.) so the left-foot label always reflects what
+// the system is doing RIGHT NOW.
+const DEFAULT_ACTIVE_AI: ActiveAi = {
+  model: "qwen2.5:0.5b",
+  role: "idle",
+  source: "system",
+  tsMs: 0,
+};
 
 // Exported so schema-driven surfaces (Inspector) can render consistent
 // controls for any actor that has no live runtime entry yet (e.g. just
@@ -11,8 +25,11 @@ const EVENT_CAP = 300; // bounded - long-session memory safety
 export const DEFAULT_RUNTIME = {
   status: "idle" as const,
   phase: "",
+  bid: null,
+  winning: false,
   uptime: "",
   metrics: { cpu: 0, memMb: 0, battery: 100, busLatencyMs: 0 },
+  taskQueue: [],
 };
 
 export const createRuntimeSlice: StateCreator<
@@ -23,16 +40,15 @@ export const createRuntimeSlice: StateCreator<
 > = (set) => ({
   actorRuntime: {},
   busMessages: [],
+  busRate: 0,
   logLines: [],
   validation: [],
+  contracts: [],
   dataSource: "mock",
   linkStatus: "connecting",
   events: [],
-  // Phase 5 Stage 8 Track C — replay scrub. Off by default.
-  replayMode: false,
-  replayPositions: {},
-  // Phase 5.1 Stage 4 — planned AGV paths from agv_path SocketIO event.
-  agvPaths: {},
+  agvRoutes: {},
+  activeAi: DEFAULT_ACTIVE_AI,
 
   pushBusMessage: (m) =>
     set((s) => ({ busMessages: [...s.busMessages, m].slice(-BUS_CAP) })),
@@ -68,47 +84,22 @@ export const createRuntimeSlice: StateCreator<
       },
     })),
 
-  // Stage 5 Track B — observational runtime position from `agv_position` event.
-  // Stored separately from authored position; never sent back to backend.
-  setRuntimePosition: (id: string, pos: AgvRuntimePosition) =>
-    set((s) => ({
-      actorRuntime: {
-        ...s.actorRuntime,
-        [id]: {
-          ...DEFAULT_RUNTIME,
-          ...s.actorRuntime[id],
-          runtimePosition: pos,
-        },
-      },
-    })),
-
   setConnection: (source, status) =>
     set(() => ({ dataSource: source, linkStatus: status })),
 
-  // Phase 5 Stage 8 Track C — enter replay mode with a positions snapshot.
-  setReplayPositions: (positions: Record<string, ReplayPosition>) =>
-    set(() => ({ replayMode: true, replayPositions: positions })),
+  setAgvRoute: (route: AgvRoute) =>
+    set((s) => ({ agvRoutes: { ...s.agvRoutes, [route.agvId]: route } })),
 
-  // Phase 5 Stage 8 Track C — exit replay mode, clear historical positions.
-  clearReplayMode: () =>
-    set(() => ({ replayMode: false, replayPositions: {} })),
-
-  // Phase 5.1 Stage 4 — AGV path preview actions.
-  setAgvPath: (actorId: string, path: AgvPath) =>
+  clearAgvRoute: (agvId: string) =>
     set((s) => {
-      const existing = s.agvPaths[actorId];
-      // Idempotent: ignore if the incoming epoch is older than what we have.
-      if (existing && path.epoch < existing.epoch) return s;
-      return { agvPaths: { ...s.agvPaths, [actorId]: path } };
+      if (!s.agvRoutes[agvId]) return {};
+      const next = { ...s.agvRoutes };
+      delete next[agvId];
+      return { agvRoutes: next };
     }),
 
-  clearAgvPath: (actorId: string) =>
-    set((s) => {
-      if (!(actorId in s.agvPaths)) return s;
-      const next = { ...s.agvPaths };
-      delete next[actorId];
-      return { agvPaths: next };
-    }),
+  setActiveAi: (patch) =>
+    set((s) => ({ activeAi: { ...s.activeAi, ...patch } })),
 
   hydrateRuntime: (patch) => set(() => ({ ...patch })),
 });

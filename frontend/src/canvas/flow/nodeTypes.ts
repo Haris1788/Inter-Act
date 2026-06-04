@@ -1,7 +1,6 @@
 // Central nodeTypes registry for React Flow.
-// Phase 5.1 Stage 1: ZoneNode removed (deleted). ActorNode is now invisible
-// (transparent shell for RF drag/pan/zoom math; Konva is the visual renderer).
-// Phase 5.1 bug-fix: PoolLabelNode deleted — no dashboard widgets on canvas.
+// ActorNode is the only RF node — an invisible positional shell; Konva renders
+// every visual (arms, AGVs, zones). Phase 7 retired the per-kind RF nodes.
 
 import { ActorNode } from "./nodes/ActorNode";
 

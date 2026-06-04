@@ -928,9 +928,8 @@ def get_health_config():
 
 def reload():
     """Re-read pipeline.yaml. Call this after editing the config."""
-    global _config, _topology_cache
+    global _config
     _config = None
-    _topology_cache = _TOPOLOGY_UNSET
     load_config()
 
 
@@ -962,29 +961,102 @@ def get_grid():
 
 
 def get_agvs():
-    """Return the list of AGV config dicts ({id,label,color,bay:[c,r]}).
-
-    Phase 5: prefer the canvas-authored topology: block when present.
-    Topology AGV specs are converted to the legacy {id,label,color,bay}
-    shape (bay derived from position px / cell_px so downstream callers
-    that expect a cell tuple still work). Falls back to the legacy
-    warehouse.agvs block when no topology is authored.
-    """
-    topo = get_topology()
-    if topo is not None:
-        agvs = []
-        cell_px = topo.cell_px or 40
-        for spec in topo.agvs():
-            agvs.append({
-                "id": spec.id,
-                "label": spec.label or spec.id,
-                "color": spec.color or "#16a085",
-                "bay": [int(spec.x // cell_px), int(spec.y // cell_px)],
-                "speed": spec.speed,
-                "capacity": spec.capacity,
-            })
-        return agvs
+    """Return the list of AGV config dicts ({id,label,color,bay:[c,r],capabilities?})."""
     return list(get_warehouse_config().get("agvs") or [])
+
+
+def get_ai_config():
+    """Return the raw `ai:` dict, or {} when not configured."""
+    return get_config().get("ai") or {}
+
+
+def get_coordination_mode():
+    """Return the coordination mode flag from `ai.coordination_mode`.
+
+    Values: 'centralized' | 'decentralized' | 'smart' (US 34 superset).
+    Defaults to 'centralized' for backwards safety if unset.
+    """
+    return str(get_ai_config().get("coordination_mode", "centralized")).lower()
+
+
+def coordination_mode_is_decentralized():
+    """True for both US 32 ('decentralized') and US 34 ('smart').
+
+    Both modes run the contract-net protocol; 'smart' adds US 34 features.
+    """
+    return get_coordination_mode() in ("decentralized", "smart")
+
+
+def coordination_mode_is_smart():
+    """True only for US 34 mode. Use this to gate US 34 features."""
+    return get_coordination_mode() == "smart"
+
+
+def get_capability_defaults():
+    """Return the `ai.capability_defaults` dict (used when an AGV omits its own)."""
+    return dict(get_ai_config().get("capability_defaults") or {})
+
+
+def get_bid_weights():
+    """Return the `ai.bid_weights` dict (distance, capability, load) for US 34 scoring.
+
+    Defaults are sensible-non-zero so the score is well-defined even without config.
+    """
+    raw = get_ai_config().get("bid_weights") or {}
+    return {
+        "distance": float(raw.get("distance", 0.6)),
+        "capability": float(raw.get("capability", 0.3)),
+        "load": float(raw.get("load", 0.1)),
+    }
+
+
+def get_weight_bands():
+    """Return the `ai.weight_bands` dict — colour → {min, max} in kg (US 34.1).
+
+    Used by the interpreter to default a package's weight when the prompt only
+    gives a colour, and by the bid filter to sanity-check colour↔weight pairing.
+    Returns {} when the config block is absent — callers should treat missing
+    as "no band info" and skip the inference.
+    """
+    raw = get_ai_config().get("weight_bands") or {}
+    out: dict = {}
+    if isinstance(raw, dict):
+        for colour, band in raw.items():
+            if not isinstance(band, dict):
+                continue
+            try:
+                lo = float(band.get("min")) if band.get("min") is not None else None
+                hi = float(band.get("max")) if band.get("max") is not None else None
+            except (TypeError, ValueError):
+                continue
+            out[str(colour).strip().lower()] = {"min": lo, "max": hi}
+    return out
+
+
+def get_agv_capabilities(agv_id):
+    """Return an `AGVCapabilities` instance for one AGV (from pipeline.yaml).
+
+    Reads the per-AGV `capabilities` block if present, otherwise the
+    `ai.capability_defaults` block, otherwise hardcoded module defaults.
+    """
+    from app.models.agv_capabilities import from_config
+
+    cfg = get_agv(agv_id) or {"id": agv_id}
+    return from_config(cfg, get_capability_defaults())
+
+
+def get_all_agv_capabilities():
+    """Return {agv_id: AGVCapabilities} for every configured AGV.
+
+    Used by the `/capabilities` endpoint (Phase 5) and by the master
+    capability filter (Phase 3).
+    """
+    from app.models.agv_capabilities import from_config
+
+    defaults = get_capability_defaults()
+    return {
+        a["id"]: from_config(a, defaults) for a in get_agvs()
+    }
 
 
 def get_agv_ids():
@@ -1072,124 +1144,3 @@ def get_warehouse_scene():
         })
 
     return {"grid": grid_out, "stations": stations, "lane": lane, "agvs": agvs}
-
-
-# ---------------------------------------------------------------------------
-# Phase 5 — Spatial topology  (Stage 1 plumbing, not yet load-bearing)
-# ---------------------------------------------------------------------------
-
-# Sentinel so None is a valid cached value (topology block absent).
-_TOPOLOGY_UNSET = object()
-_topology_cache = _TOPOLOGY_UNSET
-
-
-def get_topology():
-    """Return a parsed Topology from the `topology:` YAML block, or None.
-
-    Returns None when pipeline.yaml has no `topology:` block (i.e. the legacy
-    `warehouse:` block is the only spatial source).  Call
-    `get_topology_or_legacy_shim()` when you always need a Topology.
-    """
-    global _topology_cache
-    if _topology_cache is not _TOPOLOGY_UNSET:
-        # May be None (absent block) or a Topology instance.
-        return _topology_cache
-
-    from app.models.topology import parse_topology
-
-    raw = get_config().get("topology")
-    if not raw:
-        _topology_cache = None
-    else:
-        _topology_cache = parse_topology(raw)
-    return _topology_cache
-
-
-def get_topology_or_legacy_shim():
-    """Return a Topology, synthesising one from the legacy `warehouse:` block
-    when no `topology:` block is present.
-
-    The shim algorithm:
-      * Each station in `warehouse.stations` becomes an arm ActorSpec.
-        - actor id  = the station's `served_by` field (e.g. ``"arm-1"``).
-        - position  = dock cell × cell_px + origin offset (same math as
-          `cell_to_px`) so pixel coordinates are consistent with the existing
-          warehouse grid.
-        - reach_px  = 120.0 (default: 3 cells at cell_px=40, or ~1 cell at
-          the typical warehouse cell_px=120).
-      * Each AGV in `warehouse.agvs` becomes an AGV ActorSpec.
-        - actor id  = the AGV's `id` field.
-        - position  = bay cell × cell_px + origin offset.
-      * canvas_width / canvas_height are derived from the grid extents.
-      * cell_px is taken from the warehouse grid (default 40 if not set).
-
-    Idempotent and pure — no state is mutated.
-    """
-    real = get_topology()
-    if real is not None:
-        return real
-
-    from app.models.topology import ActorSpec, Topology
-
-    wh = get_warehouse_config()
-    grid_cfg = {**_GRID_DEFAULTS, **(wh.get("grid") or {})}
-    origin = {**_ORIGIN_DEFAULTS, **(wh.get("origin") or {})}
-
-    cols = int(grid_cfg["cols"])
-    rows = int(grid_cfg["rows"])
-    cell_px_val = int(grid_cfg["cell_px"])
-    ox = float(origin["x"])
-    oy = float(origin["y"])
-
-    def _cell_centre_px(cell):
-        col, row = cell[0], cell[1]
-        return (ox + (col + 0.5) * cell_px_val, oy + (row + 0.5) * cell_px_val)
-
-    actor_specs: list[ActorSpec] = []
-
-    # Arms — one per station entry that has a `served_by` arm id.
-    stations = get_stations()
-    seen_arm_ids: set[str] = set()
-    for _station_name, st in stations.items():
-        arm_id = st.get("served_by")
-        if not arm_id or arm_id in seen_arm_ids:
-            continue
-        seen_arm_ids.add(arm_id)
-        dock = st.get("dock") or st.get("cell") or [0, 0]
-        px_x, px_y = _cell_centre_px(dock)
-        actor_specs.append(
-            ActorSpec(
-                id=arm_id,
-                kind="arm",
-                x=px_x,
-                y=px_y,
-                reach_px=120.0,
-            )
-        )
-
-    # AGVs — one per warehouse.agvs entry.
-    for agv in get_agvs():
-        bay = agv.get("bay") or [0, 0]
-        px_x, px_y = _cell_centre_px(bay)
-        actor_specs.append(
-            ActorSpec(
-                id=agv["id"],
-                kind="agv",
-                x=px_x,
-                y=px_y,
-                capacity=int(agv.get("capacity", 1)),
-                speed=float(agv.get("speed", 1.0)),
-                label=agv.get("label"),
-                color=agv.get("color"),
-            )
-        )
-
-    canvas_width = int(ox + cols * cell_px_val + ox)  # symmetric padding
-    canvas_height = int(oy + rows * cell_px_val + oy)
-
-    return Topology(
-        actors=tuple(actor_specs),
-        canvas_width=canvas_width,
-        canvas_height=canvas_height,
-        cell_px=cell_px_val,
-    )

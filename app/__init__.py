@@ -37,15 +37,15 @@ def create_app(config_class=None):
     from app.routes.arm_routes import arm_bp
     from app.routes.agv_routes import agv_bp
     from app.routes.ai_routes import ai_bp
-    from app.routes.negotiate_routes import negotiate_bp
-    from app.routes.replay_routes import replay_bp
+    from app.routes.dispatch_routes import dispatch_bp
+    from app.routes.bus_routes import bus_bp
 
     app.register_blueprint(page_bp)
     app.register_blueprint(arm_bp)
     app.register_blueprint(agv_bp)
     app.register_blueprint(ai_bp)
-    app.register_blueprint(negotiate_bp)
-    app.register_blueprint(replay_bp)
+    app.register_blueprint(dispatch_bp)
+    app.register_blueprint(bus_bp)
 
     # Import SocketIO event handlers so they register with the socketio instance
     from app.sockets import events  # noqa: F401
@@ -69,63 +69,24 @@ def create_app(config_class=None):
     except Exception as exc:
         print(f"[startup] AGV pre-register skipped: {exc}")
 
-    # Phase 4: in distributed mode (INTERACT_BUS=redis) liveness comes from
-    # actor heartbeats on the bus, not the HTTP /arms/<id>/health poll. Reset
-    # any stale 'dead'/'unhealthy' marks from prior backend runs so the
-    # Fleet Roster does not start with falsely-dead arms. Actors then refresh
-    # state via execution + heartbeat paths.
+    # Init AI planning pipeline: MessageBus + CentralBrain singletons.
+    # COORDINATION_MODE selects between:
+    #   centralized   — central_brain handles fault reassignment (legacy)
+    #   decentralized — agents handle it themselves via /bus/* (contract-net)
+    import os as _os
+    coordination_mode = _os.environ.get("COORDINATION_MODE", "centralized").lower()
+    app.extensions["coordination_mode"] = coordination_mode
+    print(f"[startup] COORDINATION_MODE={coordination_mode}")
     try:
-        import os
-        if os.environ.get("INTERACT_BUS", "inprocess").lower() == "redis":
-            from app.models import arm_state
-            for arm_id in arm_state.get_arm_ids():
-                h = arm_state.get_health(arm_id) or {}
-                if h.get("health") in ("dead", "stopped", "unhealthy"):
-                    arm_state.set_health(arm_id, "alive")
+        from app.agents.message_bus import SocketIOBus
+        from app.agents.central_brain import CentralBrain
+
+        bus = SocketIOBus()
+        brain = CentralBrain(bus, coordination_mode=coordination_mode)
+        app.extensions["central_brain"] = brain
+        app.extensions["message_bus"] = bus
     except Exception as exc:
-        print(f"[startup] arm liveness reset skipped: {exc}")
-
-    # Phase 4 Stage 2: actors run in isolated containers, NOT in-backend
-    # threads. The reconciler owns their lifecycle via reconcile_actors().
-    # agent_registry.start_agents() is intentionally NOT called here; it
-    # remains available for tests that prefer in-process actors.
-    try:
-        import os
-        from app.agents.bus import get_bus
-
-        # Log which bus backend is active so operators can confirm at startup.
-        bus_mode = os.environ.get("INTERACT_BUS", "inprocess").lower().strip()
-        print(f"[startup] NegotiationBus backend: {bus_mode}")
-
-        # Redis path only: start the SocketIO mirror consumer.
-        # InProcessBus._mirror() handles the in-process case; there is no
-        # separate mirror for it.
-        if bus_mode == "redis":
-            from app.services.bus_mirror import start_mirror
-            start_mirror(get_bus())
-
-    except Exception as exc:
-        print(f"[startup] bus setup skipped: {exc}")
-
-    # Reconcile actor containers at startup so arms + AGVs spin up
-    # automatically when the backend boots.  Wrapped in try/except so a
-    # missing Docker socket (dev mode) is a non-fatal log line, not a crash.
-    try:
-        from app.services.container_manager import (
-            build_desired_from_config,
-            reconcile_actors,
-        )
-
-        desired = build_desired_from_config()
-        print(
-            f"[startup] reconcile_actors: {len(desired)} actor(s) desired "
-            f"({sum(1 for d in desired if d['kind'] == 'arm')} arms, "
-            f"{sum(1 for d in desired if d['kind'] == 'agv')} agvs)"
-        )
-        res = reconcile_actors(desired)
-        print(f"[startup] reconcile_actors: {res['detail']}")
-    except Exception as exc:
-        print(f"[startup] reconcile_actors skipped: {exc}")
+        print(f"[startup] central_brain init skipped: {exc}")
 
     # Start health monitor for arm + asset containers (runs in background thread)
     from app.services.health_monitor import start as start_health_monitor

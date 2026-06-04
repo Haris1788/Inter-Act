@@ -10,19 +10,90 @@ health:
   check_interval: 2.0
   timeout: 5.0
   max_missed: 3
-
 arms:
 - id: 1
-  label: Input Arm
+  label: Arm 1
   color: '#e74c3c'
   depends_on: []
   critical: true
 - id: 2
-  label: Output Arm
-  color: '#27ae60'
-  depends_on: []
+  label: Arm 2
+  color: '#2ecc71'
+  depends_on:
+  - 1
   critical: true
-
+assets:
+- id: veh-1
+  type: vehicle
+  label: Veh 1
+  color: '#9b59b6'
+  speed: 140
+  loop: false
+  waypoints:
+  - x: 730
+    y: 300
+  - x: 900
+    y: 300
+  upstream:
+  - arm-1
+  downstream:
+  - arm-2
+- id: veh-2
+  type: vehicle
+  label: Veh 2
+  color: '#2980b9'
+  speed: 140
+  loop: false
+  waypoints:
+  - x: 730
+    y: 300
+  - x: 900
+    y: 300
+  upstream:
+  - arm-1
+  downstream:
+  - arm-2
+- id: veh-3
+  type: vehicle
+  label: Veh 3
+  color: '#27ae60'
+  speed: 140
+  loop: false
+  waypoints:
+  - x: 730
+    y: 300
+  - x: 900
+    y: 300
+  upstream:
+  - arm-1
+  downstream:
+  - arm-2
+ai:
+  ollama_base_url: http://ollama:11434
+  llm_base_url: http://host.docker.internal:11500
+  model_planner: qwq:32b-q4_K_M
+  model_tactical: qwen2.5:14b-instruct-q4_K_M
+  coordination_mode: smart
+  capability_defaults:
+    kind: shuttle
+    weight_max_kg: 50.0
+    allowed_labels:
+    - any
+    speed_factor: 1.0
+  bid_weights:
+    distance: 0.6
+    capability: 0.3
+    load: 0.1
+  weight_bands:
+    blue:
+      min: 10
+      max: 20
+    green:
+      min: 20
+      max: 50
+    yellow:
+      min: 50
+      max: 80
 warehouse:
   grid:
     cols: 14
@@ -33,46 +104,112 @@ warehouse:
     y: 30
   stations:
     input_arm:
-      cell: [1, 1]
-      dock: [2, 1]
+      cell:
+      - 0
+      - 2
+      dock:
+      - 1
+      - 2
       label: IN
       served_by: arm-1
     output_arm:
-      cell: [12, 1]
-      dock: [11, 1]
+      cell:
+      - 3
+      - 5
+      dock:
+      - 2
+      - 5
       label: OUT
       served_by: arm-2
   lane:
-    - [2, 1]
-    - [3, 1]
-    - [4, 1]
-    - [5, 1]
-    - [6, 1]
-    - [7, 1]
-    - [8, 1]
-    - [9, 1]
-    - [10, 1]
-    - [11, 1]
+  - - 2
+    - 1
+  - - 3
+    - 1
+  - - 4
+    - 1
+  - - 5
+    - 1
+  - - 6
+    - 1
+  - - 7
+    - 1
+  - - 8
+    - 1
+  - - 9
+    - 1
+  - - 10
+    - 1
+  - - 11
+    - 1
   agvs:
   - id: agv-1
     label: AGV 1
-    color: '#16a085'
-    bay: [10, 3]
+    color: '#2980b9'
+    bay:
+    - 10
+    - 3
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 20.0
+      allowed_labels:
+      - blue
+      speed_factor: 1.6
   - id: agv-2
     label: AGV 2
-    color: '#8e44ad'
-    bay: [10, 5]
+    color: '#27ae60'
+    bay:
+    - 10
+    - 5
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 50.0
+      allowed_labels:
+      - green
+      speed_factor: 1.0
   - id: agv-3
     label: AGV 3
+    color: '#f1c40f'
+    bay:
+    - 10
+    - 7
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 80.0
+      allowed_labels:
+      - yellow
+      speed_factor: 0.6
+  - id: veh-1
+    label: Veh 1
+    color: '#9b59b6'
+    bay:
+    - 5
+    - 9
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 50.0
+      allowed_labels: &id001
+      - any
+      speed_factor: 1.0
+  - id: veh-2
+    label: Veh 2
     color: '#2980b9'
-    bay: [10, 7]
-
-ai:
-  # Embedded ollama service removed (Phase 5 cleanup). All LLM traffic
-  # flows through the TU Clausthal tunnel at host.docker.internal:11500.
-  # ollama_base_url kept for any vestigial reader (e.g. qwen_brain) but
-  # points at the same tunnel; nothing in the live path consults it.
-  ollama_base_url: http://host.docker.internal:11500
-  llm_base_url: http://host.docker.internal:11500
-  model_planner: qwq:32b-q4_K_M
-  model_tactical: qwen2.5:14b-instruct-q4_K_M
+    bay:
+    - 5
+    - 5
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 50.0
+      allowed_labels: *id001
+      speed_factor: 1.0
+  - id: veh-3
+    label: Veh 3
+    color: '#27ae60'
+    bay:
+    - 1
+    - 7
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 50.0
+      allowed_labels: *id001
+      speed_factor: 1.0

@@ -115,19 +115,7 @@ def _emit_log(source, message):
 
 
 def _monitor_loop():
-    """Continuously check arm container health.
-
-    Phase 4: when INTERACT_BUS=redis, actors are isolated processes that
-    publish AVAILABILITY_UPDATE heartbeats on the bus. Liveness lives in the
-    bus + /bus/actors endpoint (heartbeat.is_presumed_dead helper). The old
-    HTTP /arms/<id>/health poll is meaningless because actor_runner.py does
-    not expose an HTTP server. Skip the arm/asset HTTP polling in that mode
-    so arms are not falsely marked 'dead'. Frontend Fleet Roster should be
-    repointed to /bus/actors in a follow-up (Phase 5 polish).
-    """
-    import os
-    redis_bus_mode = os.environ.get("INTERACT_BUS", "inprocess") == "redis"
-
+    """Continuously check arm container health."""
     health_cfg = pipeline_config.get_health_config()
     interval = health_cfg["check_interval"]
     timeout = health_cfg["timeout"]
@@ -137,11 +125,6 @@ def _monitor_loop():
     missed = {}
 
     while _running:
-        if redis_bus_mode:
-            # Heartbeat-based liveness via the bus; nothing to poll here.
-            time.sleep(interval)
-            continue
-
         arm_ids = pipeline_config.get_arm_ids()
 
         for arm_id in arm_ids:

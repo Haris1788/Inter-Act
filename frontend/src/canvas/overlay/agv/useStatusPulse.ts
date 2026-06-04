@@ -1,7 +1,9 @@
 // useStatusPulse — shared hook for the inline AGV status dot animation.
+// US 34.1 (Sneh-port from commits c228768 → 5c23991).
 //
-// Returns { radius, opacity } that animate by pulse group (same profiles as
-// the old StatusDot component). Call per-frame via RAF driven by state.
+// Returns { radius, opacity, fill } that animate by pulse group. The hook
+// drives its own RAF and triggers a per-frame re-render via a no-op setState.
+// Values themselves come from a ref so React doesn't churn on every tick.
 
 import { useEffect, useRef, useState } from "react";
 
@@ -91,7 +93,6 @@ export function useStatusPulse(status: string): StatusPulse {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
-      lastTsRef.current = null;
       return;
     }
 

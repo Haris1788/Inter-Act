@@ -70,28 +70,31 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
     arms = cfg.get("arms") or []
     assets = _non_arm_assets(cfg)
     asset_ports = _asset_host_ports(assets)
+    agvs = (cfg.get("warehouse") or {}).get("agvs") or []
     ai_cfg = cfg.get("ai") or {}
-    # Phase 5 cleanup: embedded ollama service removed. All LLM traffic
-    # flows through the TU Clausthal tunnel at host.docker.internal:11500.
-    # OLLAMA_BASE_URL is kept as a back-compat env for any vestigial reader
-    # (qwen_brain etc.); it points at the same tunnel.
-    ollama_base_url = ai_cfg.get("ollama_base_url", "http://host.docker.internal:11500")
+    ollama_base_url = ai_cfg.get("ollama_base_url", "http://ollama:11434")
+    # The heavy two-model AI layer (llm_service) points at the TU Clausthal
+    # tunnel, separate from qwen_brain's local container. Defaults to the
+    # ollama url if not configured (back-compat).
     llm_base_url = ai_cfg.get("llm_base_url", ollama_base_url)
     model_planner = ai_cfg.get("model_planner", "qwq:32b-q4_K_M")
     model_tactical = ai_cfg.get("model_tactical", "qwen2.5:14b-instruct-q4_K_M")
+    # Phase 1+ feature flag: 'centralized' (legacy) vs 'decentralized' (contract-net)
+    coordination_mode = ai_cfg.get("coordination_mode", "centralized")
 
     services = {
-        # ollama service removed (Phase 5 cleanup). LLM via host tunnel.
-        "redis": {
-            "image": "redis:7-alpine",
-            "command": [
-                "redis-server",
-                "--appendonly", "yes",
-                "--appendfsync", "everysec",
-            ],
-            "volumes": ["redis-data:/data"],
-            "ports": ["6379:6379"],
-            "restart": "unless-stopped",
+        "ollama": {
+            "image": "ollama/ollama:latest",
+            "ports": ["${OLLAMA_HOST_PORT:-11434}:11434"],
+            "volumes": ["ollama_data:/root/.ollama"],
+            "environment": ["OLLAMA_KEEP_ALIVE=24h"],
+            "healthcheck": {
+                "test": ["CMD", "ollama", "list"],
+                "interval": "10s",
+                "timeout": "5s",
+                "retries": 12,
+                "start_period": "20s",
+            },
         },
         "backend": {
             "build": ".",
@@ -104,15 +107,13 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
                 f"LLM_BASE_URL={llm_base_url}",
                 f"OLLAMA_MODEL_PLANNER={model_planner}",
                 f"OLLAMA_MODEL_TACTICAL={model_tactical}",
+                f"COORDINATION_MODE={coordination_mode}",
                 "PIPELINE_CONFIG=/config/pipeline.yaml",
                 "FLASK_ENV=production",
                 "FLASK_DEBUG=0",
                 "PYTHONUNBUFFERED=1",
                 "CONTAINER_CONTROL=on",
                 f"COMPOSE_CONTAINER_PREFIX={COMPOSE_PREFIX}",
-                "REDIS_URL=redis://redis:6379/0",
-                "INTERACT_BUS=redis",
-                "INTERACT_STATE=redis",
             ],
             "volumes": [
                 "/var/run/docker.sock:/var/run/docker.sock",
@@ -136,9 +137,7 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
             # bound on the host (host.docker.internal:11500). Resolves
             # automatically on Docker Desktop; required on a Linux host.
             "extra_hosts": ["host.docker.internal:host-gateway"],
-            "depends_on": {
-                "redis": {"condition": "service_started"},
-            },
+            "depends_on": {"ollama": {"condition": "service_healthy"}},
         },
         "frontend": {
             "build": {"context": ".", "dockerfile": "docker/Dockerfile.frontend"},
@@ -171,35 +170,65 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
         },
     }
 
-    # Arms + AGVs are managed dynamically by topology reconciliation
-    # (container_manager.reconcile_actors).  No per-actor compose services.
-    # The actor-image service is a build-only target (profiles: [build-only])
-    # so `docker compose build actor-image` pre-builds the shared image
-    # without starting a container.
+    # Arms are managed dynamically by topology reconciliation (container_manager).
+    # AGVs are static infrastructure — always running, one container per AGV.
     _ = (arms, asset_ports)  # arms parsed for validation/summary only
 
-    # Build-only service so `docker compose build actor-image` works.
-    services["actor-image"] = {
-        "build": {"context": ".", "dockerfile": "Dockerfile.actor"},
-        "image": "interact-shared-actor:latest",
-        "profiles": ["build-only"],
-    }
+    # US 34: extract capability defaults so per-AGV blocks can be optional.
+    capability_defaults = ai_cfg.get("capability_defaults") or {}
 
-    compose = {
-        "services": services,
-        "volumes": {"redis-data": {}},
-    }
+    def _agv_capability_env(agv):
+        """Build US 34 capability env vars for one AGV from pipeline.yaml.
+
+        Priority: per-AGV block > ai.capability_defaults > hardcoded fallback.
+        """
+        caps = (agv.get("capabilities") or {})
+        merged = {**capability_defaults, **caps}
+        kind = merged.get("kind", "shuttle")
+        weight = merged.get("weight_max_kg", 50.0)
+        labels = merged.get("allowed_labels", ["any"])
+        if isinstance(labels, str):
+            labels_csv = labels
+        else:
+            labels_csv = ",".join(str(l).lower() for l in (labels or []))
+        speed = merged.get("speed_factor", 1.0)
+        return [
+            f"AGV_KIND={kind}",
+            f"AGV_WEIGHT_MAX_KG={weight}",
+            f"AGV_ALLOWED_LABELS={labels_csv}",
+            f"AGV_SPEED_FACTOR={speed}",
+        ]
+
+    for i, agv in enumerate(agvs, start=1):
+        agv_id = agv["id"]
+        services[agv_id] = {
+            "build": {"context": ".", "dockerfile": "docker/Dockerfile.agv"},
+            "container_name": f"{COMPOSE_PREFIX}-{agv_id}",
+            "ports": [f"{8100 + i}:8100"],
+            "environment": [
+                f"AGV_ID={agv_id}",
+                "SERVER_HOST=http://backend:5000",
+                f"OLLAMA_BASE_URL={ollama_base_url}",
+                f"COORDINATION_MODE={coordination_mode}",
+                "PYTHONUNBUFFERED=1",
+                # US 34 capability fields per AGV (read by scripts/agv_*.py)
+                *_agv_capability_env(agv),
+            ],
+            "depends_on": {"backend": {"condition": "service_healthy"}},
+        }
+
+    compose = {"services": services, "volumes": {"ollama_data": {}}}
 
     with open(output_path, "w", encoding="utf-8") as f:
         yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
 
     arm_names = ", ".join(f"arm-{a['id']}" for a in arms) if arms else "-"
+    agv_names = ", ".join(a["id"] for a in agvs) if agvs else "-"
     print(f"Generated {output_path}")
-    print(f"  Core    : ollama, redis, backend, frontend, demo-runner")
-    print(f"  AGVs    : reconciler-owned containers (interact-shared-actor — no compose services)")
+    print(f"  Core    : ollama, backend, frontend, demo-runner")
+    print(f"  AGVs    : {len(agvs)} ({agv_names})  — static compose services")
     print(f"  Arms    : {len(arms)} ({arm_names})  — reconciled at deploy")
     print(f"  Ollama  : {ollama_base_url}")
-    print(f"  Bus     : Redis Streams (redis:7-alpine, AOF, persistent volume)")
     print("\nRun: docker compose up --build")
 
 

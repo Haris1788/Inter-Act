@@ -6,9 +6,6 @@ import { EventsPane } from "./EventsPane";
 import { FleetRoster } from "./FleetRoster";
 import { ValidationList } from "./ValidationList";
 import { BusPane } from "./BusPane";
-import { ReplayPanel } from "@/chrome/Replay/ReplayPanel";
-import { FaultHistory } from "@/chrome/Observability/FaultHistory";
-import { ActorInspector } from "@/chrome/Observability/ActorInspector";
 import {
   useLogLines,
   useEvents,
@@ -22,13 +19,10 @@ import { useStore } from "@/store";
 import { useTopologyValidation } from "@/store/derived";
 
 // Phase 14: the dock is ONE docked operational workspace.
-//   - left 65%  : stream tabs (Coordination / Message bus / Validation / Events / Replay / Faults / Actors)
+//   - left 65%  : stream tabs (Coordination / Message bus / Validation / Events)
 //   - right 35% : permanent Fleet runtime sidebar (independent of tabs)
 //   - collapse  : whole dock → slim header strip; canvas takes the space.
-// Track C (Stage 6): "Faults" and "Actors" added to the same tab system.
-// Track B's ReplayPanel and Track C's Observability panels share the tab bar —
-// no separate panel was created to avoid splitting the dock.
-type TabId = "coordination" | "bus" | "validation" | "events" | "replay" | "faults" | "actors";
+type TabId = "coordination" | "bus" | "validation" | "events";
 
 const HEADER_H = 36; // matches LogsHead h-9
 
@@ -80,7 +74,7 @@ export function LogsPanel() {
     }
   }
 
-  // Clear only meaningful for the live-buffer stream tabs (not replay/observability).
+  // Clear only meaningful for the live-buffer stream tabs.
   const clearHandler: (() => void) | null =
     activeTab === "coordination" || activeTab === "bus" ? handleClear : null;
 
@@ -89,15 +83,11 @@ export function LogsPanel() {
   const displayBus = paused ? pausedBusRef.current : busMessages;
 
   // Counts: left stream tabs only — Fleet is a permanent sidebar, not a tab.
-  // Replay/Faults/Actors show no live count (history is fetched on demand).
   const counts = {
     coordination: logLines.length,
     bus: busMessages.length,
     validation: errors + warnings,
     events: events.length,
-    replay: 0,
-    faults: 0,
-    actors: 0,
   };
 
   return (
@@ -179,27 +169,6 @@ function StreamBody({
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <ValidationList />
-      </div>
-    );
-  }
-  if (activeTab === "replay") {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col">
-        <ReplayPanel />
-      </div>
-    );
-  }
-  if (activeTab === "faults") {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col">
-        <FaultHistory />
-      </div>
-    );
-  }
-  if (activeTab === "actors") {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col">
-        <ActorInspector />
       </div>
     );
   }

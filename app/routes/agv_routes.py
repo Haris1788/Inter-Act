@@ -18,180 +18,38 @@ POST /agv/<agv_id>/load_clear     — AGV brain acknowledges load signal
 GET  /agv/<agv_id>/unload_ready   — AGV brain polls: is output arm ready?
 POST /agv/<agv_id>/unload_ready   — output arm signals: ready to receive
 POST /agv/<agv_id>/unload_clear   — AGV brain acknowledges unload signal
-
-Phase 4 Stage 3: handshake signals are now keyed by (task_id, agv_id) so
-concurrent tasks cannot cross-pollinate their load/unload state. Public
-functions accept task_id as an optional keyword arg (default "") for backward
-compatibility with existing tests that use the old single-key form.
-
-HTTP routes: the original routes were wired for agv_brain (Phase 3 removed it).
-No live HTTP caller exists post-Phase 3. They are preserved as deprecated stubs
-that pass task_id="" to the underlying signal helpers. They are safe to delete
-in a Phase 5 cleanup if Phase 5's actor_runner requires a real HTTP handshake
-interface — at that point the routes would need task_id in the path/body anyway.
 """
 
-import os
 import threading
 from datetime import datetime
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 
 from flask import Blueprint, jsonify, request
 
 from app import socketio
 from app.models import agv_state, arm_state, grid_state, pipeline_config
 
-# ── Backend mode ──────────────────────────────────────────────────────────────
-_MODE_KEY = "INTERACT_STATE"
-
-
-def _get_mode() -> str:
-    return os.environ.get(_MODE_KEY, "inmemory").lower().strip()
-
-
-# ── In-memory signal registry (inmemory backend) ─────────────────────────────
-# Phase 4 Stage 3: keyed by (task_id, agv_id) instead of agv_id alone.
-# Old callers (tests, backward-compat) use task_id="" → key ("", agv_id).
-_signals: Dict[Tuple[str, str], Dict[str, Any]] = {}
+# ── Load/unload signal registry (transient, cleared per task) ─────────────────
+# Maps agv_id -> {"load_ready": bool, "unload_ready": bool, "object_id": str|None}
+_signals: Dict[str, Dict[str, Any]] = {}
 _signals_lock = threading.Lock()
 
-_SIGNALS_EMPTY: Dict[str, Any] = {"load_ready": False, "unload_ready": False, "object_id": None}
 
-# ── Redis signal helpers ──────────────────────────────────────────────────────
-# Redis Hash key: signals:<task_id>:<agv_id>
-# Fields: load_ready ("true"/"false"), unload_ready ("true"/"false"), object_id (str or "__none__")
-
-_signals_redis_client = None
-_signals_redis_lock = threading.Lock()
-
-
-def _get_signals_redis():
-    global _signals_redis_client
-    if _signals_redis_client is None:
-        with _signals_redis_lock:
-            if _signals_redis_client is None:
-                import redis as redis_lib
-                url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-                _signals_redis_client = redis_lib.Redis.from_url(url, decode_responses=True)
-    return _signals_redis_client
-
-
-def _inject_signals_redis_client(client) -> None:
-    """Test hook: inject a fake Redis client for signals."""
-    global _signals_redis_client
-    _signals_redis_client = client
-
-
-def _signals_rkey(task_id: str, agv_id: str) -> str:
-    """Redis Hash key for a (task_id, agv_id) signal pair."""
-    return f"signals:{task_id}:{agv_id}"
-
-
-def _redis_get_signal(task_id: str, agv_id: str) -> dict:
-    r = _get_signals_redis()
-    raw = r.hgetall(_signals_rkey(task_id, agv_id))
-    if not raw:
-        return dict(_SIGNALS_EMPTY)
-    load_ready = raw.get("load_ready", "false") == "true"
-    unload_ready = raw.get("unload_ready", "false") == "true"
-    obj = raw.get("object_id", "__none__")
-    return {
-        "load_ready": load_ready,
-        "unload_ready": unload_ready,
-        "object_id": None if obj == "__none__" else obj,
-    }
-
-
-def _redis_set_signal(task_id: str, agv_id: str, **kw) -> None:
-    r = _get_signals_redis()
-    key = _signals_rkey(task_id, agv_id)
-    mapping = {}
-    for field, value in kw.items():
-        if field in ("load_ready", "unload_ready"):
-            mapping[field] = "true" if value else "false"
-        elif value is None:
-            mapping[field] = "__none__"
-        else:
-            mapping[field] = str(value)
-    r.hset(key, mapping=mapping)
-
-
-# ── Backend-routed signal accessors ───────────────────────────────────────────
-
-def _get_signal(agv_id: str, task_id: str = "") -> dict:
-    if _get_mode() == "redis":
-        return _redis_get_signal(task_id, agv_id)
+def _get_signal(agv_id: str) -> dict:
     with _signals_lock:
-        return dict(_signals.get((task_id, agv_id), _SIGNALS_EMPTY))
+        return dict(_signals.get(
+            agv_id,
+            {"load_ready": False, "unload_ready": False, "object_id": None},
+        ))
 
 
-def _set_signal(agv_id: str, task_id: str = "", **kw) -> None:
-    if _get_mode() == "redis":
-        _redis_set_signal(task_id, agv_id, **kw)
-        return
+def _set_signal(agv_id: str, **kw) -> None:
     with _signals_lock:
-        key = (task_id, agv_id)
-        if key not in _signals:
-            _signals[key] = dict(_SIGNALS_EMPTY)
-        _signals[key].update(kw)
-
-
-# ── Public in-process handshake API (used by ArmAgent / AGVAgent) ─────────────
-# Phase 4 Stage 3: task_id is an optional keyword arg (default "") so existing
-# callers that use the old 1/2-arg signature continue to work unchanged.
-# New callers pass task_id=<actual_task_id> to get per-task signal isolation.
-
-def signal_load(agv_id: str, object_id: str, task_id: str = "") -> None:
-    """Arm signals that the package has been placed on the AGV (load ready).
-
-    task_id scopes the signal to a specific task so concurrent tasks cannot
-    cross-pollinate their load state. Defaults to "" for backward compatibility.
-    """
-    _set_signal(agv_id, task_id=task_id, load_ready=True, object_id=object_id)
-    agv_state.set_carried(agv_id, object_id)
-    rec = agv_state.get(agv_id)
-    if rec:
-        _safe_emit_agv(rec)
-
-
-def poll_load(agv_id: str, task_id: str = "") -> bool:
-    """Return True when the load signal is set (package on AGV).
-
-    task_id scopes the poll to the matching task. Defaults to "" (old callers).
-    """
-    return _get_signal(agv_id, task_id=task_id)["load_ready"]
-
-
-def clear_load(agv_id: str, task_id: str = "") -> None:
-    """AGV acknowledges the load signal — clears it."""
-    _set_signal(agv_id, task_id=task_id, load_ready=False, object_id=None)
-
-
-def signal_unload(agv_id: str, task_id: str = "") -> None:
-    """Place arm signals that it is ready to receive the package."""
-    _set_signal(agv_id, task_id=task_id, unload_ready=True)
-
-
-def poll_unload(agv_id: str, task_id: str = "") -> bool:
-    """Return True when the unload signal is set (arm ready to receive)."""
-    return _get_signal(agv_id, task_id=task_id)["unload_ready"]
-
-
-def clear_unload(agv_id: str, task_id: str = "") -> None:
-    """AGV acknowledges the unload signal — clears it and removes carried object."""
-    _set_signal(agv_id, task_id=task_id, unload_ready=False)
-    agv_state.set_carried(agv_id, None)
-    rec = agv_state.get(agv_id)
-    if rec:
-        _safe_emit_agv(rec)
-
-
-def _safe_emit_agv(rec: dict) -> None:
-    """Best-effort agv_update emit — never raises (safe outside Flask context)."""
-    try:
-        socketio.emit("agv_update", _agv_payload(rec))
-    except Exception:
-        pass
+        if agv_id not in _signals:
+            _signals[agv_id] = {
+                "load_ready": False, "unload_ready": False, "object_id": None,
+            }
+        _signals[agv_id].update(kw)
 
 agv_bp = Blueprint("agv", __name__)
 
@@ -229,6 +87,154 @@ def get_grid():
     return jsonify({
         "warehouse": pipeline_config.get_warehouse_scene(),
         "runtime": grid_state.snapshot(),
+    })
+
+
+@agv_bp.route("/grid/obstacles", methods=["GET", "POST", "DELETE"])
+def grid_obstacles():
+    """US 34 Phase 6 — manual cell blockers for A* obstacle tests.
+
+    GET    -> list of currently-blocked cells.
+    POST   -> body {"cell": [c, r]} adds a blocker.
+              body {"clear": true}   removes ALL blockers.
+    DELETE -> body {"cell": [c, r]} removes one blocker.
+
+    Blockers are honoured by `scripts/agv_brain._astar` when the
+    coordination_mode is `smart`. Under any other mode they are inert.
+    """
+    if request.method == "GET":
+        return jsonify({"blockers": grid_state.blocked_cells()})
+    body = request.get_json(silent=True) or {}
+    if request.method == "POST":
+        if body.get("clear") is True:
+            grid_state.clear_blockers()
+            return jsonify({"status": "cleared",
+                            "blockers": grid_state.blocked_cells()})
+        cell = body.get("cell")
+        if not cell or len(cell) < 2:
+            return jsonify({"error": "missing cell"}), 400
+        grid_state.add_blocker(cell)
+        return jsonify({"status": "added", "cell": list(cell),
+                        "blockers": grid_state.blocked_cells()})
+    # DELETE
+    cell = body.get("cell")
+    if not cell or len(cell) < 2:
+        return jsonify({"error": "missing cell"}), 400
+    grid_state.remove_blocker(cell)
+    return jsonify({"status": "removed", "cell": list(cell),
+                    "blockers": grid_state.blocked_cells()})
+
+
+@agv_bp.route("/capabilities", methods=["GET"])
+def get_capabilities_table():
+    """US 34 (Phase 5 / C4 backend half).
+
+    Return the full per-AGV capability table — derived from `pipeline.yaml`
+    via `pipeline_config.get_all_agv_capabilities()`. The future Inspector
+    display + the "one frontend element wired to US 32 bus events" Taiga
+    acceptance line are DEFERRED — see `docs/us34-learning/UI-INTEGRATION-DEFERRED.md`.
+
+    Response shape:
+        {
+          "coordination_mode": "smart" | "decentralized" | "centralized",
+          "agvs": {
+            "agv-1": {
+                "agv_id": "agv-1",
+                "kind": "shuttle",
+                "weight_max_kg": 50.0,
+                "allowed_labels": ["red", "green", "blue", "any"],
+                "speed_factor": 1.0,
+                "bay_cell": [10, 3]
+            },
+            ...
+          },
+          "defaults": { ... ai.capability_defaults from pipeline.yaml ... },
+          "bid_weights": { "distance": 0.6, "capability": 0.3, "load": 0.1 }
+        }
+    """
+    try:
+        caps = pipeline_config.get_all_agv_capabilities()
+        agvs = {aid: c.to_dict() for aid, c in caps.items()}
+        return jsonify({
+            "coordination_mode": pipeline_config.get_coordination_mode(),
+            "agvs": agvs,
+            "defaults": pipeline_config.get_capability_defaults(),
+            "bid_weights": pipeline_config.get_bid_weights(),
+        })
+    except Exception as exc:
+        return jsonify({
+            "error": f"capabilities lookup failed: {exc}",
+            "agvs": {},
+        }), 500
+
+
+@agv_bp.route("/coord/snapshot", methods=["GET"])
+def coord_snapshot():
+    """Full live coordination state for an agent's tactical AI.
+
+    This is the 'shared status' channel: every AGV/arm brain reads this before
+    deciding its next script, so each agent's qwen14b reasons about what the
+    OTHERS are doing (who holds the lane, who is docked where, arm health,
+    the master plan's assignments) — i.e. AGV<->AGV and AGV<->arm coordinate
+    through this single snapshot rather than peer-to-peer.
+    """
+    agvs = {
+        aid: {
+            "cell": rec.get("cell"),
+            "status": rec.get("status"),
+            "carried_object": rec.get("carried_object"),
+            "bay": rec.get("bay"),
+            "capabilities": rec.get("capabilities"),
+        }
+        for aid, rec in agv_state.get_all().items()
+    }
+    station_holders = {
+        name: grid_state.station_lock(name).holder()
+        for name in ("input_arm", "output_arm")
+    }
+    try:
+        arms = arm_state.get_all_health()
+    except Exception:
+        arms = {}
+    try:
+        from app.agents.central_brain import get_brain
+        plan = get_brain().get_current_plan() or {}
+        assignments = plan.get("assignments", [])
+    except Exception:
+        assignments = []
+
+    # US 34 meta block — grid geometry + bid weights + station coordinates so
+    # each AGV's tactical brain can compute deterministic distance-aware scores.
+    meta = {}
+    try:
+        grid = pipeline_config.get_grid() or {}
+        cols = int(grid.get("cols", 14))
+        rows = int(grid.get("rows", 10))
+        # Manhattan diameter — max possible cell-to-cell distance on the grid.
+        diameter = max(1, (cols - 1) + (rows - 1))
+        stations_cfg = pipeline_config.get_stations() or {}
+        meta = {
+            "coordination_mode": pipeline_config.get_coordination_mode(),
+            "grid": {"cols": cols, "rows": rows, "diameter": diameter},
+            "bid_weights": pipeline_config.get_bid_weights(),
+            "stations": {
+                name: {
+                    "cell": list(st.get("cell") or []),
+                    "dock": list(st.get("dock") or st.get("cell") or []),
+                }
+                for name, st in stations_cfg.items()
+            },
+        }
+    except Exception as exc:
+        meta = {"error": f"meta build failed: {exc}"}
+
+    return jsonify({
+        "agvs": agvs,
+        "lane_holder": grid_state.lane().holder(),
+        "station_holders": station_holders,
+        "arms": arms,
+        "assignments": assignments,
+        "meta": meta,
     })
 
 
@@ -451,18 +457,12 @@ def release_lane():
     return jsonify({"status": "released" if released else "not_holder"})
 
 
-# ── Phase 5: load/unload handshake signal endpoints (DEPRECATED) ─────────────
-# These HTTP routes were originally consumed by agv_brain (removed in Phase 3).
-# No live HTTP caller exists post-Phase 3 cutover. They pass task_id="" to the
-# underlying signal helpers — effectively the same as the pre-Stage-3 behaviour.
-# Safe to delete in Phase 5 if actor_runner requires a real HTTP handshake
-# interface (which would need task_id in path/body at that point).
+# ── Phase 5: load/unload handshake signal endpoints ───────────────────────────
 
 @agv_bp.route("/agv/<agv_id>/load_ready", methods=["GET"])
 def get_load_ready(agv_id):
-    """DEPRECATED — AGV brain polls this to know when the input arm has placed the package.
-    No caller post-Phase 3. Passes task_id="" (backward compat)."""
-    sig = _get_signal(agv_id, task_id="")
+    """AGV brain polls this to know when the input arm has placed the package."""
+    sig = _get_signal(agv_id)
     return jsonify({
         "agv_id": agv_id,
         "ready": sig["load_ready"],
@@ -472,8 +472,7 @@ def get_load_ready(agv_id):
 
 @agv_bp.route("/agv/<agv_id>/load_ready", methods=["POST"])
 def signal_load_ready(agv_id):
-    """DEPRECATED — Input-arm brain calls this when a package has been placed on the AGV.
-    No caller post-Phase 3. Passes task_id="" (backward compat).
+    """Input-arm brain calls this when a package has been placed on the AGV.
 
     Body: {"object_id": "pkg-1"}
     """
@@ -483,7 +482,7 @@ def signal_load_ready(agv_id):
 
     data = request.get_json(silent=True) or {}
     object_id = data.get("object_id")
-    _set_signal(agv_id, task_id="", load_ready=True, object_id=object_id)
+    _set_signal(agv_id, load_ready=True, object_id=object_id)
     agv_state.set_carried(agv_id, object_id)
 
     updated = agv_state.get(agv_id)
@@ -498,28 +497,25 @@ def signal_load_ready(agv_id):
 
 @agv_bp.route("/agv/<agv_id>/load_clear", methods=["POST"])
 def clear_load_signal(agv_id):
-    """DEPRECATED — AGV brain clears the load signal after acknowledging the package.
-    No caller post-Phase 3."""
-    _set_signal(agv_id, task_id="", load_ready=False, object_id=None)
+    """AGV brain clears the load signal after acknowledging the package."""
+    _set_signal(agv_id, load_ready=False, object_id=None)
     return jsonify({"status": "ok"})
 
 
 @agv_bp.route("/agv/<agv_id>/unload_ready", methods=["GET"])
 def get_unload_ready(agv_id):
-    """DEPRECATED — AGV brain polls this to know when the output arm is ready to receive.
-    No caller post-Phase 3."""
-    sig = _get_signal(agv_id, task_id="")
+    """AGV brain polls this to know when the output arm is ready to receive."""
+    sig = _get_signal(agv_id)
     return jsonify({"agv_id": agv_id, "ready": sig["unload_ready"]})
 
 
 @agv_bp.route("/agv/<agv_id>/unload_ready", methods=["POST"])
 def signal_unload_ready(agv_id):
-    """DEPRECATED — Output-arm brain calls this when it is ready to receive the package.
-    No caller post-Phase 3."""
+    """Output-arm brain calls this when it is ready to receive the package."""
     if agv_state.get(agv_id) is None:
         return jsonify({"error": "unknown AGV", "code": "NOT_FOUND"}), 404
 
-    _set_signal(agv_id, task_id="", unload_ready=True)
+    _set_signal(agv_id, unload_ready=True)
     socketio.emit("log_message", {
         "timestamp": _ts(), "source": agv_id,
         "message": f"unload signal: output arm ready for {agv_id}",
@@ -529,9 +525,8 @@ def signal_unload_ready(agv_id):
 
 @agv_bp.route("/agv/<agv_id>/unload_clear", methods=["POST"])
 def clear_unload_signal(agv_id):
-    """DEPRECATED — AGV brain clears the unload signal and removes the carried object.
-    No caller post-Phase 3."""
-    _set_signal(agv_id, task_id="", unload_ready=False)
+    """AGV brain clears the unload signal and removes the carried object."""
+    _set_signal(agv_id, unload_ready=False)
     agv_state.set_carried(agv_id, None)
     updated = agv_state.get(agv_id)
     if updated:

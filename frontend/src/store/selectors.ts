@@ -6,7 +6,8 @@ import type { ActorId, TopologyActor, ActorRuntime } from "./types";
 // a spatial tick never re-renders topology/chrome.
 export const useActors = () => useStore((s) => s.actors);
 export const useActor = (id: ActorId) => useStore((s) => s.actors[id]);
-export const useZones = () => useStore((s) => s.zones);
+// Phase 7 Stage F: useZones removed — zones are kind:"zone" actors (useActors).
+export const usePool = () => useStore((s) => s.pool);
 export const useGoal = () => useStore((s) => s.goal);
 export const useSelectedActorId = () => useStore((s) => s.selectedActorId);
 
@@ -53,6 +54,7 @@ export const useEvents = () => useStore((s) => s.events);
 export const useDataSource = () => useStore((s) => s.dataSource);
 export const useLinkStatus = () => useStore((s) => s.linkStatus);
 export const useBusMessages = () => useStore((s) => s.busMessages);
+export const useBusRate = () => useStore((s) => s.busRate);
 export const useLogLines = () => useStore((s) => s.logLines);
 export const useValidation = () => useStore((s) => s.validation);
 
@@ -63,13 +65,5 @@ export const useAgvKinematics = () => useStore((s) => s.agvKinematics);
 export const useArmAngles = () => useStore((s) => s.armAngles);
 export const useTablePkgs = () => useStore((s) => s.tablePkgs);
 export const useAgvCargo = () => useStore((s) => s.agvCargo);
-/** Phase-6 payload entities. */
+export const useArmCargo = () => useStore((s) => s.armCargo);
 export const usePayloads = () => useStore((s) => s.payloads);
-/** Stage 5 Track B — all actor runtime entries (for runtimePosition). */
-export const useActorRuntimeAll = () => useStore((s) => s.actorRuntime);
-/** Phase 5 Stage 8 Track C — replay scrub flag. */
-export const useReplayMode = () => useStore((s) => s.replayMode);
-/** Phase 5 Stage 8 Track C — historical AGV positions at the scrub cursor. */
-export const useReplayPositions = () => useStore((s) => s.replayPositions);
-/** Phase 5.1 Stage 4 — planned AGV paths from agv_path SocketIO event. */
-export const useAgvPaths = () => useStore((s) => s.agvPaths);

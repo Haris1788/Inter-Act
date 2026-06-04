@@ -1,7 +1,60 @@
 import { useMemo } from "react";
 import { cn } from "@/lib/cn";
-import type { BusMessage } from "@/store/types";
-import { KIND_LABELS, kindChipClass } from "./busMessageChip";
+import type { BusKind, BusMessage } from "@/store/types";
+
+// US 34.1: labels cover the full backend bus envelope (was only
+// announce/bid/accept/dock heuristic). Each maps to a one-word chip so the
+// panel stays scannable.
+const KIND_LABELS: Record<BusKind, string> = {
+  announce: "announce",
+  bid: "bid",
+  accept: "accept",
+  dock: "dock",
+  task_announce: "announce",
+  task_orphan: "orphan",
+  claim: "claim",
+  agent_status: "status",
+  intent: "intent",
+  arm_approach: "approach",
+  arm_ready: "arm",
+  arm_busy: "busy",
+  yield: "yield",
+  help_request: "help",
+  plan: "plan",
+  task_spec: "spec",
+  reassignment: "reassign",
+  system: "system",
+};
+
+function kindChipClass(kind: BusKind): string {
+  switch (kind) {
+    case "announce":
+    case "task_announce":
+    case "plan":
+    case "task_spec":
+      return "bg-info-bg text-info";
+    case "bid":
+      return "bg-warn-bg text-warn";
+    case "accept":
+    case "arm_ready":
+    case "dock":
+      return "bg-ok-bg text-ok";
+    case "claim":
+      return "bg-ok-bg text-ok";
+    case "task_orphan":
+    case "help_request":
+      return "bg-warn-bg text-warn";
+    case "intent":
+    case "arm_approach":
+    case "agent_status":
+    case "yield":
+    case "arm_busy":
+    case "reassignment":
+    case "system":
+    default:
+      return "bg-bg-sunken text-ink-3";
+  }
+}
 
 interface BusPaneProps {
   messages: BusMessage[];
@@ -14,9 +67,7 @@ export function BusPane({ messages }: BusPaneProps) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto py-1.5 font-mono text-11.5">
       {reversed.length === 0 ? (
-        <p className="px-4 py-3 text-ink-5 text-11.5">
-          No bus traffic — negotiation events appear here
-        </p>
+        <p className="px-4 py-3 text-ink-5 text-11.5">No bus traffic</p>
       ) : (
         reversed.map((msg) => (
           <div
@@ -25,7 +76,7 @@ export function BusPane({ messages }: BusPaneProps) {
               "grid items-baseline gap-x-2 px-3.5 py-[2px] leading-[1.5]",
               "hover:bg-bg-hover",
             )}
-            style={{ gridTemplateColumns: "72px 90px auto 1fr" }}
+            style={{ gridTemplateColumns: "72px 80px auto 1fr" }}
           >
             {/* Timestamp */}
             <span className="text-ink-5 shrink-0">{msg.ts}</span>
@@ -41,11 +92,14 @@ export function BusPane({ messages }: BusPaneProps) {
               {KIND_LABELS[msg.kind]}
             </span>
 
-            {/* From · round */}
+            {/* From → To */}
             <span className="shrink-0 text-ink-4">
               {msg.from}
-              {msg.round != null && msg.round > 0 ? (
-                <span className="ml-1 text-ink-5">r{msg.round}</span>
+              {msg.to ? (
+                <>
+                  <span className="mx-1 text-ink-5">→</span>
+                  {msg.to}
+                </>
               ) : null}
             </span>
 
@@ -55,32 +109,6 @@ export function BusPane({ messages }: BusPaneProps) {
               style={{ whiteSpace: "pre-wrap" }}
             >
               {msg.text}
-              {/* Phase-6 rationale: shown only on consensus_reached msgs
-                  carrying the optional rationale payload. Renders one
-                  sub-line per slot listing winner + candidate scores. */}
-              {msg.rationale && msg.rationale.length > 0 ? (
-                <div className="mt-0.5 pl-1 text-10 text-ink-5">
-                  {msg.constraint ? (
-                    <div className="italic">constraint · {msg.constraint || "default"}</div>
-                  ) : null}
-                  {msg.rationale.map((r) => (
-                    <div key={r.slot_id}>
-                      <span className="text-ink-3">{r.slot_id}</span>
-                      {" → "}
-                      <span className="text-ok">{r.winner ?? "—"}</span>
-                      {r.candidates.length > 1 ? (
-                        <span className="ml-1 text-ink-5">
-                          (
-                          {r.candidates
-                            .map((c) => `${c.sender} ${c.score.toFixed(2)}`)
-                            .join(" · ")}
-                          )
-                        </span>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
             </span>
           </div>
         ))

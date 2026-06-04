@@ -1,17 +1,13 @@
 import { cn } from "@/lib/cn";
 import type { DataSource, LinkStatus } from "@/store/types";
 
-// Track C (Stage 6): "faults" and "actors" added alongside Track B's "replay".
-type TabId = "coordination" | "bus" | "validation" | "events" | "replay" | "faults" | "actors";
+type TabId = "coordination" | "bus" | "validation" | "events";
 
 interface TabCounts {
   coordination: number;
   bus: number;
   validation: number;
   events: number;
-  replay: number;
-  faults: number;
-  actors: number;
 }
 
 interface LogsHeadProps {
@@ -32,9 +28,6 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "bus", label: "Message bus" },
   { id: "validation", label: "Validation" },
   { id: "events", label: "Events" },
-  { id: "replay", label: "Replay" },
-  { id: "faults", label: "Faults" },
-  { id: "actors", label: "Actors" },
 ];
 
 export function LogsHead({

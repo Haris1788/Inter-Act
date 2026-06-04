@@ -24,8 +24,8 @@ export function useActorEvents(
 
 export function useTopologyValidation(): ValidationReport {
   const actors = useStore((s) => s.actors);
-  const zones = useStore((s) => s.zones);
-  return useMemo(() => validateTopology({ actors, zones }), [actors, zones]);
+  // Phase 7 Stage F: zones are kind:"zone" actors; validation reads them from actors.
+  return useMemo(() => validateTopology({ actors }), [actors]);
 }
 
 function useDeployedDoc(): TopologyDoc | null {
