@@ -25,6 +25,44 @@ from utils import send_agv_health, DEFAULT_HOST
 AGV_ID: str = os.environ.get("AGV_ID", "agv-1")
 COORDINATION_MODE: str = os.environ.get("COORDINATION_MODE", "centralized").lower()
 
+
+# ── US 34 capability env reader (mirror of app/models/agv_capabilities.from_env) ─
+# Lives here because scripts/ cannot import from app/. Single source of truth
+# is still pipeline.yaml — generate_compose.py propagates these env vars.
+def _parse_labels_csv(raw):
+    if not raw:
+        return ["any"]
+    parts = [p.strip().lower() for p in str(raw).split(",") if p.strip()]
+    return parts or ["any"]
+
+
+def _coerce_float(raw, fallback):
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return fallback
+
+
+CAPABILITIES = {
+    "agv_id": AGV_ID,
+    "kind": os.environ.get("AGV_KIND", "shuttle"),
+    "weight_max_kg": _coerce_float(os.environ.get("AGV_WEIGHT_MAX_KG"), 50.0),
+    "allowed_labels": _parse_labels_csv(os.environ.get("AGV_ALLOWED_LABELS")),
+    "speed_factor": _coerce_float(os.environ.get("AGV_SPEED_FACTOR"), 1.0),
+}
+
+
+# Decentralized-family modes — both US 32 ('decentralized') and US 34 ('smart')
+# run the contract-net bus protocol. Only the strict 'centralized' value
+# bypasses it entirely.
+def _mode_is_decentralized() -> bool:
+    return COORDINATION_MODE in ("decentralized", "smart")
+
+
+def _mode_is_smart() -> bool:
+    return COORDINATION_MODE == "smart"
+
+
 app = Flask(__name__)
 
 # ── Task state (process-local, one task at a time) ────────────────────────────
@@ -46,12 +84,20 @@ def health():
 
 @app.route("/status", methods=["GET"])
 def status():
-    """Current task status + assignment dict."""
+    """Current task status + assignment dict + US 34 capabilities."""
     return jsonify({
         "agv_id": AGV_ID,
         "task_status": _task_status,
         "current_task": _current_task,
+        "capabilities": CAPABILITIES,
+        "coordination_mode": COORDINATION_MODE,
     })
+
+
+@app.route("/capabilities", methods=["GET"])
+def capabilities():
+    """US 34: return this AGV's capability declaration (read from env at boot)."""
+    return jsonify(CAPABILITIES)
 
 
 @app.route("/assign", methods=["POST"])
@@ -183,10 +229,11 @@ if __name__ == "__main__":
     print(f"Backend: {DEFAULT_HOST}", flush=True)
     print(f"COORDINATION_MODE: {COORDINATION_MODE}", flush=True)
 
-    # Start the decentralized bus listener (Phase 1 contract-net). In
-    # 'centralized' mode the listener simply isn't started — fault handling
+    # Start the decentralized bus listener (US 32 contract-net) for both
+    # 'decentralized' (US 32) and 'smart' (US 34) modes — smart is a superset.
+    # In 'centralized' mode the listener simply isn't started; fault handling
     # then falls back to central_brain.reassign on the backend.
-    if COORDINATION_MODE == "decentralized":
+    if _mode_is_decentralized():
         try:
             from agv_bus import BusListener
             BusListener(
@@ -194,7 +241,9 @@ if __name__ == "__main__":
                 take_task_fn=_take_task,
                 current_state_fn=_current_state,
             ).start()
-            print(f"[{AGV_ID}] decentralized BusListener started", flush=True)
+            mode_tag = "smart (US 34)" if _mode_is_smart() else "decentralized (US 32)"
+            print(f"[{AGV_ID}] {mode_tag} BusListener started", flush=True)
+            print(f"[{AGV_ID}] capabilities: {CAPABILITIES}", flush=True)
         except Exception as exc:
             print(f"[{AGV_ID}] BusListener failed to start: {exc}",
                   file=sys.stderr)

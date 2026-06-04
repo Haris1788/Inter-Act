@@ -25,9 +25,23 @@ AGV_ID: str = os.environ.get("AGV_ID", "agv-1")
 DEFAULT_HOST: str = os.environ.get("SERVER_HOST", "http://localhost:5000")
 COORDINATION_MODE: str = os.environ.get("COORDINATION_MODE", "centralized").lower()
 
-MOVE_STEP_SLEEP: float = 0.5    # cadence between cell hops; tuned so the
-                                # frontend's eased motion never catches up and
-                                # stalls -> continuous vehicle-like travel
+# US 34.1: per-AGV speed differentiation. Base cadence is 0.5s/cell; scale
+# down for faster vehicles (AGV_SPEED_FACTOR>1) and up for slower ones (<1)
+# so the canvas visibly shows AGV-1 sprinting and AGV-3 lumbering. Floor at
+# 0.05s/cell so even the fastest AGV doesn't outrun the frontend's eased
+# motion — the original 0.5s tuning note still holds.
+def _resolve_move_step_sleep() -> float:
+    base = 0.5
+    try:
+        sf = float(os.environ.get("AGV_SPEED_FACTOR", "1.0"))
+    except (TypeError, ValueError):
+        sf = 1.0
+    if sf <= 0:
+        sf = 1.0
+    return max(0.05, base / sf)
+
+
+MOVE_STEP_SLEEP: float = _resolve_move_step_sleep()
 LANE_ACQUIRE_TIMEOUT: float = 60.0
 LOAD_SIGNAL_TIMEOUT: float = 120.0
 UNLOAD_SIGNAL_TIMEOUT: float = 120.0
@@ -66,19 +80,20 @@ def _log(msg: str) -> None:
 
 
 # ── Phase 3: peer signals (no-op in centralized mode) ───────────────────────
-def _bus_intent(task_id: Optional[str], action: str, detail: str = "") -> None:
-    if COORDINATION_MODE != "decentralized":
+def _bus_intent(task_id: Optional[str], action: str, detail: str = "",
+                path_cells: Optional[list] = None) -> None:
+    if COORDINATION_MODE not in ("decentralized", "smart"):
         return
     try:
         from agv_bus import publish_intent
-        publish_intent(task_id, action, detail)
+        publish_intent(task_id, action, detail, path_cells=path_cells)
     except Exception:
         pass
 
 
 def _bus_arm_approach(task_id: Optional[str], arm_station: str,
                        eta_s: float = 0.0) -> None:
-    if COORDINATION_MODE != "decentralized":
+    if COORDINATION_MODE not in ("decentralized", "smart"):
         return
     try:
         from agv_bus import publish_arm_approach
@@ -89,7 +104,7 @@ def _bus_arm_approach(task_id: Optional[str], arm_station: str,
 
 def _bus_yield(task_id: Optional[str], reason: str,
                 waiting_for: str = "") -> None:
-    if COORDINATION_MODE != "decentralized":
+    if COORDINATION_MODE not in ("decentralized", "smart"):
         return
     try:
         from agv_bus import publish_yield
@@ -99,7 +114,7 @@ def _bus_yield(task_id: Optional[str], reason: str,
 
 
 def _bus_help(task_id: Optional[str], reason: str, blocked_at: str = "") -> None:
-    if COORDINATION_MODE != "decentralized":
+    if COORDINATION_MODE not in ("decentralized", "smart"):
         return
     try:
         from agv_bus import publish_help_request
@@ -116,16 +131,30 @@ def _script_move_to_input(ctx: dict) -> bool:
     pid = ctx.get("package_id")
     route = ctx["route_to_input"]
     _bus_intent(pid, "move_to_input",
-                f"heading to input arm via {len(route)} cells")
+                f"heading to input arm via {len(route)} cells",
+                path_cells=route)
     for idx, cell in enumerate(route):
-        # One cell out: announce arm approach so the arm + peers can react.
-        if idx == len(route) - 1:
+        # Two cells out: send the "I'm coming" early-warning signal so the
+        # input arm can prepare. eta_s > 0 means "not docked yet, hold off."
+        if idx == len(route) - 2 and len(route) >= 2:
             _bus_arm_approach(pid, "input_arm",
-                              eta_s=MOVE_STEP_SLEEP)
+                              eta_s=MOVE_STEP_SLEEP * 2)
         res = _post(f"/agv/{AGV_ID}/move", {"cell": cell, "status": "moving"})
         if res is None:
             return False
         time.sleep(MOVE_STEP_SLEEP)
+    # Dock settle: hold long enough for the frontend canvas tween (260ms)
+    # to finish placing the AGV at the dock cell BEFORE we tell the arm
+    # we're ready. Using a fixed 0.7s lower bound — was MOVE_STEP_SLEEP
+    # which for AGV-1 (speed_factor 1.6) was only 0.31s, leaving the
+    # canvas mid-tween when the arm started sweeping.
+    time.sleep(max(0.7, MOVE_STEP_SLEEP))
+    _post(f"/agv/{AGV_ID}/move", {"cell": route[-1], "status": "loading"})
+    _bus_arm_approach(pid, "input_arm", eta_s=0.0)
+    # One more guard beat — gives the operator a clear "AGV docked, then
+    # arm acts" perception. The arm choreography on the backend sees the
+    # status flip immediately, but starts its gate + sweep after this.
+    time.sleep(0.4)
     return True
 
 
@@ -174,7 +203,14 @@ def _script_acquire_lane(ctx: dict) -> bool:
 
 
 def _script_traverse_lane(ctx: dict) -> bool:
-    for cell in ctx["lane_cells"]:
+    pid = ctx.get("package_id")
+    lane = ctx["lane_cells"]
+    # US 34.1: announce the lane path up front so the canvas polyline renders
+    # the full input→output leg too, not only bay→input.
+    _bus_intent(pid, "traverse_lane",
+                f"crossing lane via {len(lane)} cells",
+                path_cells=lane)
+    for cell in lane:
         res = _post(f"/agv/{AGV_ID}/move", {"cell": cell, "status": "moving"})
         if res is None:
             return False
@@ -199,14 +235,21 @@ def _script_move_to_output(ctx: dict) -> bool:
     pid = ctx.get("package_id")
     route = ctx["route_to_output"]
     _bus_intent(pid, "move_to_output",
-                f"heading to output arm via {len(route)} cells")
+                f"heading to output arm via {len(route)} cells",
+                path_cells=route)
     for idx, cell in enumerate(route):
-        if idx == len(route) - 1:
-            _bus_arm_approach(pid, "output_arm", eta_s=MOVE_STEP_SLEEP)
+        if idx == len(route) - 2 and len(route) >= 2:
+            _bus_arm_approach(pid, "output_arm",
+                              eta_s=MOVE_STEP_SLEEP * 2)
         res = _post(f"/agv/{AGV_ID}/move", {"cell": cell, "status": "moving"})
         if res is None:
             return False
         time.sleep(MOVE_STEP_SLEEP)
+    # Dock settle (mirrors input arm — see _script_move_to_input).
+    time.sleep(max(0.7, MOVE_STEP_SLEEP))
+    _post(f"/agv/{AGV_ID}/move", {"cell": route[-1], "status": "unloading"})
+    _bus_arm_approach(pid, "output_arm", eta_s=0.0)
+    time.sleep(0.4)
     return True
 
 
@@ -230,7 +273,12 @@ def _script_release_lane(ctx: dict) -> bool:
 
 def _script_return_to_bay(ctx: dict) -> bool:
     # Travel the path back to the bay cell-by-cell (was a single instant jump).
-    for cell in ctx.get("route_to_bay") or [ctx["bay"]]:
+    pid = ctx.get("package_id")
+    route = ctx.get("route_to_bay") or [ctx["bay"]]
+    _bus_intent(pid, "return_to_bay",
+                f"returning to bay via {len(route)} cells",
+                path_cells=route)
+    for cell in route:
         res = _post(f"/agv/{AGV_ID}/move", {"cell": cell, "status": "returning"})
         if res is None:
             return False
@@ -247,7 +295,7 @@ def _script_fault(ctx: dict) -> bool:
     error = ctx.get("fault_reason", "brain declared fault")
     # In decentralized mode, BROADCAST first so peers can pick up the work
     # immediately; THEN update local /health so cell/lane locks are released.
-    if COORDINATION_MODE == "decentralized":
+    if COORDINATION_MODE in ("decentralized", "smart"):
         try:
             from agv_bus import publish_task_orphan
             assignment = ctx.get("assignment", {}) or {}
@@ -444,7 +492,7 @@ def run_task(assignment: dict, route_ctx: Optional[dict] = None) -> bool:
 
     # In decentralized mode, broadcast our current task so peers know what
     # task to orphan if we go down. agent_status is the heartbeat-with-task.
-    if COORDINATION_MODE == "decentralized":
+    if COORDINATION_MODE in ("decentralized", "smart"):
         try:
             from agv_bus import publish_agent_status
             tid = assignment.get("task_id") or assignment.get("package_id") or ctx["package_id"]
@@ -497,7 +545,7 @@ def run_task(assignment: dict, route_ctx: Optional[dict] = None) -> bool:
     _log(f"task complete: pkg={ctx['package_id']}")
     _post(f"/agv/{AGV_ID}/health", {"health": "alive"})
     # Tell peers we're idle again
-    if COORDINATION_MODE == "decentralized":
+    if COORDINATION_MODE in ("decentralized", "smart"):
         try:
             from agv_bus import publish_agent_status
             publish_agent_status(status="done", task_id=None, assignment={})
@@ -530,16 +578,133 @@ def _fetch_route_ctx() -> Optional[dict]:
     input_dock = list(in_st.get("dock") or in_st.get("cell", bay))
     output_dock = list(out_st.get("dock") or out_st.get("cell", bay))
 
+    # US 34 (S1): smart-mode uses A* over the grid (with manual blockers
+    # and other-AGV occupancy as obstacles); falls back to straight-line on
+    # no-path. Non-smart modes use the verbatim US 32 paths.
     return {
         "bay": bay,
-        "route_to_input": _straight_path(bay, input_dock),
-        "lane_cells": lane_cells or _straight_path(input_dock, output_dock),
+        "route_to_input": _smart_path(bay, input_dock, data),
+        "lane_cells": lane_cells or _smart_path(input_dock, output_dock, data),
         "route_to_output": [output_dock],
         # Return goes UP the output-dock column first, then sidesteps into
         # the bay column at the AGV's own row — avoids crossing other AGVs'
-        # bays when bays are stacked on the same column.
-        "route_to_bay": _bay_return_path(output_dock, bay),
+        # bays when bays are stacked on the same column. In smart mode this
+        # is computed by A* with the same obstacle awareness.
+        "route_to_bay": (
+            _smart_path(output_dock, bay, data)
+            if _mode_is_smart()
+            else _bay_return_path(output_dock, bay)
+        ),
     }
+
+
+def _astar_path(start, end, grid_cols, grid_rows, blocked, occupied_other):
+    """US 34 Phase 6: 4-neighbour A* over the warehouse grid.
+
+    - `blocked` is a set of (col,row) cells the AGV must NOT traverse
+      (manual blockers from /grid/obstacles).
+    - `occupied_other` is the set of cells held by OTHER AGVs (live snapshot);
+      we route around them as a courtesy. Empty set degenerates to plain
+      4-neighbour A* over the grid.
+
+    Returns a list of [col,row] from start (inclusive) to end (inclusive), or
+    None if no path exists. Caller falls back to `_straight_path`.
+    """
+    import heapq
+    sx, sy = int(start[0]), int(start[1])
+    ex, ey = int(end[0]), int(end[1])
+
+    def h(c, r):
+        return abs(c - ex) + abs(r - ey)
+
+    if not (0 <= sx < grid_cols and 0 <= sy < grid_rows):
+        return None
+    if not (0 <= ex < grid_cols and 0 <= ey < grid_rows):
+        return None
+
+    start_t = (sx, sy)
+    goal_t = (ex, ey)
+    if start_t == goal_t:
+        return [[sx, sy]]
+
+    open_heap = [(h(sx, sy), 0, start_t, None)]
+    came_from = {}
+    g_score = {start_t: 0}
+
+    while open_heap:
+        _, g, cur, parent = heapq.heappop(open_heap)
+        if cur in came_from:
+            continue
+        came_from[cur] = parent
+        if cur == goal_t:
+            # Reconstruct path.
+            path = []
+            t = cur
+            while t is not None:
+                path.append([t[0], t[1]])
+                t = came_from[t]
+            path.reverse()
+            return path
+        cx, cy = cur
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = cx + dx, cy + dy
+            if not (0 <= nx < grid_cols and 0 <= ny < grid_rows):
+                continue
+            nt = (nx, ny)
+            if nt in blocked and nt != goal_t:
+                continue
+            if nt in occupied_other and nt != goal_t:
+                continue
+            new_g = g + 1
+            if new_g < g_score.get(nt, 10**9):
+                g_score[nt] = new_g
+                heapq.heappush(open_heap, (new_g + h(nx, ny), new_g, nt, cur))
+
+    return None
+
+
+def _smart_path(start, end, grid_data):
+    """US 34 smart-mode router. A* with obstacle awareness; straight-line fallback.
+
+    `grid_data` is the dict from `_get("/grid")` — provides cols, rows,
+    runtime occupancy, and blockers.
+    """
+    if not _mode_is_smart():
+        return _straight_path(start, end)
+    try:
+        wh = grid_data.get("warehouse", {})
+        runtime = grid_data.get("runtime", {})
+        grid = wh.get("grid", {})
+        cols = int(grid.get("cols", 14))
+        rows = int(grid.get("rows", 10))
+        blocked = {(int(c[0]), int(c[1])) for c in runtime.get("blockers", []) or []}
+        occupancy = runtime.get("occupancy") or {}
+        # Treat OTHER AGVs as soft obstacles; never block on my own cell.
+        occupied_other = set()
+        for aid, c in occupancy.items():
+            if aid == AGV_ID or not c or len(c) < 2:
+                continue
+            occupied_other.add((int(c[0]), int(c[1])))
+        # Also treat OTHER AGVs' BAY cells as obstacles. Without this,
+        # returning AGVs walk straight through their peers' parked bays.
+        for agv_cfg in wh.get("agvs", []) or []:
+            if agv_cfg.get("id") == AGV_ID:
+                continue
+            bay = agv_cfg.get("bay")
+            if bay and len(bay) >= 2:
+                occupied_other.add((int(bay[0]), int(bay[1])))
+        path = _astar_path(start, end, cols, rows, blocked, occupied_other)
+        if path:
+            return path
+    except Exception as exc:
+        print(f"[{AGV_ID}] A* error: {exc}; falling back to straight-line",
+              flush=True)
+    return _straight_path(start, end)
+
+
+def _mode_is_smart():
+    """Local helper — mirrors scripts/agv_server._mode_is_smart()."""
+    return COORDINATION_MODE == "smart"
 
 
 def _straight_path(start: list, end: list) -> list:

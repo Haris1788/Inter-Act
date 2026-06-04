@@ -45,16 +45,42 @@ def _log(source: str, msg: str) -> None:
     })
 
 
-def _animate_arm(arm_id: int, angles: list, delay: float = 0.25) -> None:
+def _animate_arm(arm_id: int, angles: list, delay: float = 0.18) -> None:
     """Emit arm_angle_update events in sequence to animate the arm sweeping."""
     for angle in angles:
         socketio.emit("arm_angle_update", {"arm_id": arm_id, "angle": angle})
         time.sleep(delay)
 
 
+def _sweep_angles(from_deg: float, to_deg: float, steps: int = 6) -> list:
+    """Build a smooth arc from from_deg → to_deg taking the SHORT way around.
+    Without picking the short way, a 270°→0° sweep would walk backwards
+    through 180° (visible as the arm rotating the wrong direction)."""
+    diff = ((to_deg - from_deg + 540.0) % 360.0) - 180.0   # signed shortest delta
+    return [(from_deg + diff * (i / steps)) % 360.0 for i in range(1, steps + 1)]
+
+
 def _emit_table(station: str, packages: list) -> None:
     """Tell the frontend which packages are visible on an arm's table."""
     socketio.emit("table_update", {"station": station, "packages": packages})
+
+
+def _emit_object_owner(object_id: str, owner_type: str, owner_id: str,
+                       carrier_arm: int | None = None,
+                       carrier_asset: str | None = None,
+                       color: str | None = None) -> None:
+    """Tell the frontend who currently owns this object — table, arm, or AGV.
+    The color travels with the event so the frontend's unified PayloadLayer
+    can paint the right colour regardless of which carrier the package is on."""
+    socketio.emit("object_update", {
+        "object_id": object_id,
+        "owner_type": owner_type,
+        "owner_id": owner_id,
+        "carrier_arm": carrier_arm,
+        "carrier_asset": carrier_asset,
+        "color": color,
+        "event_seq": int(time.time() * 1000),
+    })
 
 
 def _arm_ai_confirm(arm_id: int, agv_id: str, action: str) -> str:
@@ -121,32 +147,33 @@ def _arm_ai_confirm(arm_id: int, agv_id: str, action: str) -> str:
         return "fallback"
 
 
-def _arm_ai_gate(arm_id: int, agv_id: str, action: str, tries: int = 6) -> None:
-    """Poll the arm tactical AI a few times. Proceed on 'go' or after the
-    bounded wait (deterministic fallback — never deadlock the demo).
-
-    Logs every decision symmetrically with the AGV brain so the audience
-    can see the arm AI participating: GO / HOLD / fallback are all visible.
+def _arm_ai_gate(arm_id: int, agv_id: str, action: str, tries: int = 2) -> None:
+    """Ask the arm AI ONCE (fail-fast). Proceed immediately on go/fallback/wait.
+    The old 6×2.5s polling stalled the arm thread for 15s+ under concurrent
+    qwen14b load, which is exactly when the AGV's load_ready timeout fires.
+    The AI's judgment is recorded for the audience, but never blocks progress.
     """
-    for _ in range(tries):
-        choice = _arm_ai_confirm(arm_id, agv_id, action)
+    for attempt in range(tries):
+        try:
+            choice = _arm_ai_confirm(arm_id, agv_id, action)
+        except Exception as exc:
+            _log(f"{action}-arm",
+                 f"arm-{arm_id} AI gate raised {exc} - proceeding")
+            return
         if choice == "go":
             _log(f"{action}-arm",
-                 f"arm-{arm_id} AI decision: GO {action} for {agv_id}")
+                 f"arm-{arm_id} AI: GO {action} for {agv_id}")
             return
         if choice == "fallback":
             _log(f"{action}-arm",
-                 f"arm-{arm_id} AI unavailable - proceeding deterministically "
-                 f"({action} for {agv_id})")
+                 f"arm-{arm_id} AI unavailable - proceeding ({action} {agv_id})")
             return
-        # choice == "wait"
-        _log(f"{action}-arm",
-             f"arm-{arm_id} AI decision: HOLD {action} for {agv_id}")
-        time.sleep(2.5)
-    # Cap reached — explicit deterministic proceed so the demo never hangs
+        if attempt < tries - 1:
+            _log(f"{action}-arm",
+                 f"arm-{arm_id} AI: HOLD {action} for {agv_id} (will retry once)")
+            time.sleep(1.0)
     _log(f"{action}-arm",
-         f"arm-{arm_id} AI gate cap reached after {tries} HOLDs - "
-         f"proceeding deterministically ({action} for {agv_id})")
+         f"arm-{arm_id} AI gate cap reached - proceeding ({action} {agv_id})")
 
 
 def _parse_package_count(text: str) -> int:
@@ -205,57 +232,150 @@ def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c") 
     backend = "http://backend:5000"
 
     # Resolve station cells and arm IDs from config.
+    # Also derive each arm's PICK angle (toward its table) and DROP angle
+    # (toward its AGV dock) from station geometry — the input arm has its
+    # dock to the EAST (angle 0°) while the output arm has its dock to the
+    # WEST (angle 180°). Hard-coding 0/180 broke the output arm: it rotated
+    # toward the empty table to "pick", then toward the AGV to "drop" — exactly
+    # backwards.
+    import math
+    def _arm_angles_for(station: dict) -> tuple[float, float, float]:
+        """Return (rest_angle, pick_angle, drop_angle) in degrees.
+        - drop = points at the AGV dock
+        - pick = points at the table (mirror of dock across pivot)
+        - rest = 270° (up), classic neutral
+        Defaults handle missing geometry cleanly."""
+        px = station.get("px") or {}
+        dock_px = station.get("dock_px") or station.get("px") or {}
+        ax, ay = px.get("x", 0.0), px.get("y", 0.0)
+        dx, dy = dock_px.get("x", ax + 1), dock_px.get("y", ay)
+        drop_deg = (math.degrees(math.atan2(dy - ay, dx - ax)) + 360.0) % 360.0
+        pick_deg = (drop_deg + 180.0) % 360.0
+        return (270.0, pick_deg, drop_deg)
+
     try:
         cfg = requests.get(f"{backend}/config", timeout=5).json()
         stations = cfg.get("warehouse", {}).get("stations", {})
         in_st = stations.get("input_arm", {})
         out_st = stations.get("output_arm", {})
-        # Poll the DOCK cell (where the AGV actually parks), not the arm cell.
         in_cell = in_st.get("dock") or in_st.get("cell", [2, 1])
         out_cell = out_st.get("dock") or out_st.get("cell", [11, 1])
         arms = {f"arm-{a['id']}": a for a in cfg.get("arms", [])}
         in_arm_id = int((in_st.get("served_by", "arm-1") or "arm-1").split("-")[1])
         out_arm_id = int((out_st.get("served_by", "arm-2") or "arm-2").split("-")[1])
+        in_rest, in_pick, in_drop = _arm_angles_for(in_st)
+        out_rest, out_pick, out_drop = _arm_angles_for(out_st)
     except Exception:
         in_cell, out_cell = [2, 1], [11, 1]
         in_arm_id, out_arm_id = 1, 2
+        in_rest, in_pick, in_drop = 270.0, 180.0, 0.0
+        out_rest, out_pick, out_drop = 270.0, 0.0, 180.0
 
     def _agv_cell():
         rec = agv_state.get(agv_id)
         return rec.get("cell", [-1, -1]) if rec else [-1, -1]
 
+    def _agv_docked_at(target_cell, expected_status: str) -> bool:
+        """True only when the AGV reports the right cell AND a settled status
+        (loading at input dock, unloading at output dock). The AGV brain flips
+        to this status AFTER the settle delay — this is the "I am here, you
+        may load/unload" signal. Cell match alone is not enough: an AGV
+        passing through a cell mid-route reports status=moving."""
+        rec = agv_state.get(agv_id) or {}
+        cell = rec.get("cell", [-1, -1])
+        status = rec.get("status", "")
+        return (cell[0] == target_cell[0]
+                and cell[1] == target_cell[1]
+                and status == expected_status)
+
     pkg_info = [{"id": package_id, "color": pkg_color}]
 
     # ── Show package waiting on input table ──────────────────────────────────
     _emit_table("input_arm", pkg_info)
+    _emit_object_owner(package_id, "zone", "input_arm", color=pkg_color)
     _log("input-arm", f"package {package_id} ready on input table")
 
-    # ── Wait for AGV to arrive at input station ──────────────────────────────
-    deadline = time.time() + 120
+    # ── Wait for AGV to signal DOCKED at input station ───────────────────────
+    # We wait for status=docked (the AGV brain's explicit "I am parked, you
+    # may load" signal) — not just cell match. This avoids the bug where the
+    # arm started loading while the AGV was still in motion through the cell.
+    docked = False
+    deadline = time.time() + 60
     while time.time() < deadline:
-        cell = _agv_cell()
-        if cell[0] == in_cell[0] and cell[1] == in_cell[1]:
+        if _agv_docked_at(in_cell, "loading"):
+            docked = True
             break
-        time.sleep(0.5)
+        time.sleep(0.3)
+
+    if not docked:
+        # AGV never reached the dock cell — abort cleanly. Do NOT POST
+        # load_ready blindly (that would put a phantom package on a
+        # non-existent AGV). AGV's own LOAD_SIGNAL_TIMEOUT will fault
+        # the task cleanly so a peer can re-bid.
+        _log("input-arm",
+             f"ABORT: {agv_id} never reached input dock {in_cell} "
+             f"within 60s — aborting load choreography")
+        return
 
     _log("input-arm", f"AGV {agv_id} docked — loading {package_id}")
 
-    # Arm<->AGV AI handshake: arm-N's tactical brain confirms it is safe/ready
-    # to load this AGV before the arm sweeps.
-    _arm_ai_gate(in_arm_id, agv_id, "load")
-
-    # Arm animation: sweep from resting (270°=up) → left (180°=table) → right (0°=AGV)
-    _animate_arm(in_arm_id, [270, 230, 190, 180, 190, 230, 270, 310, 350, 0, 350, 310, 270])
-
-    # Package is now on the AGV — clear from input table.
-    _emit_table("input_arm", [])
-
+    # Arm<->AGV AI handshake (fail-fast — see _arm_ai_gate).
     try:
-        requests.post(f"{backend}/agv/{agv_id}/load_ready",
-                      json={"object_id": package_id}, timeout=5)
+        _arm_ai_gate(in_arm_id, agv_id, "load")
+    except Exception as exc:
+        _log("input-arm", f"arm-{in_arm_id} gate raised {exc} - proceeding")
+
+    # Arm sweep choreographed so the package transfers EXACTLY when the
+    # gripper touches each surface — not all-at-once before/after the sweep.
+    # Sequence:
+    #   1. Rotate to face the table (rest 270° → 180°): no carry yet
+    #   2. Touch table → pick up package (carrier flips to arm)
+    #   3. Rotate back through rest to face the dock (180° → 0°): carrying
+    #   4. Touch dock → drop on AGV (carrier flips to AGV)
+    #   5. Return to rest (0° → 270°): no carry
+    try:
+        # 1. swing from rest → table (still empty)
+        _animate_arm(in_arm_id, _sweep_angles(in_rest, in_pick, 6))
+        # 2. PICK: package leaves table, attaches to gripper
+        _emit_object_owner(package_id, "arm", f"arm-{in_arm_id}",
+                           carrier_arm=in_arm_id, color=pkg_color)
+        _emit_table("input_arm", [])
+        time.sleep(0.8)
+        # 3. swing from table → AGV (carrying)
+        _animate_arm(in_arm_id, _sweep_angles(in_pick, in_drop, 8))
+        # 4. DROP: package leaves gripper, lands on AGV
+        _emit_object_owner(package_id, "asset", agv_id,
+                           carrier_asset=agv_id, color=pkg_color)
+        time.sleep(0.8)
+        # 5. return to rest
+        _animate_arm(in_arm_id, _sweep_angles(in_drop, in_rest, 6))
+    except Exception as exc:
+        _log("input-arm", f"sweep failed: {exc}")
+        # Still try to POST load_ready below — the AGV is waiting.
+
+    # CRITICAL: load_ready MUST fire or AGV times out. Retry on transient
+    # backend errors instead of silently swallowing them.
+    posted = False
+    for attempt in range(3):
+        try:
+            r = requests.post(f"{backend}/agv/{agv_id}/load_ready",
+                              json={"object_id": package_id}, timeout=5)
+            if r.status_code == 200:
+                posted = True
+                break
+            _log("input-arm",
+                 f"load_ready POST attempt {attempt+1} returned "
+                 f"{r.status_code} — retrying")
+        except Exception as exc:
+            _log("input-arm",
+                 f"load_ready POST attempt {attempt+1} raised {exc} — retrying")
+        time.sleep(1.0)
+    if posted:
         _log("input-arm", f"load_ready: {package_id} on {agv_id}")
-    except Exception:
-        pass
+    else:
+        _log("input-arm",
+             f"FATAL: load_ready never delivered for {agv_id}/{package_id}")
+        return
 
     # Phase 3 bus signal — arm tells the swarm it loaded an AGV (the peer
     # AGVs use this to know when the input dock will free up next).
@@ -267,31 +387,69 @@ def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c") 
     except Exception:
         pass
 
-    # ── Wait for AGV to arrive at output station ─────────────────────────────
-    deadline2 = time.time() + 180
+    # ── Wait for AGV to signal DOCKED at output station ──────────────────────
+    docked_out = False
+    deadline2 = time.time() + 120
     while time.time() < deadline2:
-        cell = _agv_cell()
-        if cell[0] == out_cell[0] and cell[1] == out_cell[1]:
+        if _agv_docked_at(out_cell, "unloading"):
+            docked_out = True
             break
-        time.sleep(0.5)
+        time.sleep(0.3)
+
+    if not docked_out:
+        _log("output-arm",
+             f"ABORT: {agv_id} never reached output dock {out_cell} "
+             f"within 120s — aborting unload choreography")
+        return
 
     _log("output-arm", f"AGV {agv_id} docked — unloading {package_id}")
 
-    # Arm<->AGV AI handshake before the output arm takes the package.
-    _arm_ai_gate(out_arm_id, agv_id, "unload")
-
-    # Output arm animation: sweep from resting → left (0AGV dock) → right (table)
-    _animate_arm(out_arm_id, [270, 230, 190, 180, 190, 230, 270, 310, 350, 0, 350, 310, 270])
-
-    # Show package delivered to output table.
-    _emit_table("output_arm", pkg_info)
-    _log("output-arm", f"{package_id} delivered to output table")
+    try:
+        _arm_ai_gate(out_arm_id, agv_id, "unload")
+    except Exception as exc:
+        _log("output-arm", f"arm-{out_arm_id} gate raised {exc} - proceeding")
 
     try:
-        requests.post(f"{backend}/agv/{agv_id}/unload_ready", json={}, timeout=5)
+        # 1. swing from rest → AGV (out_drop = angle pointing AT the AGV dock)
+        _animate_arm(out_arm_id, _sweep_angles(out_rest, out_drop, 6))
+        # 2. PICK: package leaves AGV, attaches to output gripper
+        _emit_object_owner(package_id, "arm", f"arm-{out_arm_id}",
+                           carrier_arm=out_arm_id, color=pkg_color)
+        time.sleep(0.8)
+        # 3. swing from AGV → table (out_pick = angle pointing AT the table)
+        _animate_arm(out_arm_id, _sweep_angles(out_drop, out_pick, 8))
+        # 4. DROP: package lands on output table (carrier flips to zone)
+        _emit_object_owner(package_id, "zone", "output_arm", color=pkg_color)
+        _emit_table("output_arm", pkg_info)
+        _log("output-arm", f"{package_id} delivered to output table")
+        time.sleep(0.8)
+        # 5. return to rest
+        _animate_arm(out_arm_id, _sweep_angles(out_pick, out_rest, 6))
+    except Exception as exc:
+        _log("output-arm", f"sweep failed: {exc}")
+
+    # CRITICAL: unload_ready MUST fire or AGV times out and orphans the task.
+    posted_unload = False
+    for attempt in range(3):
+        try:
+            r = requests.post(f"{backend}/agv/{agv_id}/unload_ready",
+                              json={}, timeout=5)
+            if r.status_code == 200:
+                posted_unload = True
+                break
+            _log("output-arm",
+                 f"unload_ready POST attempt {attempt+1} returned "
+                 f"{r.status_code} — retrying")
+        except Exception as exc:
+            _log("output-arm",
+                 f"unload_ready POST attempt {attempt+1} raised {exc} — retrying")
+        time.sleep(1.0)
+    if posted_unload:
         _log("output-arm", f"unload_ready: {package_id} cleared from {agv_id}")
-    except Exception:
-        pass
+    else:
+        _log("output-arm",
+             f"FATAL: unload_ready never delivered for {agv_id}/{package_id}")
+        return
 
     # Phase 3 bus signal — arm tells the swarm it took the package off the AGV.
     try:
