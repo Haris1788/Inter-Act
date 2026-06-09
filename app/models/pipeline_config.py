@@ -15,7 +15,6 @@ or hardcode these values independently:
     - app/routes/arm_routes.py           → validates against get_valid_handover_states()
     - scripts/run_demo.py                → builds controllers from get_arms()
     - scripts/generate_compose.py        → reads arm list from pipeline.yaml
-    - app/static/js/simulation.js        → fetches /config (populated from here)
 
 Changing pipeline.yaml + calling reload() is the ONLY way to change
 the above values at runtime. Adding a hardcoded arm count or handover

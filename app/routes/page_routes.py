@@ -1,19 +1,11 @@
-"""Page routes - serves simulation page and health endpoints."""
+"""Page routes - health/readiness endpoints (the SPA is served by nginx)."""
 
 import os
 
 import requests
-from flask import Blueprint, render_template, jsonify, make_response
+from flask import Blueprint, jsonify
 
 page_bp = Blueprint("pages", __name__)
-
-
-@page_bp.route("/")
-def index():
-    """Serve the main simulation page with no-cache headers."""
-    response = make_response(render_template("index.html"))
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return response
 
 
 @page_bp.route("/health")
