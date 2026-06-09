@@ -315,6 +315,16 @@ def set_agv_health(agv_id):
         updated = agv_state.fail(agv_id, error or "AGV fault")
         grid_state.clear_cell(agv_id)
         grid_state.lane().release(agv_id)
+        # FDAS fix: a faulted AGV must ALSO drop any arm-station lock it holds.
+        # Without this, an AGV that faults while docked keeps the input/output
+        # station locked forever, so every other AGV fails acquire_input_station
+        # and faults too — the cascading station-jam loop seen under recovery.
+        # release() is a no-op if this AGV isn't the holder, so it's safe.
+        for _station in ("input_arm", "output_arm"):
+            try:
+                grid_state.station_lock(_station).release(agv_id)
+            except Exception:
+                pass
         socketio.emit("agv_health", {"agv_id": agv_id, "health": "faulted",
                                      "error": error})
         socketio.emit("log_message", {
