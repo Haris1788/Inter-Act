@@ -1,0 +1,125 @@
+# ============================================================================
+# SCENARIO B — "Weight only / colour-free" (flexible allocation)
+# Any AGV can take ANY colour, as long as the package is under its weight max.
+# Colour stops gating; capacity + distance + best-fit + load decide the winner.
+# This is where FAULT RECOVERY shines: any survivor can cover any peer.
+# Apply with:  .\scripts\switch-scenario.ps1 free
+# Only difference vs Scenario A: allowed_labels -> [any] on all three AGVs.
+# ============================================================================
+pipeline:
+  mode: dependency
+  products: 6
+  speed: normal
+failure_policy:
+  default: isolate
+  retry_max: 3
+  retry_delay: 2.0
+health:
+  check_interval: 2.0
+  timeout: 5.0
+  max_missed: 3
+
+arms:
+- id: 1
+  label: Input Arm
+  color: '#e74c3c'
+  depends_on: []
+  critical: true
+- id: 2
+  label: Output Arm
+  color: '#27ae60'
+  depends_on: []
+  critical: true
+
+warehouse:
+  grid:
+    cols: 14
+    rows: 10
+    cell_px: 120
+  origin:
+    x: 30
+    y: 30
+  stations:
+    input_arm:
+      cell: [1, 1]
+      dock: [2, 1]
+      label: IN
+      served_by: arm-1
+    output_arm:
+      cell: [12, 1]
+      dock: [11, 1]
+      label: OUT
+      served_by: arm-2
+  lane:
+    - [2, 1]
+    - [3, 1]
+    - [4, 1]
+    - [5, 1]
+    - [6, 1]
+    - [7, 1]
+    - [8, 1]
+    - [9, 1]
+    - [10, 1]
+    - [11, 1]
+  agvs:
+  # SCENARIO B: colour-free. allowed_labels=[any] on every AGV → colour never
+  # gates. Weight bands kept (20/50/80) so the tight-fit AGV still wins light
+  # jobs and the heavy AGV serves big ones / overflow. Any free capable AGV
+  # picks any package; any survivor can take over a faulted peer's job.
+  - id: agv-1
+    label: AGV 1
+    color: '#2980b9'        # colour kept for the UI only — NOT a filter here
+    bay: [10, 3]
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 20.0   # still a hard weight gate
+      allowed_labels: [any]
+      speed_factor: 1.6
+  - id: agv-2
+    label: AGV 2
+    color: '#27ae60'
+    bay: [10, 5]
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 50.0
+      allowed_labels: [any]
+      speed_factor: 1.0
+  - id: agv-3
+    label: AGV 3
+    color: '#f1c40f'
+    bay: [10, 7]
+    capabilities:
+      kind: shuttle
+      weight_max_kg: 80.0
+      allowed_labels: [any]
+      speed_factor: 0.6
+
+ai:
+  # qwen_brain (legacy per-arm 0.5b) stays on the local container.
+  ollama_base_url: http://ollama:11434
+  # llm_service (interpreter/planner + tactical) -> TU Clausthal GPU tunnel,
+  # reached from inside the backend container via the docker host gateway.
+  llm_base_url: http://host.docker.internal:11500
+  model_planner: qwq:32b-q4_K_M
+  model_tactical: qwen2.5:14b-instruct-q4_K_M
+  coordination_mode: smart
+  # FDAS: a peer resolves the winner (decentralized). Emitted onto backend +
+  # every AGV by generate_compose.py, so regeneration keeps it.
+  fdas_peer_resolve: "on"
+  # FDAS Step 3: each arm runs its own qwen14b decision peer (announces arm_decision).
+  arm_autonomy: "on"
+  capability_defaults:
+    kind: shuttle
+    weight_max_kg: 50.0
+    allowed_labels: [any]
+    speed_factor: 1.0
+  bid_weights:
+    distance: 0.6
+    capability: 0.3
+    load: 0.1
+  # Weight bands still used by the interpreter to assign a default weight from a
+  # colour word in the prompt. The colour no longer routes — only the weight does.
+  weight_bands:
+    blue:   { min: 10, max: 20 }
+    green:  { min: 20, max: 50 }
+    yellow: { min: 50, max: 80 }
