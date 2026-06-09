@@ -69,6 +69,11 @@ app = Flask(__name__)
 _task_lock = threading.Lock()
 _current_task: dict | None = None
 _task_status: str = "idle"   # idle | running | done | faulted
+# FDAS: won tasks waiting to run while one is already in progress. Filled when an
+# AGV legitimately wins more than it can carry at once (e.g. it is the only one
+# that passes the weight gate); drained one-by-one as each task completes so a
+# won task is never dropped.
+_pending_tasks: list[dict] = []
 
 
 @app.route("/health", methods=["GET"])
@@ -177,14 +182,25 @@ def _current_state() -> dict:
 
 def _take_task(assignment: dict) -> None:
     """Called by the BusListener when this AGV has WON a claim (bid accepted).
-    Behaves exactly like POST /assign internally — same code path."""
-    global _current_task, _task_status
+    If a task is already running, QUEUE this one and run it when the current
+    task finishes — covers the case where this AGV legitimately wins several
+    packages (e.g. it is the only one that passes the weight gate). A won task
+    is never dropped."""
     with _task_lock:
         if _task_status == "running":
-            print(f"[{AGV_ID}] _take_task ignored: already running", flush=True)
+            _pending_tasks.append(dict(assignment))
+            print(f"[{AGV_ID}] _take_task queued: "
+                  f"{assignment.get('package_id')} "
+                  f"(queue depth {len(_pending_tasks)})", flush=True)
             return
-        _current_task = dict(assignment)
-        _task_status = "running"
+        _start_task_locked(assignment)
+
+
+def _start_task_locked(assignment: dict) -> None:
+    """Begin executing a task now. Caller MUST hold _task_lock."""
+    global _current_task, _task_status
+    _current_task = dict(assignment)
+    _task_status = "running"
 
     def _run() -> None:
         global _task_status
@@ -197,8 +213,21 @@ def _take_task(assignment: dict) -> None:
             with _task_lock:
                 _task_status = "faulted"
             send_agv_health(DEFAULT_HOST, AGV_ID, "faulted", str(exc))
+        finally:
+            _drain_next_task()
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _drain_next_task() -> None:
+    """Start the next queued task, if any, once the current one has ended."""
+    with _task_lock:
+        if _task_status == "running" or not _pending_tasks:
+            return
+        nxt = _pending_tasks.pop(0)
+        print(f"[{AGV_ID}] starting queued task {nxt.get('package_id')} "
+              f"({len(_pending_tasks)} remaining)", flush=True)
+        _start_task_locked(nxt)
 
 
 def _handle_shutdown(signum, frame) -> None:

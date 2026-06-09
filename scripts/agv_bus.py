@@ -41,6 +41,14 @@ BACKEND = os.environ.get("SERVER_HOST", "http://backend:5000")
 # both parse the same env vars independently. Source of truth is pipeline.yaml.
 _COORDINATION_MODE = os.environ.get("COORDINATION_MODE", "centralized").lower()
 
+# FDAS Step 2 (master-gone): when ON, peers resolve INITIAL task_announce
+# themselves — collect bids, elect the lowest-id bidder as the single resolver,
+# publish the claim. Default OFF — the US 32/34 backend-resolver path is
+# unchanged.
+_FDAS_PEER_RESOLVE = (
+    os.environ.get("FDAS_PEER_RESOLVE", "off").lower() in ("on", "1", "true", "yes")
+)
+
 
 def _parse_labels_csv(raw):
     if not raw:
@@ -150,19 +158,25 @@ def publish(type_: str, payload: dict, task_id: Optional[str] = None) -> Optiona
     return None
 
 
-def poll_events(since: int, types: str = LISTEN_TYPES, limit: int = 100) -> tuple[list, int]:
+def poll_events(since: int, types: str = LISTEN_TYPES,
+                limit: int = 100) -> tuple[list, int, bool]:
+    """Returns (events, next_since, did_reset). `did_reset` is True when the
+    backend ring re-based below our cursor (a restart) and we re-polled from 0,
+    so the caller can drop stale per-task state before processing the new ring."""
     res = _get(f"/bus/events?since={since}&types={types}&limit={limit}")
     if not res:
-        return [], since
+        return [], since, False
     # Bus-reset detection: if the backend restarted, its ring `head` is far
     # below our cursor. Re-poll from 0 so we don't get stuck waiting for a
     # seq the new bus will never reach.
+    reset = False
     head = int(res.get("head", since))
     if head < since:
+        reset = True
         res = _get(f"/bus/events?since=0&types={types}&limit={limit}")
         if not res:
-            return [], 0
-    return res.get("events", []), int(res.get("next_since", since))
+            return [], 0, True
+    return res.get("events", []), int(res.get("next_since", since)), reset
 
 
 def publish_agent_status(status: str, task_id: Optional[str] = None,
@@ -240,19 +254,26 @@ def _manhattan(a, b):
 
 
 def _compute_deterministic_score(
-    my_cell, package_origin, package_label, current_load_kg, meta
+    my_cell, package_origin, package_label, current_load_kg, meta,
+    package_weight_kg=None,
 ):
     """US 34: composite bid score from real warehouse facts.
 
-        score = w_distance * (1 - dist / diameter)
-              + w_capability * capability_match
-              + w_load       * (1 - current_load_fraction)
+        score = w_distance   * (1 - dist / diameter)
+              + w_capability  * capability_match
+              + w_load        * (1 - current_load_fraction)
+              [+ w_best_fit   * (package_weight / my_weight_max)]   # FDAS Step 5
+
+    FDAS Step 5 (overflow / best-fit): when the package weight is KNOWN, an
+    extra best-fit term rewards the AGV whose capacity is closest to the
+    package weight (best_fit = pw / weight_max → 1.0 = perfect fit, small =
+    lots of wasted capacity). This makes a heavy-capacity AGV score lower on a
+    light job than a tight-fit AGV, so the heavy AGV only wins it when the
+    lighter AGVs are busy (overflow). When the weight is UNKNOWN the term is
+    omitted and the score is byte-for-byte the US 34 result (safe / additive).
 
     Returns (score_0_100, breakdown_dict).
     """
-    weights = (meta or {}).get("bid_weights") or {
-        "distance": 0.6, "capability": 0.3, "load": 0.1
-    }
     grid = (meta or {}).get("grid") or {}
     diameter = max(1, int(grid.get("diameter", 22)))
 
@@ -266,11 +287,38 @@ def _compute_deterministic_score(
     load_frac = min(1.0, max(0.0, float(current_load_kg) / wmax))
     load_norm = 1.0 - load_frac
 
-    composite = (
-        float(weights.get("distance", 0.6)) * dist_norm
-        + float(weights.get("capability", 0.3)) * cap_match
-        + float(weights.get("load", 0.1)) * load_norm
-    )
+    # Best-fit term — only computed when a real package weight is supplied.
+    best_fit_norm = None
+    if package_weight_kg is not None:
+        try:
+            pw = float(package_weight_kg)
+        except (TypeError, ValueError):
+            pw = None
+        if pw is not None and pw > 0:
+            best_fit_norm = min(1.0, max(0.0, pw / wmax))
+
+    if best_fit_norm is None:
+        # US 34 path — unchanged 3-term formula.
+        weights = (meta or {}).get("bid_weights") or {
+            "distance": 0.6, "capability": 0.3, "load": 0.1
+        }
+        composite = (
+            float(weights.get("distance", 0.6)) * dist_norm
+            + float(weights.get("capability", 0.3)) * cap_match
+            + float(weights.get("load", 0.1)) * load_norm
+        )
+    else:
+        # FDAS path — 4-term formula with best-fit. Weights re-balanced so the
+        # best-fit term carries real influence without dominating distance.
+        weights = (meta or {}).get("bid_weights_bestfit") or {
+            "distance": 0.5, "capability": 0.25, "load": 0.1, "best_fit": 0.15
+        }
+        composite = (
+            float(weights.get("distance", 0.5)) * dist_norm
+            + float(weights.get("capability", 0.25)) * cap_match
+            + float(weights.get("load", 0.1)) * load_norm
+            + float(weights.get("best_fit", 0.15)) * best_fit_norm
+        )
     score = round(max(0.0, min(1.0, composite)) * 100.0, 2)
     breakdown = {
         "distance_cells": dist,
@@ -278,6 +326,7 @@ def _compute_deterministic_score(
         "distance_norm": round(dist_norm, 3),
         "capability_match": bool(cap_match),
         "load_norm": round(load_norm, 3),
+        "best_fit_norm": round(best_fit_norm, 3) if best_fit_norm is not None else None,
         "weights": dict(weights),
         "composite": score,
     }
@@ -458,6 +507,7 @@ def _ask_for_bid(task_id: str, announce_type: str, payload: dict,
         package_label=package_label,
         current_load_kg=current_load_kg,
         meta=meta,
+        package_weight_kg=package_weight,  # FDAS Step 5: enables best-fit term
     )
     eta_s_estimate = _eta_seconds_from_distance(my_state.get("cell"),
                                                  package_origin)
@@ -523,15 +573,20 @@ def _ask_for_bid(task_id: str, announce_type: str, payload: dict,
             final_eta = judge_eta
         return True, final_score, final_rationale, final_eta
     else:
-        # qwen14b returned bid=false — but the deterministic score is sound.
-        # If the AI was simply unreachable (rationale starts with "AI error" /
-        # "planner busy"), we still want to participate — fall back to
-        # deterministic. If qwen14b deliberately rejected, honour that.
+        # qwen14b returned bid=false. The deterministic capability filter
+        # (colour/weight/distance) already decided this AGV is ELIGIBLE, so the
+        # judge is ADVISORY ONLY — it may nudge the score but must NOT veto a
+        # capable bid. A veto strands packages and blocks fault recovery (it was
+        # observed rejecting a takeover with "a peer faulted, so other AGVs are
+        # risky"). Bid on the deterministic score; keep the judge's note in the
+        # trail for transparency.
         AI_DOWN_PREFIXES = ("AI error", "planner busy")
         if any(judge_rationale.startswith(p) for p in AI_DOWN_PREFIXES):
             final_rationale = f"{final_rationale} (judge unavailable: {judge_rationale})"
-            return True, final_score, final_rationale, final_eta
-        return False, 0.0, f"judge rejected: {judge_rationale}", 0.0
+        else:
+            final_rationale = (f"{final_rationale} "
+                               f"(judge advised reject, overridden: {judge_rationale})")
+        return True, final_score, final_rationale, final_eta
 
 
 # ── BusListener ──────────────────────────────────────────────────────────────
@@ -564,8 +619,20 @@ class BusListener:
         # task_ids I already orphaned (own dedupe; bus also dedupes)
         self._already_orphaned: set[str] = set()
 
+        # FDAS Step 2: INITIAL announces I'm locally resolving (leaderless).
+        #   task_id -> {"deadline": ts, "bids": {agent: {...}},
+        #               "resolved": bool, "payload": dict}
+        self._fdas_tasks: dict[str, dict] = {}
+
         # Track tasks that have been claimed already (so we ignore stale events)
         self._claimed_tasks: set[str] = set()
+
+        # AGVs that just WON a claim (seen on the bus) but whose "running"
+        # heartbeat may not have propagated yet. The resolver treats these as
+        # unavailable, so two independent resolvers (e.g. when one AGV declined a
+        # heavy package, splitting the resolver role) don't both hand a package
+        # to the same AGV. Cleared when the AGV reports done/idle/faulted.
+        self._recent_winners: set[str] = set()
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     def start(self) -> None:
@@ -584,14 +651,48 @@ class BusListener:
     def stop(self) -> None:
         self._stop.set()
 
+    # ── per-task state reset (reused package ids) ─────────────────────────────
+    def _reset_task_state(self, task_id: str) -> None:
+        """Purge all per-task state for one task_id so a reused package id (a new
+        plan announcing the same pkg-N this session) is bid + resolved from
+        scratch. Without this, leftover _claimed_tasks/_fdas_tasks/_announced
+        entries from the previous plan make us bid but never claim — the resolver
+        sees the id as already resolved/claimed and skips it. `_recent_winners`
+        and `_peer_tasks` are keyed by AGV id (not task id) and are left alone."""
+        self._claimed_tasks.discard(task_id)
+        self._my_bids.pop(task_id, None)
+        self._fdas_tasks.pop(task_id, None)
+        self._announced.pop(task_id, None)
+        self._already_orphaned.discard(task_id)
+
+    def _reset_all_task_state(self) -> None:
+        """Full wipe of per-task bookkeeping — used after a bus reset (backend
+        restart), where every prior task id is stale."""
+        self._claimed_tasks.clear()
+        self._my_bids.clear()
+        self._fdas_tasks.clear()
+        self._announced.clear()
+        self._already_orphaned.clear()
+        self._recent_winners.clear()
+        self._peer_tasks.clear()
+        _log_bus("bus-reset", "backend ring re-based; cleared stale task state")
+
     # ── bus poll loop ─────────────────────────────────────────────────────
     def _bus_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                events, self._since = poll_events(self._since)
+                events, self._since, did_reset = poll_events(self._since)
+                if did_reset:
+                    # Backend restarted: its ring is fresh, so old plans' events
+                    # are gone. Drop all stale per-task state — otherwise a
+                    # reused package id (pkg-1 again next plan) stays in
+                    # _claimed_tasks/_fdas_tasks and we bid but never claim.
+                    self._reset_all_task_state()
                 for ev in events:
                     self._dispatch(ev)
                 self._resolve_announcer_deadlines()
+                if _FDAS_PEER_RESOLVE:
+                    self._resolve_fdas_deadlines()
             except Exception as exc:
                 print(f"[{AGV_ID}/bus] loop error: {exc}", file=sys.stderr)
             time.sleep(BUS_POLL_INTERVAL)
@@ -651,11 +752,38 @@ class BusListener:
         payload = ev.get("payload") or {}
         task_id = payload.get("current_task")
         status = (payload.get("status") or "").lower()
-        # Terminal statuses clear the peer task regardless of task_id —
-        # task_id may still be set as "the task that just ended", which
-        # would otherwise keep the peer marked alive after completion.
-        if status in {"done", "idle", "faulted", "stopped", "dead"}:
+        # Clean completion — peer finished or went idle; just forget it. A
+        # task_id may still be present ("the task that just ended"); we drop it
+        # so a completed task is never mistaken for one still in flight.
+        if status in {"done", "idle"}:
             self._peer_tasks.pop(who, None)
+            self._recent_winners.discard(who)  # free to win again
+            return
+        # FAULT mid-task — the peer died/stopped while it still OWNED a task.
+        # Orphan that last-known task so a healthy survivor re-bids, THEN forget
+        # the peer. This is the fast path (fires within HEARTBEAT_INTERVAL_S of
+        # the peer's status flip); the PEER_STALE_S silence sweep in
+        # _scan_for_faults stays as the slow fallback for a peer that crashes
+        # WITHOUT emitting any terminal status. The peer that detects this (us)
+        # becomes the announcer — the faulted peer never announces its own task.
+        if status in {"faulted", "stopped", "dead"}:
+            prev = self._peer_tasks.pop(who, None)
+            self._recent_winners.discard(who)
+            prev_task = (prev or {}).get("task_id")
+            if prev_task and prev_task not in self._already_orphaned:
+                self._already_orphaned.add(prev_task)
+                seq = publish_task_orphan(
+                    task_id=prev_task,
+                    package_id=prev_task,
+                    reason=f"{who} reported '{status}' mid-task",
+                    assignment={**((prev or {}).get("assignment") or {}),
+                                "original_agv": who},
+                )
+                _log_bus(
+                    "fault-status",
+                    f"{who} {status} mid-task -> orphan {prev_task} "
+                    f"({'announcer' if seq is not None else 'duplicate'})",
+                )
             return
         if task_id:
             self._peer_tasks[who] = {
@@ -704,19 +832,45 @@ class BusListener:
             return
         payload = ev.get("payload") or {}
         is_retry = int(payload.get("retry", 0)) > 0
+        # A previous generation of this task_id is FINISHED if we claimed it,
+        # orphaned it, or resolved it as an FDAS task. That's the signal that a
+        # fresh (non-retry) announce for the same id is a REUSED package id from
+        # a later plan — not a within-plan redelivery — so we must wipe stale
+        # per-task state before bidding again.
+        prior_done = (
+            task_id in self._claimed_tasks
+            or task_id in self._already_orphaned
+            or (self._fdas_tasks.get(task_id) or {}).get("resolved")
+        )
         if is_retry:
             # Master re-announced this task because the previous winner could
-            # not actually take it. Clear stale claim/bid state so we evaluate
-            # fresh — peers that originally lost the bid get another shot.
-            self._claimed_tasks.discard(task_id)
-            self._my_bids.pop(task_id, None)
+            # not actually take it. Clear ALL stale state (incl. the resolved
+            # _fdas_tasks record) so we evaluate fresh — peers that originally
+            # lost the bid get another shot AND the FDAS resolver re-runs.
+            self._reset_task_state(task_id)
             _log_bus("re-announce-seen",
                      f"{task_id} retry={payload.get('retry')} "
                      f"prev_winner={payload.get('previous_winner')}")
+        elif prior_done:
+            # Same package id, new plan this session. Without this wipe the bid
+            # is published but no claim ever follows (id looks already resolved).
+            self._reset_task_state(task_id)
+            _log_bus("re-announce-reset",
+                     f"{task_id} reused id from an earlier plan — cleared stale state")
         elif task_id in self._my_bids:
-            return  # original announce, already processing
+            return  # original announce this plan, already processing
         # Reserve the slot so duplicate processing on bus poll bounces.
         self._my_bids[task_id] = {"my_score": None, "my_bid_seq": None}
+        # FDAS Step 2: register this announce for leaderless local resolution.
+        # Every bidding AGV collects all bids; the lowest-id bidder publishes the
+        # claim. No-op when the flag is off (the backend resolves as before).
+        if _FDAS_PEER_RESOLVE and task_id not in self._fdas_tasks:
+            self._fdas_tasks[task_id] = {
+                "deadline": time.time() + BID_WINDOW_S,
+                "bids": {},
+                "resolved": False,
+                "payload": payload,
+            }
         # Evaluate the bid in a thread so the bus loop keeps processing other
         # announces while qwen14b crunches (one call is ~10-15s on shared GPU).
         threading.Thread(
@@ -758,20 +912,25 @@ class BusListener:
         bidder = ev.get("from")
         if not task_id or not bidder:
             return
-        record = self._announced.get(task_id)
-        if not record or record.get("claimed"):
-            return  # not my announce, or already resolved
         try:
             score = float((ev.get("payload") or {}).get("score", 0))
         except (TypeError, ValueError):
             score = 0.0
-        record["bids"][bidder] = {
+        bid_rec = {
             "score": score,
             "rationale": (ev.get("payload") or {}).get("rationale", ""),
             "eta_s": (ev.get("payload") or {}).get("eta_s", 0),
         }
-        _log_bus("bid-recv",
-                 f"{task_id}: {bidder} score={score:.1f}")
+        # Orphan path: I published the orphan, so I'm its announcer.
+        record = self._announced.get(task_id)
+        if record and not record.get("claimed"):
+            record["bids"][bidder] = bid_rec
+            _log_bus("bid-recv", f"{task_id}: {bidder} score={score:.1f}")
+        # FDAS Step 2: every bidder collects all bids for tasks it is locally
+        # resolving, so the elected resolver sees the full bid set.
+        frec = self._fdas_tasks.get(task_id)
+        if frec and not frec.get("resolved"):
+            frec["bids"][bidder] = bid_rec
 
     # ── claim (winner executes, others stand down) ────────────────────────
     def _on_claim(self, ev: dict) -> None:
@@ -784,6 +943,10 @@ class BusListener:
         winner = (ev.get("payload") or {}).get("winner")
         if not winner:
             return
+        # Remember this winner so a resolver won't also hand it ANOTHER package
+        # before its "running" heartbeat propagates (prevents two resolvers
+        # double-booking the same AGV while peers sit idle).
+        self._recent_winners.add(winner)
         # Mark my own announcer/bid record as resolved
         if task_id in self._announced:
             self._announced[task_id]["claimed"] = True
@@ -841,6 +1004,88 @@ class BusListener:
                 "assignment": record.get("payload", {}).get("assignment") or {},
             }, task_id=task_id)
             record["claimed"] = True
+
+    def _bidder_free(self, bidder: str) -> bool:
+        """True if this bidder can start a task right now: not already running,
+        AND not a just-announced winner whose heartbeat is still in flight. The
+        FDAS resolver uses this to send each package to a FREE AGV and defer the
+        rest — sequential nearest-first dispatch, and no two resolvers
+        double-booking the same AGV while other AGVs sit idle."""
+        if bidder == AGV_ID:
+            return not self._is_busy()
+        if bidder in self._recent_winners:
+            return False  # already won a claim; its running-heartbeat may lag
+        pt = self._peer_tasks.get(bidder)
+        return not (pt and pt.get("task_id"))
+
+    # ── FDAS Step 2: leaderless resolution of INITIAL announces ───────────
+    def _resolve_fdas_deadlines(self) -> None:
+        """Resolve initial task_announce WITHOUT the backend. Every bidding AGV
+        collects the same bids; the lowest-id bidder is the single elected
+        resolver and publishes the `claim` naming the highest-score winner. The
+        winner then self-executes via _on_claim (the existing path) and losers
+        stand down — same as the orphan flow, just master-free.
+
+        Electing ONE resolver (vs. everyone claiming) keeps a single claim on
+        the bus, avoiding split-brain. Residual risk only if peers see different
+        bid sets within the window (the consistency caveat); _on_claim's "first
+        wins" dedup bounds the blast radius. NEEDS RUNTIME VALIDATION."""
+        now = time.time()
+        # Sequential per-package dispatch: resolve at most ONE package per tick,
+        # and only to a bidder that is FREE right now. This staggers starts so
+        # the nearest AGV takes the shared lane FIRST (no all-at-once race), and
+        # spreads the batch across AGVs as they free up. A package whose only
+        # capable bidders are all busy is DEFERRED (never dropped) and retried on
+        # a later tick — so when the one capable AGV (e.g. the only one passing a
+        # weight gate) returns, it takes the next package.
+        for task_id, rec in list(self._fdas_tasks.items()):
+            if rec.get("resolved"):
+                continue
+            if now < rec.get("deadline", 0):
+                continue
+            if task_id in self._claimed_tasks:
+                rec["resolved"] = True
+                continue
+            bids = rec.get("bids") or {}
+            if not bids:
+                rec["resolved"] = True
+                _log_bus("fdas-no-bids", f"{task_id} — no bids in window")
+                continue
+            # Single elected resolver = lowest-id bidder (keeps one claim on the
+            # bus, avoids split-brain). A busy resolver can still resolve — that
+            # runs on the bus thread, independent of task execution.
+            resolver = min(bids.keys(), key=ord_str)
+            if resolver != AGV_ID:
+                rec["resolved"] = True
+                continue  # another peer resolves; I act on its claim
+            # Highest-score bidder that is FREE right now wins; busy bidders are
+            # skipped so each package goes to whoever can act on it immediately.
+            ranked = sorted(bids.items(),
+                            key=lambda kv: (kv[1]["score"], -ord_str(kv[0])),
+                            reverse=True)
+            winner = next((b for b, _ in ranked if self._bidder_free(b)), None)
+            if winner is None:
+                # Every capable bidder is busy — DEFER (do not drop, do not mark
+                # resolved). Retried next tick; the first capable AGV to free up
+                # takes it. This is the weight fallback + the no-stranding rule.
+                _log_bus("fdas-defer",
+                         f"{task_id} — all capable bidders busy; waiting")
+                continue
+            rec["resolved"] = True
+            winning = bids[winner]
+            _log_bus("fdas-resolve",
+                     f"{task_id} resolver={AGV_ID} -> winner={winner} "
+                     f"score={winning['score']:.1f}")
+            publish("claim", {
+                "winner": winner,
+                "winning_score": winning["score"],
+                "rationale": winning.get("rationale", ""),
+                "assignment": {**(rec.get("payload") or {}),
+                               "agv_id": winner,
+                               "task_id": task_id,
+                               "package_id": task_id},
+            }, task_id=task_id)
+            return  # ONE resolution per tick -> staggered starts, nearest first
 
     # ── heartbeat watch: detect peers whose agent_status went stale ───────
     def _scan_for_faults(self) -> None:

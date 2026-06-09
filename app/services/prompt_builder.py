@@ -104,7 +104,7 @@ markdown, no explanation, no code fences, JSON only:
   "agv_ids":       ["<agv-id>", ...],
   "description":   "<one-sentence plain-English summary>",
   "packages":      [
-    {{"label": "<blue|green|yellow>", "weight_kg": <number or null>}},
+    {{"label": "<blue|green|yellow>", "weight_kg": <number or null>, "handling": "<normal|fragile|heavy|priority|hazardous>"}},
     ...
   ]
 }}
@@ -122,5 +122,9 @@ Rules:
                  If the user only named a colour, pick a value INSIDE that colour's
                  band (the midpoint is fine). If colour is also missing, set
                  label="" and weight_kg=null. Never invent a weight outside the band.
+                 handling: one of normal/fragile/heavy/priority/hazardous, taken
+                 from how the user described the package (e.g. "fragile" →
+                 fragile, "urgent" → priority, "hazardous"/"chemical" →
+                 hazardous, a heavy weight → heavy). Use "normal" if unsure.
 
 Return ONLY the JSON object."""

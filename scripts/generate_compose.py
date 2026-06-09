@@ -81,6 +81,23 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
     model_tactical = ai_cfg.get("model_tactical", "qwen2.5:14b-instruct-q4_K_M")
     # Phase 1+ feature flag: 'centralized' (legacy) vs 'decentralized' (contract-net)
     coordination_mode = ai_cfg.get("coordination_mode", "centralized")
+    # FDAS feature flag: 'on' = a peer (lowest-id bidder) resolves the winner
+    # (master-gone, decentralized); 'off' = backend resolves (US 32/34 fallback).
+    # Read from pipeline.yaml so regeneration never silently drops it. YAML parses
+    # a bare `on`/`yes`/`true` as a boolean, so normalize to the literal "on"/"off"
+    # the agents expect (scripts/agv_bus.py, app/agents/master_announcer.py).
+    _fdas_raw = ai_cfg.get("fdas_peer_resolve", "off")
+    fdas_peer_resolve = (
+        "on" if str(_fdas_raw).strip().lower() in ("on", "true", "yes", "1") else "off"
+    )
+    # FDAS Step 3: arm autonomy. 'on' = each arm runs its own qwen14b decision peer
+    # (arm_bus.py) and announces `arm_decision` on the bus; 'off' = backend-driven
+    # arms (unchanged). Emitted on the backend; container_manager propagates it to
+    # each spawned arm container. Same YAML-boolean normalization as above.
+    _arm_raw = ai_cfg.get("arm_autonomy", "off")
+    arm_autonomy = (
+        "on" if str(_arm_raw).strip().lower() in ("on", "true", "yes", "1") else "off"
+    )
 
     services = {
         "ollama": {
@@ -97,7 +114,7 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
             },
         },
         "backend": {
-            "build": ".",
+            "build": {"context": ".", "dockerfile": "docker/Dockerfile.backend"},
             "container_name": f"{COMPOSE_PREFIX}-backend",
             "ports": ["${BACKEND_HOST_PORT:-5000}:5000"],
             "environment": [
@@ -108,6 +125,8 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
                 f"OLLAMA_MODEL_PLANNER={model_planner}",
                 f"OLLAMA_MODEL_TACTICAL={model_tactical}",
                 f"COORDINATION_MODE={coordination_mode}",
+                f"FDAS_PEER_RESOLVE={fdas_peer_resolve}",
+                f"ARM_AUTONOMY={arm_autonomy}",
                 "PIPELINE_CONFIG=/config/pipeline.yaml",
                 "FLASK_ENV=production",
                 "FLASK_DEBUG=0",
@@ -210,6 +229,7 @@ def generate(config_path="pipeline.yaml", output_path="docker-compose.yml"):
                 "SERVER_HOST=http://backend:5000",
                 f"OLLAMA_BASE_URL={ollama_base_url}",
                 f"COORDINATION_MODE={coordination_mode}",
+                f"FDAS_PEER_RESOLVE={fdas_peer_resolve}",
                 "PYTHONUNBUFFERED=1",
                 # US 34 capability fields per AGV (read by scripts/agv_*.py)
                 *_agv_capability_env(agv),

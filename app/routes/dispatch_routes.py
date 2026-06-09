@@ -83,97 +83,110 @@ def _emit_object_owner(object_id: str, owner_type: str, owner_id: str,
     })
 
 
-def _arm_ai_confirm(arm_id: int, agv_id: str, action: str) -> str:
-    """The arm's tactical brain (qwen2.5:14b) decides whether to perform the
-    load/unload NOW, coordinating with the AGV's live status.
+# ── FDAS Step 3b: arm action registry — the scripts an arm can choose from ────
+# The arm's tactical brain (qwen2.5:14b) picks ONE of these per package; the
+# choreography below executes the chosen variant. Every action still completes
+# the transfer and fires load_ready/unload_ready — the AGV contract is never
+# broken; only HOW the arm moves changes (speed, smoothness, an extra beat).
+#   steps = (rest→pick, pick→drop, drop→rest) arc resolution (more = smoother)
+#   delay = per-frame delay  (higher = slower sweep)
+#   dwell = pause while gripping/releasing
+#   pre_beat = a small inspection/stabilisation wiggle before the pick
+ARM_ACTION_REGISTRY = {
+    "normal":   {"steps": (6, 8, 6),    "delay": 0.18, "dwell": 0.8,
+                 "pre_beat": False, "desc": "standard handling"},
+    "gentle":   {"steps": (10, 12, 10), "delay": 0.30, "dwell": 1.3,
+                 "pre_beat": False, "desc": "slow, smooth handling for fragile cargo"},
+    "careful":  {"steps": (8, 10, 8),   "delay": 0.24, "dwell": 1.1,
+                 "pre_beat": True,  "desc": "extra-stabilised handling for heavy cargo"},
+    "expedite": {"steps": (4, 5, 4),    "delay": 0.09, "dwell": 0.4,
+                 "pre_beat": False, "desc": "fast handling for priority cargo"},
+    "inspect":  {"steps": (6, 8, 6),    "delay": 0.20, "dwell": 0.9,
+                 "pre_beat": True,  "desc": "inspection pass before handling hazardous cargo"},
+}
+DEFAULT_ARM_ACTION = "normal"
 
-    This is the arm<->AGV AI handshake. Returns one of:
-        "go"   - AI explicitly answered go
-        "wait" - AI explicitly answered wait
-        "fallback" - planner running / AI error / unknown reply (proceed deterministically)
-    The action prompt is framed action-specifically so the model isn't
-    confused by the AGV's status field (status='loading' previously read as
-    'busy', producing constant 'wait' answers).
-    """
+
+def _deterministic_arm_action(label, weight_kg, handling) -> str:
+    """Fail-safe choice — used when the AI is busy/unreachable, and as the
+    grounded default the AI is asked to confirm or override. Pure function of
+    the package facts, so the arm always has a sensible script even with no GPU."""
+    h = str(handling or "").lower()
+    if any(k in h for k in ("fragile", "delicate", "brittle", "glass")):
+        return "gentle"
+    if any(k in h for k in ("hazard", "danger", "toxic", "chemical", "explosive", "inspect")):
+        return "inspect"
+    if any(k in h for k in ("priority", "urgent", "rush", "express", "asap", "expedite")):
+        return "expedite"
+    try:
+        w = float(weight_kg) if weight_kg is not None else None
+    except (TypeError, ValueError):
+        w = None
+    if (w is not None and w >= 60.0) or "heavy" in h or "bulky" in h:
+        return "careful"
+    return "normal"
+
+
+def _arm_ai_choose_action(arm_id: int, agv_id: str, action: str,
+                          ctx: dict) -> tuple[str, str, str]:
+    """The arm's tactical brain (qwen2.5:14b) chooses the BEST handling script
+    from ARM_ACTION_REGISTRY for the docked package. Grounded: a deterministic
+    suggestion is computed from the package facts first; the AI may confirm it
+    or override with a reason. Returns (action_name, rationale, source).
+
+    Fail-safe: planner busy / AI error / invalid reply -> deterministic choice,
+    so the arm always picks a valid script and never stalls the line."""
+    label = ctx.get("label")
+    weight_kg = ctx.get("weight_kg")
+    handling = ctx.get("handling")
+    suggestion = _deterministic_arm_action(label, weight_kg, handling)
     try:
         from app.services.llm_service import get_llm, planning_active
         if planning_active():
-            return "fallback"  # qwq:32b planning — don't stall the arm
-        rec = agv_state.get(agv_id) or {}
-        cell = rec.get("cell")
-        carried = rec.get("carried_object") or "nothing"
-
-        if action == "load":
-            situation = (
-                f"AGV {agv_id} has arrived EMPTY at the input arm's dock "
-                f"(its current cell is {cell}, carrying {carried}). The input "
-                f"arm-{arm_id} needs to pick the next package from its table "
-                f"and place it on the AGV. The AGV is parked and waiting."
-            )
-        elif action == "unload":
-            situation = (
-                f"AGV {agv_id} has arrived at the output arm's dock CARRYING "
-                f"package {carried} (its current cell is {cell}). The output "
-                f"arm-{arm_id} needs to take the package off the AGV and "
-                f"place it on the output table. The AGV is parked and waiting."
-            )
-        else:
-            situation = (
-                f"AGV {agv_id} is at {cell}, carrying {carried}. "
-                f"Arm-{arm_id} is requested to {action}."
-            )
-
+            return suggestion, "planner busy → deterministic", "deterministic"
+        verb = "place onto the AGV" if action == "load" else "take off the AGV"
         system = (
-            f"You are the tactical brain of robotic arm-{arm_id}. An AGV is "
-            f"docked at this arm's dock cell and is waiting for service. "
-            f"Decide whether the arm should perform the operation NOW. "
-            f'Respond with ONLY JSON {{"script":"<name>"}} where <name> is '
-            f'exactly one of: '
-            f'"go" - the AGV is at the dock ready for service, proceed now; '
-            f'"wait" - only when there is a clear safety conflict (the AGV '
-            f'is NOT yet at the correct dock cell, or the arm is already '
-            f'mid-operation). Default to "go" if no conflict.'
+            f"You are the tactical brain of robotic arm-{arm_id} in a warehouse. "
+            f"An AGV is docked and you must {verb} a package. Choose the BEST "
+            f"handling script for THIS package. Respond with ONLY JSON "
+            f'{{"script":"<name>","rationale":"<one short reason>"}} where '
+            f"<name> is exactly one of: "
+            f"normal (standard), gentle (fragile/delicate — slow & smooth), "
+            f"careful (heavy — extra stabilisation), expedite (urgent/priority "
+            f"— fast), inspect (hazardous/uncertain — inspection pass first)."
         )
-        user = f"{situation} Should arm-{arm_id} {action} now?"
-
-        res = get_llm().tactical(system, user, num_predict=24)
+        user = (
+            f"Package={ctx.get('package_id')} at the "
+            f"{'input' if action == 'load' else 'output'} arm. "
+            f"label={label!r}, weight_kg={weight_kg}, handling_hint={handling!r}. "
+            f"A safe default is '{suggestion}'. Pick the best script."
+        )
+        res = get_llm().tactical(system, user, num_predict=48)
         choice = (res.get("script") or res.get("value") or "").strip().lower()
-        if choice == "go":
-            return "go"
-        if choice == "wait":
-            return "wait"
-        return "fallback"  # unknown / invalid reply -> proceed deterministically
-    except Exception:
-        return "fallback"
+        rationale = str(res.get("rationale", "")).strip()
+        if choice in ARM_ACTION_REGISTRY:
+            return choice, (rationale or ARM_ACTION_REGISTRY[choice]["desc"]), "ai"
+        # unknown / invalid reply -> grounded deterministic choice
+        return suggestion, (rationale or "AI reply invalid → deterministic"), "deterministic"
+    except Exception as exc:
+        return suggestion, f"AI unavailable ({exc}) → deterministic", "deterministic"
 
 
-def _arm_ai_gate(arm_id: int, agv_id: str, action: str, tries: int = 2) -> None:
-    """Ask the arm AI ONCE (fail-fast). Proceed immediately on go/fallback/wait.
-    The old 6×2.5s polling stalled the arm thread for 15s+ under concurrent
-    qwen14b load, which is exactly when the AGV's load_ready timeout fires.
-    The AI's judgment is recorded for the audience, but never blocks progress.
-    """
-    for attempt in range(tries):
-        try:
-            choice = _arm_ai_confirm(arm_id, agv_id, action)
-        except Exception as exc:
-            _log(f"{action}-arm",
-                 f"arm-{arm_id} AI gate raised {exc} - proceeding")
-            return
-        if choice == "go":
-            _log(f"{action}-arm",
-                 f"arm-{arm_id} AI: GO {action} for {agv_id}")
-            return
-        if choice == "fallback":
-            _log(f"{action}-arm",
-                 f"arm-{arm_id} AI unavailable - proceeding ({action} {agv_id})")
-            return
-        if attempt < tries - 1:
-            _log(f"{action}-arm",
-                 f"arm-{arm_id} AI: HOLD {action} for {agv_id} (will retry once)")
-            time.sleep(1.0)
+def _arm_ai_gate(arm_id: int, agv_id: str, action: str,
+                 ctx: dict) -> tuple[str, str]:
+    """Run the arm's AI action choice ONCE (fail-fast) and return the chosen
+    script. The decision is logged and (by the caller) announced on the bus, so
+    the audience sees the arm reason about each package — and it actually drives
+    the choreography that follows. Never blocks: on any failure it returns a
+    valid deterministic script."""
+    try:
+        chosen, rationale, source = _arm_ai_choose_action(arm_id, agv_id, action, ctx)
+    except Exception as exc:
+        chosen, rationale, source = DEFAULT_ARM_ACTION, f"gate error ({exc})", "deterministic"
     _log(f"{action}-arm",
-         f"arm-{arm_id} AI gate cap reached - proceeding ({action} {agv_id})")
+         f"arm-{arm_id} AI [{source}] chose '{chosen}' for {agv_id} "
+         f"({ARM_ACTION_REGISTRY.get(chosen, {}).get('desc', '')}) — {rationale}")
+    return chosen, rationale
 
 
 def _parse_package_count(text: str) -> int:
@@ -218,18 +231,61 @@ def _assign_agv(agv_id: str, package_id: str, label: str) -> bool:
         return False
 
 
-def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c") -> None:
+def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c",
+                      label: str | None = None, weight_kg=None,
+                      handling: str | None = None) -> None:
     """Background thread: simulate arm load/unload with visual animation.
 
     1. Show package on input table.
     2. Wait for AGV to arrive at input station.
-    3. Animate input arm picking from table → depositing on AGV.
-    4. Signal load_ready; remove package from input table (it's on the AGV).
-    5. Wait for AGV to arrive at output station.
-    6. Animate output arm picking from AGV → depositing on output table.
-    7. Signal unload_ready; show package on output table.
-    """
+    3. Input arm's qwen14b CHOOSES a handling script (normal/gentle/careful/
+       expedite/inspect) for this package → that choice drives the sweep.
+    4. Animate input arm picking from table → depositing on AGV (chosen variant).
+    5. Signal load_ready; remove package from input table (it's on the AGV).
+    6. Wait for AGV to arrive at output station.
+    7. Output arm's qwen14b chooses its handling script → drives the sweep.
+    8. Animate output arm picking from AGV → depositing on output table.
+    9. Signal unload_ready; show package on output table.
+
+    FDAS Step 3b: `label`/`weight_kg`/`handling` are the package facts the arm
+    brain reasons over to pick the best script. None → the arm defaults to a
+    weight/handling-based deterministic choice (still valid)."""
     backend = "http://backend:5000"
+    pkg_ctx = {"package_id": package_id, "label": label,
+               "weight_kg": weight_kg, "handling": handling}
+
+    def _publish_arm_decision(arm_id: int, station: str, action: str,
+                              chosen: str, rationale: str) -> None:
+        """Announce the arm's executed handling decision on the shared bus so
+        the mesh + frontend see the arm reason — and act — per package."""
+        try:
+            from app.routes.bus_routes import publish_local
+            publish_local("arm_decision", from_=arm_id, task_id=package_id,
+                          payload={"arm_id": arm_id, "station": station,
+                                   "agv_id": agv_id, "action": action,
+                                   "script": chosen, "rationale": rationale,
+                                   "executed": True})
+        except Exception:
+            pass
+
+    def _run_sweep(arm_id: int, rest: float, pick: float, drop: float,
+                   chosen: str, on_pick, on_drop) -> None:
+        """Execute the chosen handling script's sweep. on_pick/on_drop are the
+        ownership-transfer callbacks fired at the exact touch moments."""
+        p = ARM_ACTION_REGISTRY.get(chosen, ARM_ACTION_REGISTRY[DEFAULT_ARM_ACTION])
+        s1, s2, s3 = p["steps"]
+        d, dwell = p["delay"], p["dwell"]
+        if p["pre_beat"]:
+            # small inspection/stabilisation wiggle before committing to the pick
+            _animate_arm(arm_id, _sweep_angles(rest, (rest + 14) % 360.0, 2)
+                         + _sweep_angles((rest + 14) % 360.0, rest, 2), d)
+        _animate_arm(arm_id, _sweep_angles(rest, pick, s1), d)   # rest → pick
+        on_pick()
+        time.sleep(dwell)
+        _animate_arm(arm_id, _sweep_angles(pick, drop, s2), d)   # pick → drop (carry)
+        on_drop()
+        time.sleep(dwell)
+        _animate_arm(arm_id, _sweep_angles(drop, rest, s3), d)   # drop → rest
 
     # Resolve station cells and arm IDs from config.
     # Also derive each arm's PICK angle (toward its table) and DROP angle
@@ -300,7 +356,12 @@ def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c") 
     # may load" signal) — not just cell match. This avoids the bug where the
     # arm started loading while the AGV was still in motion through the cell.
     docked = False
-    deadline = time.time() + 60
+    # Sequential per-package dispatch (FDAS) can make a later AGV HOLD for the
+    # single shared lane well past a minute before it docks — it was claimed
+    # early (which spawned this loader) but waits its turn behind earlier AGVs.
+    # Wait generously so the loader doesn't abort 2 s before it arrives.
+    # (Proper Phase-2 fix: trigger this loader on ARRIVAL, not on claim.)
+    deadline = time.time() + 300
     while time.time() < deadline:
         if _agv_docked_at(in_cell, "loading"):
             docked = True
@@ -314,41 +375,36 @@ def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c") 
         # the task cleanly so a peer can re-bid.
         _log("input-arm",
              f"ABORT: {agv_id} never reached input dock {in_cell} "
-             f"within 60s — aborting load choreography")
+             f"within 300s — aborting load choreography")
         return
 
     _log("input-arm", f"AGV {agv_id} docked — loading {package_id}")
 
-    # Arm<->AGV AI handshake (fail-fast — see _arm_ai_gate).
-    try:
-        _arm_ai_gate(in_arm_id, agv_id, "load")
-    except Exception as exc:
-        _log("input-arm", f"arm-{in_arm_id} gate raised {exc} - proceeding")
+    # Arm<->AGV AI decision (fail-fast): the input arm's qwen14b CHOOSES the
+    # handling script for this package; that choice drives the sweep below and
+    # is announced on the bus. Never blocks — falls back to a valid script.
+    in_action, in_rationale = _arm_ai_gate(in_arm_id, agv_id, "load", pkg_ctx)
+    _publish_arm_decision(in_arm_id, "input_arm", "load", in_action, in_rationale)
 
     # Arm sweep choreographed so the package transfers EXACTLY when the
     # gripper touches each surface — not all-at-once before/after the sweep.
-    # Sequence:
-    #   1. Rotate to face the table (rest 270° → 180°): no carry yet
-    #   2. Touch table → pick up package (carrier flips to arm)
-    #   3. Rotate back through rest to face the dock (180° → 0°): carrying
-    #   4. Touch dock → drop on AGV (carrier flips to AGV)
-    #   5. Return to rest (0° → 270°): no carry
+    # The CHOSEN script (normal/gentle/careful/expedite/inspect) sets the sweep
+    # speed/smoothness/extra-beat; the transfer logic is identical for all.
     try:
-        # 1. swing from rest → table (still empty)
-        _animate_arm(in_arm_id, _sweep_angles(in_rest, in_pick, 6))
-        # 2. PICK: package leaves table, attaches to gripper
-        _emit_object_owner(package_id, "arm", f"arm-{in_arm_id}",
-                           carrier_arm=in_arm_id, color=pkg_color)
-        _emit_table("input_arm", [])
-        time.sleep(0.8)
-        # 3. swing from table → AGV (carrying)
-        _animate_arm(in_arm_id, _sweep_angles(in_pick, in_drop, 8))
-        # 4. DROP: package leaves gripper, lands on AGV
-        _emit_object_owner(package_id, "asset", agv_id,
-                           carrier_asset=agv_id, color=pkg_color)
-        time.sleep(0.8)
-        # 5. return to rest
-        _animate_arm(in_arm_id, _sweep_angles(in_drop, in_rest, 6))
+        _run_sweep(
+            in_arm_id, in_rest, in_pick, in_drop, in_action,
+            on_pick=lambda: (
+                # PICK: package leaves table, attaches to gripper
+                _emit_object_owner(package_id, "arm", f"arm-{in_arm_id}",
+                                   carrier_arm=in_arm_id, color=pkg_color),
+                _emit_table("input_arm", []),
+            ),
+            on_drop=lambda: (
+                # DROP: package leaves gripper, lands on AGV
+                _emit_object_owner(package_id, "asset", agv_id,
+                                   carrier_asset=agv_id, color=pkg_color),
+            ),
+        )
     except Exception as exc:
         _log("input-arm", f"sweep failed: {exc}")
         # Still try to POST load_ready below — the AGV is waiting.
@@ -389,7 +445,7 @@ def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c") 
 
     # ── Wait for AGV to signal DOCKED at output station ──────────────────────
     docked_out = False
-    deadline2 = time.time() + 120
+    deadline2 = time.time() + 300   # generous: AGV may hold for the output lane
     while time.time() < deadline2:
         if _agv_docked_at(out_cell, "unloading"):
             docked_out = True
@@ -399,32 +455,33 @@ def _auto_arm_signals(agv_id: str, package_id: str, pkg_color: str = "#e74c3c") 
     if not docked_out:
         _log("output-arm",
              f"ABORT: {agv_id} never reached output dock {out_cell} "
-             f"within 120s — aborting unload choreography")
+             f"within 300s — aborting unload choreography")
         return
 
     _log("output-arm", f"AGV {agv_id} docked — unloading {package_id}")
 
-    try:
-        _arm_ai_gate(out_arm_id, agv_id, "unload")
-    except Exception as exc:
-        _log("output-arm", f"arm-{out_arm_id} gate raised {exc} - proceeding")
+    # Output arm's qwen14b chooses its handling script for this package.
+    out_action, out_rationale = _arm_ai_gate(out_arm_id, agv_id, "unload", pkg_ctx)
+    _publish_arm_decision(out_arm_id, "output_arm", "unload", out_action, out_rationale)
 
     try:
-        # 1. swing from rest → AGV (out_drop = angle pointing AT the AGV dock)
-        _animate_arm(out_arm_id, _sweep_angles(out_rest, out_drop, 6))
-        # 2. PICK: package leaves AGV, attaches to output gripper
-        _emit_object_owner(package_id, "arm", f"arm-{out_arm_id}",
-                           carrier_arm=out_arm_id, color=pkg_color)
-        time.sleep(0.8)
-        # 3. swing from AGV → table (out_pick = angle pointing AT the table)
-        _animate_arm(out_arm_id, _sweep_angles(out_drop, out_pick, 8))
-        # 4. DROP: package lands on output table (carrier flips to zone)
-        _emit_object_owner(package_id, "zone", "output_arm", color=pkg_color)
-        _emit_table("output_arm", pkg_info)
-        _log("output-arm", f"{package_id} delivered to output table")
-        time.sleep(0.8)
-        # 5. return to rest
-        _animate_arm(out_arm_id, _sweep_angles(out_pick, out_rest, 6))
+        # Output order: rest → AGV (pick package off AGV) → table (drop) → rest.
+        # _run_sweep's "pick"/"drop" are just first/second waypoints, so here
+        # first=out_drop (AGV), second=out_pick (table).
+        _run_sweep(
+            out_arm_id, out_rest, out_drop, out_pick, out_action,
+            on_pick=lambda: (
+                # PICK: package leaves AGV, attaches to output gripper
+                _emit_object_owner(package_id, "arm", f"arm-{out_arm_id}",
+                                   carrier_arm=out_arm_id, color=pkg_color),
+            ),
+            on_drop=lambda: (
+                # DROP: package lands on output table (carrier flips to zone)
+                _emit_object_owner(package_id, "zone", "output_arm", color=pkg_color),
+                _emit_table("output_arm", pkg_info),
+                _log("output-arm", f"{package_id} delivered to output table"),
+            ),
+        )
     except Exception as exc:
         _log("output-arm", f"sweep failed: {exc}")
 

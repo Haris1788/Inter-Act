@@ -129,6 +129,15 @@ def validate(
     else:
         packages = _infer_packages_from_prompt(raw_prompt, pkg)
 
+    # FDAS Step 3b: if the model gave no per-package handling, fall back to a
+    # prompt-level scan ("send a fragile package" → handling=fragile on all),
+    # so the arm brain still has a hint to reason over.
+    prompt_handling = _canon_handling(raw_prompt)
+    if prompt_handling:
+        for p in packages:
+            if not p.get("handling"):
+                p["handling"] = prompt_handling
+
     if errors:
         return None, "; ".join(errors)
 
@@ -149,9 +158,9 @@ def validate(
 
 
 def _normalize_package(raw: Any) -> Dict[str, Any]:
-    """Coerce one raw package dict into {label: str, weight_kg: float|None}."""
+    """Coerce one raw package dict into {label, weight_kg, handling}."""
     if not isinstance(raw, dict):
-        return {"label": "", "weight_kg": None}
+        return {"label": "", "weight_kg": None, "handling": ""}
     label = str(raw.get("label") or raw.get("color") or "").strip().lower()
     weight = raw.get("weight_kg")
     if weight is None:
@@ -160,7 +169,28 @@ def _normalize_package(raw: Any) -> Dict[str, Any]:
         weight_kg = float(weight) if weight is not None else None
     except (TypeError, ValueError):
         weight_kg = None
-    return {"label": label, "weight_kg": weight_kg}
+    # FDAS Step 3b: handling hint the arm brain uses to pick its handling script.
+    handling = _canon_handling(raw.get("handling") or raw.get("handling_hint") or "")
+    return {"label": label, "weight_kg": weight_kg, "handling": handling}
+
+
+# FDAS Step 3b: map free-text handling words → a canonical hint the arm reads.
+_HANDLING_KEYWORDS = (
+    ("fragile", ("fragile", "delicate", "brittle", "glass", "handle with care")),
+    ("hazardous", ("hazard", "hazardous", "dangerous", "toxic", "chemical", "explosive")),
+    ("priority", ("urgent", "priority", "rush", "express", "asap", "expedite", "immediately")),
+    ("heavy", ("heavy", "bulky", "oversized")),
+)
+
+
+def _canon_handling(text: str) -> str:
+    """Return a canonical handling hint (fragile/hazardous/priority/heavy) found
+    in `text`, or '' if none. First match wins, in keyword-table order."""
+    t = str(text or "").lower()
+    for canon, words in _HANDLING_KEYWORDS:
+        if canon == t or any(w in t for w in words):
+            return canon
+    return ""
 
 
 def _infer_packages_from_prompt(prompt: str, count: int) -> List[Dict[str, Any]]:
@@ -199,9 +229,9 @@ def _infer_packages_from_prompt(prompt: str, count: int) -> List[Dict[str, Any]]
             lo = band.get("min")
             hi = band.get("max")
             weight_kg = (float(lo) + float(hi)) / 2.0 if (lo is not None and hi is not None) else None
-        found.append({"label": colour, "weight_kg": weight_kg})
+        found.append({"label": colour, "weight_kg": weight_kg, "handling": ""})
 
     # Pad / truncate to count
     while len(found) < count:
-        found.append({"label": "", "weight_kg": None})
+        found.append({"label": "", "weight_kg": None, "handling": ""})
     return found[:count]

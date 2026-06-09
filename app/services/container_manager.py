@@ -246,6 +246,10 @@ def create_actor(
             "SERVER_HOST=http://backend:5000",
             "PIPELINE_CONFIG=/config/pipeline.yaml",
             "PYTHONUNBUFFERED=1",
+            # FDAS Step 3: propagate arm autonomy from the backend's own env
+            # (set by generate_compose.py from pipeline.yaml ai.arm_autonomy)
+            # down to each spawned arm, so arm_server.py starts arm_bus.py.
+            f"ARM_AUTONOMY={os.environ.get('ARM_AUTONOMY', 'off')}",
         ]
     else:
         env = [

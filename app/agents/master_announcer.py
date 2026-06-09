@@ -22,6 +22,7 @@ Phase 2:
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -53,6 +54,16 @@ RESOLVE_TICK_S = 1.0
 # from the winning AGV's /assign. Without this cap, a permanently faulted
 # AGV would loop forever.
 MAX_REANNOUNCE = 2
+
+# FDAS Step 2 (master-gone): when ON, the backend STOPS choosing winners. It
+# still publishes task_announce, but peers collect bids, elect a single
+# resolver (lowest-id bidder), and publish the `claim` themselves. The backend
+# only reacts to the peer claim to run the (still backend-side) arm
+# choreography. Default OFF — the proven US 32/34 central-resolver path is
+# unchanged.
+FDAS_PEER_RESOLVE = (
+    os.environ.get("FDAS_PEER_RESOLVE", "off").lower() in ("on", "1", "true", "yes")
+)
 
 # Label → display color (mirrors plan_executor)
 _LABEL_COLORS = {
@@ -94,6 +105,18 @@ class MasterAnnouncer:
         self._sequence_enabled: bool = False
         self._last_loaded_task_id: Optional[str] = None
 
+        # FDAS Step 2: task_ids whose peer `claim` we've already reacted to, so
+        # the arm choreography is kicked at most once per task.
+        self._fdas_kicked: set[str] = set()
+        # FDAS Step 3 fix: the arm load/unload choreography is started when the
+        # winning AGV ACTUALLY APPROACHES the input arm (arm_approach), not at
+        # claim time. This keeps ONE choreography per package even when a single
+        # AGV carries several — they approach the arm one at a time — so two
+        # choreographies never animate the same arm at once. task_id ->
+        # {"winner","color"} is stashed at claim so the approach handler has the
+        # colour. _fdas_kicked now marks "choreography already started".
+        self._fdas_winners: dict = {}
+
     # ── public API ─────────────────────────────────────────────────────────
     def _initial_deadline(self) -> tuple[float, float]:
         now = time.time()
@@ -123,6 +146,16 @@ class MasterAnnouncer:
             self._sequence_queue.clear()
             self._sequence_enabled = bool(plan.get("enforce_sequence"))
             self._last_loaded_task_id = None
+            # FDAS bugfix: package IDs (pkg-1, pkg-2, …) are REUSED every plan.
+            # In FDAS mode the master never marks its _tasks records "claimed"
+            # (peers claim), so stale records linger and every later plan skips
+            # the reused IDs as "already announced" → nothing announced → the
+            # floor looks "stuck". Each AI Plan click is a fresh run, so drop
+            # the per-run task state here. Also clear the FDAS choreography
+            # guards so a reused ID isn't treated as already-kicked.
+            self._tasks.clear()
+            self._fdas_kicked.clear()
+            self._fdas_winners.clear()
 
         assignments.sort(key=lambda a: a.get("sequence", 0))
         announced: List[dict] = []
@@ -149,11 +182,16 @@ class MasterAnnouncer:
                 # capability filter has something to match on.
                 label = spec_pkg.get("label", "")
             weight_kg = spec_pkg.get("weight_kg") if isinstance(spec_pkg, dict) else None
+            # FDAS Step 3b: handling hint (fragile/heavy/priority/hazardous) the
+            # arm brain reasons over to pick its handling script. None when the
+            # prompt implied nothing — the arm then defaults by weight.
+            handling = spec_pkg.get("handling") if isinstance(spec_pkg, dict) else None
             color = _color_for(label, idx)
             payload = {
                 "package_id": package_id,
                 "label": label,
                 "weight_kg": weight_kg,
+                "handling": handling,
                 "route": a.get("route") or ["bay", "input", "output", "bay"],
                 "sequence": a.get("sequence", idx + 1),
                 "agv_hint": a.get("agv_id"),
@@ -288,6 +326,10 @@ class MasterAnnouncer:
             time.sleep(RESOLVE_TICK_S)
 
     def _tick(self) -> None:
+        if FDAS_PEER_RESOLVE:
+            # Master-gone: peers resolve initial announces and self-execute;
+            # the backend only reacts to their claim (see on_peer_claim).
+            return
         now = time.time()
         # Snapshot expired tasks under lock; execute outside the lock
         to_claim: List[tuple[str, str, dict]] = []
@@ -395,9 +437,13 @@ class MasterAnnouncer:
             return False
         _log("planner",
              f"{agv_id} claimed {package_id}; starting arm choreography")
+        with self._lock:
+            rec = self._tasks.get(package_id) or {}
+        pl = rec.get("payload") or {}
         threading.Thread(
             target=_auto_arm_signals,
-            args=(agv_id, package_id, color),
+            args=(agv_id, package_id, color, label,
+                  pl.get("weight_kg"), pl.get("handling")),
             daemon=True,
         ).start()
         return True
@@ -436,6 +482,76 @@ class MasterAnnouncer:
         publish_local("task_announce", from_="master",
                       task_id=task_id, payload=payload)
 
+    # ── FDAS Step 2: react to a peer-published claim ───────────────────────
+    def on_peer_claim(self, ev: dict) -> None:
+        """Master-gone mode: peers elect a resolver and publish the `claim`
+        naming the winner — the backend no longer chooses. But the arm
+        load/unload choreography is still backend-side (until arms become peers
+        in Step 3), so we react to the peer claim by kicking ONLY the arm
+        choreography for the winner. We do NOT call _assign_agv — the winning
+        AGV already self-executed via its BusListener._on_claim."""
+        if not FDAS_PEER_RESOLVE:
+            return
+        task_id = ev.get("task_id")
+        payload = ev.get("payload") or {}
+        winner = payload.get("winner")
+        if not task_id or not winner:
+            return
+        with self._lock:
+            rec = self._tasks.get(task_id) or {}
+            # Mark the record claimed — a peer resolved it. Keeps state honest
+            # even without the per-plan reset (e.g. concurrent plans).
+            if task_id in self._tasks:
+                self._tasks[task_id]["claimed"] = True
+            label = rec.get("label", "")
+            color = rec.get("color") or _color_for(label, rec.get("idx", 0))
+            # Stash winner+colour; the arm choreography is started later, when
+            # the AGV actually approaches the input arm (on_arm_approach), so a
+            # single AGV carrying several packages never gets two overlapping
+            # choreographies on the same arm.
+            self._fdas_winners[task_id] = {"winner": winner, "color": color}
+        _log("planner",
+             f"FDAS peer-claim {task_id} -> {winner}; arm choreography deferred "
+             f"to AGV approach")
+
+    # ── FDAS Step 3 fix: start arm choreography on AGV APPROACH, not claim ──
+    def on_arm_approach(self, ev: dict) -> None:
+        """Start the backend load/unload choreography when the winning AGV
+        actually approaches the INPUT arm — exactly ONE choreography per
+        package. This replaces starting it at claim time, which spawned two
+        overlapping choreographies on the same arm when one AGV won several
+        packages (the 'funny arm / stuck' symptom). The output-arm step is
+        handled WITHIN the same _auto_arm_signals run, so we only trigger on the
+        input approach."""
+        if not FDAS_PEER_RESOLVE:
+            return
+        payload = ev.get("payload") or {}
+        if payload.get("arm_station") != "input_arm":
+            return  # output unload is driven inside the same choreography
+        task_id = ev.get("task_id")
+        agv_id = payload.get("agv_id") or ev.get("from")
+        if not task_id or not agv_id:
+            return
+        with self._lock:
+            if task_id in self._fdas_kicked:
+                return  # choreography already running for this package
+            self._fdas_kicked.add(task_id)
+            info = self._fdas_winners.get(task_id) or {}
+            rec = self._tasks.get(task_id) or {}
+            label = rec.get("label", "")
+            pl = rec.get("payload") or {}
+            weight_kg = pl.get("weight_kg")
+            handling = pl.get("handling")
+        color = info.get("color") or "#e74c3c"
+        _log("planner",
+             f"FDAS arm choreography for {task_id} on {agv_id} (AGV approached "
+             f"input arm)")
+        threading.Thread(
+            target=_auto_arm_signals,
+            args=(agv_id, task_id, color, label, weight_kg, handling),
+            daemon=True,
+        ).start()
+
     # ── one-shot wiring ────────────────────────────────────────────────────
     def _ensure_resolver(self) -> None:
         if self._resolver_started:
@@ -454,6 +570,13 @@ class MasterAnnouncer:
             if not getattr(self, "_sub_bound", False):
                 bus.subscribe("bid", self.on_bid)
                 bus.subscribe("arm_ready", self.on_arm_ready)
+                if FDAS_PEER_RESOLVE:
+                    # Master-gone mode: peers publish the claim; we listen so we
+                    # can still drive the arm load/unload choreography — but we
+                    # START it on the AGV's arm_approach (one per package), not
+                    # at claim, so multi-package AGVs don't double-animate an arm.
+                    bus.subscribe("claim", self.on_peer_claim)
+                    bus.subscribe("arm_approach", self.on_arm_approach)
                 self._sub_bound = True
         except Exception as exc:
             _log("planner", f"could not subscribe to bid events: {exc}")

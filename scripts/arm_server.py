@@ -25,6 +25,28 @@ from utils import send_command, send_health, DEFAULT_HOST
 
 ARM_ID = int(os.environ.get("ARM_ID", "1"))
 
+
+# ── FDAS Step 3 groundwork: arm capability declaration ───────────────────────
+# Arms declare what they can do via env vars, mirroring the AGV capability
+# model, so they can become contract-net peers. NOTE: full arm-side bidding (an
+# arm BusListener that bids on load/unload tasks) is NOT here yet — today the
+# load/unload choreography is still driven backend-side by
+# dispatch_routes._auto_arm_signals. This block only exposes the declaration.
+def _parse_csv(raw, default):
+    if not raw:
+        return list(default)
+    parts = [p.strip().lower() for p in str(raw).split(",") if p.strip()]
+    return parts or list(default)
+
+
+ARM_CAPABILITIES = {
+    "arm_id": ARM_ID,
+    "arm_type": os.environ.get("ARM_TYPE", "pick_place"),
+    "actions": _parse_csv(os.environ.get("ARM_ACTIONS"), ["load", "unload"]),
+    # Which station this arm serves: "input_arm" | "output_arm" | "" (either).
+    "station": os.environ.get("ARM_STATION", ""),
+}
+
 app = Flask(__name__)
 
 
@@ -38,6 +60,12 @@ def health():
             "server_host": DEFAULT_HOST,
         }
     )
+
+
+@app.route("/capabilities", methods=["GET"])
+def capabilities():
+    """FDAS Step 3 groundwork: this arm's capability declaration (from env)."""
+    return jsonify(ARM_CAPABILITIES)
 
 
 @app.route("/move", methods=["POST"])
@@ -115,4 +143,20 @@ if __name__ == "__main__":
 
     print(f"Arm {ARM_ID} microservice starting on port {args.port}")
     print(f"Backend: {DEFAULT_HOST}")
+
+    # FDAS Step 3: start the decentralized arm-peer brain when ARM_AUTONOMY=on.
+    # Default OFF -> the arm stays a backend-driven actuator and the proven
+    # load/unload path is completely unchanged. When on, the arm becomes a
+    # decision-making peer that hears AGV approaches, decides locally, and
+    # announces `arm_decision` on the shared bus (additive, non-conflicting).
+    if os.environ.get("ARM_AUTONOMY", "off").lower() in ("on", "1", "true", "yes"):
+        try:
+            from arm_bus import ArmBusListener, ARM_STATION
+            ArmBusListener().start()
+            print(f"[Arm {ARM_ID}] ARM_AUTONOMY on — peer brain started "
+                  f"(station={ARM_STATION})", flush=True)
+        except Exception as exc:
+            print(f"[Arm {ARM_ID}] ArmBusListener failed to start: {exc}",
+                  file=sys.stderr)
+
     app.run(host="0.0.0.0", port=args.port)

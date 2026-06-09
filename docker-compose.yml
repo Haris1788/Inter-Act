@@ -17,7 +17,9 @@ services:
       retries: 12
       start_period: 20s
   backend:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
     container_name: interact-backend
     ports:
     - ${BACKEND_HOST_PORT:-5000}:5000
@@ -29,6 +31,8 @@ services:
     - OLLAMA_MODEL_PLANNER=qwq:32b-q4_K_M
     - OLLAMA_MODEL_TACTICAL=qwen2.5:14b-instruct-q4_K_M
     - COORDINATION_MODE=smart
+    - FDAS_PEER_RESOLVE=on
+    - ARM_AUTONOMY=on
     - PIPELINE_CONFIG=/config/pipeline.yaml
     - FLASK_ENV=production
     - FLASK_DEBUG=0
@@ -102,10 +106,11 @@ services:
     - SERVER_HOST=http://backend:5000
     - OLLAMA_BASE_URL=http://ollama:11434
     - COORDINATION_MODE=smart
+    - FDAS_PEER_RESOLVE=on
     - PYTHONUNBUFFERED=1
     - AGV_KIND=shuttle
     - AGV_WEIGHT_MAX_KG=20.0
-    - AGV_ALLOWED_LABELS=blue
+    - AGV_ALLOWED_LABELS=any
     - AGV_SPEED_FACTOR=1.6
     depends_on:
       backend:
@@ -122,10 +127,11 @@ services:
     - SERVER_HOST=http://backend:5000
     - OLLAMA_BASE_URL=http://ollama:11434
     - COORDINATION_MODE=smart
+    - FDAS_PEER_RESOLVE=on
     - PYTHONUNBUFFERED=1
     - AGV_KIND=shuttle
     - AGV_WEIGHT_MAX_KG=50.0
-    - AGV_ALLOWED_LABELS=green
+    - AGV_ALLOWED_LABELS=any
     - AGV_SPEED_FACTOR=1.0
     depends_on:
       backend:
@@ -142,10 +148,11 @@ services:
     - SERVER_HOST=http://backend:5000
     - OLLAMA_BASE_URL=http://ollama:11434
     - COORDINATION_MODE=smart
+    - FDAS_PEER_RESOLVE=on
     - PYTHONUNBUFFERED=1
     - AGV_KIND=shuttle
     - AGV_WEIGHT_MAX_KG=80.0
-    - AGV_ALLOWED_LABELS=yellow
+    - AGV_ALLOWED_LABELS=any
     - AGV_SPEED_FACTOR=0.6
     depends_on:
       backend:
